@@ -7,6 +7,11 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
+    let
+      overlays.default = final: prev: {
+        worker-mcp = self.packages.${final.system}.worker-mcp;
+      };
+    in
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -73,5 +78,5 @@
           '';
         };
       }
-    );
+    ) // { inherit overlays; };
 }
