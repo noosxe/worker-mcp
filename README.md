@@ -16,17 +16,39 @@ Instead of rolling a custom local LLM tool loop, `worker-mcp` delegates coding, 
 
 ---
 
-## Installation & Usage via Nix
+## Installation & Usage
 
-This project provides a Nix flake to ensure consistent environments and easy installation.
+`worker-mcp` is published on npm as [@noosxe/worker-mcp](https://www.npmjs.com/package/@noosxe/worker-mcp). This is the recommended installation path for most users.
 
-### 1. Run Directly (Ad-hoc)
-You can run the server on stdio immediately without installing it:
+### 1. Install via npm (Recommended)
+
+#### Option A: Global Installation
+Install the package globally on your system:
+```bash
+npm install -g @noosxe/worker-mcp
+# or using pnpm
+pnpm add -g @noosxe/worker-mcp
+```
+Once installed globally, you can run the server using the `worker-mcp` command.
+
+#### Option B: Run ad-hoc via npx
+Alternatively, you can run the server on stdio immediately without installing it:
+```bash
+npx @noosxe/worker-mcp
+```
+
+---
+
+### 2. Install via Nix
+This project also provides a Nix flake to ensure consistent environments and easy installation.
+
+#### Option A: Run Directly (Ad-hoc)
+You can run the server on stdio immediately using Nix:
 ```bash
 nix run github:noosxe/worker-mcp
 ```
 
-### 2. Install to User Profile
+#### Option B: Install to User Profile
 Install the `worker-mcp` executable globally in your user profile:
 ```bash
 nix profile install github:noosxe/worker-mcp
@@ -35,6 +57,8 @@ Once installed, run it with:
 ```bash
 worker-mcp
 ```
+
+---
 
 ### 3. Declarative Installation via Flake Overlay (System / Home Manager)
 If you manage your operating system or user profile declaratively via NixOS or Home Manager, you can consume our default overlay.
@@ -112,7 +136,7 @@ Antigravity CLI resolves MCP servers from dedicated configuration files (rather 
 
 #### Configuration file schemas:
 
-##### Option A: If installed globally via Nix
+##### Option A: If installed globally (via npm or Nix)
 ```json
 {
   "mcpServers": {
@@ -124,7 +148,22 @@ Antigravity CLI resolves MCP servers from dedicated configuration files (rather 
 }
 ```
 
-##### Option B: If running ad-hoc via GitHub Flake
+##### Option B: If running ad-hoc via npx
+```json
+{
+  "mcpServers": {
+    "worker-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@noosxe/worker-mcp"
+      ]
+    }
+  }
+}
+```
+
+##### Option C: If running ad-hoc via GitHub Flake
 ```json
 {
   "mcpServers": {
@@ -139,18 +178,22 @@ Antigravity CLI resolves MCP servers from dedicated configuration files (rather 
 }
 ```
 
-##### Option C: Declarative Home Manager Configuration
+##### Option D: Declarative Home Manager Configuration
 If you manage your user configuration via Home Manager, you can declare the global `mcp_config.json` file in your `home.nix` using `home.file` combined with `builtins.toJSON`:
 
 ```nix
 home.file.".gemini/config/mcp_config.json".text = builtins.toJSON {
   mcpServers = {
     worker-mcp = {
-      # If installed via overlay in system/home packages:
+      # If installed via overlay in system/home packages or globally via npm:
       command = "worker-mcp";
       args = [];
 
-      # Alternatively, if running ad-hoc:
+      # Alternatively, if running ad-hoc via npx:
+      # command = "npx";
+      # args = [ "-y" "@noosxe/worker-mcp" ];
+
+      # Alternatively, if running ad-hoc via Nix:
       # command = "nix";
       # args = [ "run" "github:noosxe/worker-mcp?ref=main" ];
     };
