@@ -311,7 +311,20 @@ export class PiSession {
 		});
 	}
 
+	/** Whether a pi subprocess is actually attached to this session. */
+	public isAlive(): boolean {
+		return this.process !== null;
+	}
+
 	public sendCommand(commandText: string): Promise<string> {
+		// Reported before the status check so a session restored from the
+		// registry says what to do instead of failing with "Process not running".
+		if (!this.isAlive()) {
+			throw new Error(
+				`Session ${this.sessionId} has no running pi process (status: ${this.status}). Respawn it with spawn_pi_session.`,
+			);
+		}
+
 		if (this.status !== "IDLE" && this.status !== "FINISHED") {
 			throw new Error(
 				`Cannot send command when session status is ${this.status}`,
@@ -330,7 +343,8 @@ export class PiSession {
 				type: "prompt",
 				message: commandText,
 			}).catch((err) => {
-				this.status = "IDLE";
+				// Never claim IDLE for a session with no process behind it.
+				this.status = this.isAlive() ? "IDLE" : "FINISHED";
 				reject(err);
 			});
 		});

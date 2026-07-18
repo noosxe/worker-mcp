@@ -109,6 +109,19 @@ describe("PiSession - Unit Tests", () => {
 		}
 	});
 
+	test("sendCommand on a session with no process says how to recover", () => {
+		const session = new PiSession("test", "./scratch");
+		session.status = "FINISHED"; // as restored from the registry
+
+		assert.strictEqual(session.isAlive(), false);
+		assert.throws(
+			() => session.sendCommand("hi"),
+			/no running pi process.*Respawn it with spawn_pi_session/s,
+		);
+		// It must not claim to be a healthy idle session afterwards.
+		assert.notStrictEqual(session.status, "IDLE");
+	});
+
 	test("agent_end settles a running command and returns session to IDLE", () => {
 		const session = new PiSession("test", "./scratch");
 

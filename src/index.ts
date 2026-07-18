@@ -114,6 +114,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 				},
 			},
 			{
+				name: "terminate_pi_session",
+				description:
+					"Stop a session and remove it, freeing its id for reuse. Use this to clear a session that has crashed, wedged, or is no longer needed.",
+				inputSchema: {
+					type: "object",
+					properties: {
+						sessionId: {
+							type: "string",
+							description: "The ID of the session to terminate.",
+						},
+					},
+					required: ["sessionId"],
+				},
+			},
+			{
 				name: "list_pi_sessions",
 				description: "List all active sessions and their status.",
 				inputSchema: {
@@ -225,6 +240,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 						{
 							type: "text",
 							text: result,
+						},
+					],
+				};
+			}
+
+			case "terminate_pi_session": {
+				const { sessionId } = args as { sessionId: string };
+				sessionManager.terminateSession(sessionId);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Terminated session ${sessionId}. Its id is free to reuse.`,
 						},
 					],
 				};

@@ -15,6 +15,10 @@ describe("SessionManager - Unit Tests", () => {
 		previousHome = process.env.HOME;
 		tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-test-"));
 		process.env.HOME = tempHome;
+		// Tests that seed a registry write it before any SessionManager exists.
+		fs.mkdirSync(path.join(tempHome, ".config", "worker-mcp"), {
+			recursive: true,
+		});
 	});
 
 	after(() => {
@@ -24,6 +28,63 @@ describe("SessionManager - Unit Tests", () => {
 			process.env.HOME = previousHome;
 		}
 		fs.rmSync(tempHome, { recursive: true, force: true });
+	});
+
+	test("a session restored from the registry can be respawned", async () => {
+		// Sessions reloaded at startup hold their id but have no subprocess.
+		fs.writeFileSync(
+			path.join(tempHome, ".config", "worker-mcp", "sessions.json"),
+			JSON.stringify([{ sessionId: "restored", cwd: "/tmp" }]),
+		);
+		const manager = new SessionManager();
+		assert.strictEqual(
+			manager.listSessions().some((s) => s.sessionId === "restored"),
+			true,
+		);
+
+		// The wedge: a coordinator tries the session first, and that failed
+		// attempt used to flip the dead session to IDLE — which then read as
+		// "active" and blocked every respawn of the id, permanently.
+		assert.throws(() => manager.getSession("restored").sendCommand("hi"));
+		assert.notStrictEqual(
+			manager.getSession("restored").status,
+			"IDLE",
+			"a failed send must not make a process-less session look healthy",
+		);
+
+		// Reaching the spawn step at all proves the id was not treated as active.
+		const previous = process.env.WORKER_MCP_PI_PATH;
+		process.env.WORKER_MCP_PI_PATH = "worker-mcp-nonexistent-binary-xyz";
+		try {
+			await assert.rejects(
+				() => manager.createSession("restored", "/tmp"),
+				/Failed to start pi/,
+				"a dead session must be replaceable, not rejected as active",
+			);
+		} finally {
+			if (previous === undefined) delete process.env.WORKER_MCP_PI_PATH;
+			else process.env.WORKER_MCP_PI_PATH = previous;
+		}
+	});
+
+	test("terminateSession frees the id and drops it from the registry", () => {
+		fs.writeFileSync(
+			path.join(tempHome, ".config", "worker-mcp", "sessions.json"),
+			JSON.stringify([{ sessionId: "doomed", cwd: "/tmp" }]),
+		);
+		const manager = new SessionManager();
+
+		manager.terminateSession("doomed");
+
+		assert.strictEqual(manager.listSessions().length, 0);
+		assert.throws(() => manager.getSession("doomed"), /Session not found/);
+		const onDisk = JSON.parse(
+			fs.readFileSync(
+				path.join(tempHome, ".config", "worker-mcp", "sessions.json"),
+				"utf8",
+			),
+		);
+		assert.deepStrictEqual(onDisk, [], "must not come back after a restart");
 	});
 
 	test("a session that fails to start does not burn its id", async () => {
