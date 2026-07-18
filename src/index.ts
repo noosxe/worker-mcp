@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -8,6 +11,38 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { SessionManager } from "./session/session-manager.js";
 
+// Parse version from package.json
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const pkgPath = join(__dirname, "..", "package.json");
+
+let version = "1.0.0";
+try {
+	const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+	version = pkg.version || version;
+} catch {
+	// fallback
+}
+
+// Handle version/help flags
+if (process.argv.includes("--version") || process.argv.includes("-v")) {
+	console.log(`worker-mcp v${version}`);
+	process.exit(0);
+}
+
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+	console.log(`worker-mcp - Model Context Protocol server supervising local worker agents
+
+Usage:
+  worker-mcp [options]
+
+Options:
+  -v, --version  Show version
+  -h, --help     Show help
+`);
+	process.exit(0);
+}
+
 // Instantiate session manager
 const sessionManager = new SessionManager();
 
@@ -15,7 +50,7 @@ const sessionManager = new SessionManager();
 const server = new Server(
 	{
 		name: "worker-mcp",
-		version: "1.0.0",
+		version: version,
 	},
 	{
 		capabilities: {
