@@ -16,6 +16,8 @@ export interface PendingAction {
 }
 
 export class PiSession {
+	private static readonly MAX_LOG_LINES = 2000;
+
 	public sessionId: string;
 	public cwd: string;
 	public model: string | undefined;
@@ -50,6 +52,10 @@ export class PiSession {
 		const timestamp = new Date().toISOString();
 		const formatted = `[${timestamp}] ${message}`;
 		this.logs.push(formatted);
+		// Bound the trace so a long-lived session cannot grow without limit.
+		if (this.logs.length > PiSession.MAX_LOG_LINES) {
+			this.logs.splice(0, this.logs.length - PiSession.MAX_LOG_LINES);
+		}
 		console.error(`[Session ${this.sessionId}] ${formatted}`);
 	}
 
@@ -196,10 +202,19 @@ export class PiSession {
 	private handleStdoutLine(line: string) {
 		try {
 			const obj = JSON.parse(line);
-			this.log(`[Event Received] ${JSON.stringify(obj)}`);
+			// Each message_update carries a snapshot of the message so far, so it
+			// grows across a turn — logging and storing every one costs O(n^2).
+			this.log(
+				obj.type === "message_update"
+					? "[Event Received] message_update"
+					: `[Event Received] ${JSON.stringify(obj)}`,
+			);
 
-			// Store trace in history
-			this.history.push(obj);
+			// Store trace in history. message_update is skipped: the history
+			// resource serves message_end only, so those snapshots are never read.
+			if (obj.type !== "message_update") {
+				this.history.push(obj);
+			}
 
 			// 1. Handle command response resolutions
 			if (obj.type === "response") {

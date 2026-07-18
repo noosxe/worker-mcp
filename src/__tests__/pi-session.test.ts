@@ -88,6 +88,51 @@ describe("PiSession - Unit Tests", () => {
 		]);
 	});
 
+	test("message_update snapshots are not retained", () => {
+		const session = new PiSession("test", "./scratch");
+		const h = (session as any).handleStdoutLine.bind(session);
+
+		// Each snapshot carries the whole message so far, so retention is O(n^2).
+		for (let i = 0; i < 50; i++) {
+			h(
+				JSON.stringify({
+					type: "message_update",
+					message: "x".repeat(i * 100),
+				}),
+			);
+		}
+		h('{"type":"message_end","message":{"role":"assistant"}}');
+
+		const kinds = session.history.map((e: any) => e.type);
+		assert.strictEqual(
+			kinds.filter((k) => k === "message_update").length,
+			0,
+			"message_update is never read back — the history resource serves message_end",
+		);
+		assert.strictEqual(kinds.filter((k) => k === "message_end").length, 1);
+
+		// The payload must not reach the log either.
+		const logged = session.logs.join("\n");
+		assert.ok(
+			!logged.includes("x".repeat(200)),
+			"log must not carry the snapshot",
+		);
+	});
+
+	test("logs are bounded for a long-lived session", () => {
+		const session = new PiSession("test", "./scratch");
+		const h = (session as any).handleStdoutLine.bind(session);
+
+		for (let i = 0; i < 5000; i++) h(`{"type":"turn_end","n":${i}}`);
+
+		assert.ok(
+			session.logs.length <= 2000,
+			`logs must stay bounded, saw ${session.logs.length}`,
+		);
+		// The most recent activity is what survives.
+		assert.ok(session.logs.join("\n").includes('"n":4999'));
+	});
+
 	test("start() rejects when the pi binary cannot be spawned", async () => {
 		const previous = process.env.WORKER_MCP_PI_PATH;
 		process.env.WORKER_MCP_PI_PATH = "worker-mcp-nonexistent-binary-xyz";
