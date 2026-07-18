@@ -98,6 +98,58 @@ outputs = { self, nixpkgs, worker-mcp, ... }@inputs: {
 };
 ```
 
+
+---
+
+## Harness Integration (Antigravity CLI / `agy`)
+
+To register the `worker-mcp` server with your Antigravity TUI/CLI (`agy`), use one of the following two setup options:
+
+### Option 1: Interactive Manager (Recommended)
+1. Launch the Antigravity TUI by running:
+   ```bash
+   agy
+   ```
+2. Type the slash command `/mcp` in the prompt input and press `Enter`.
+3. In the interactive overlay, choose **Add New Server**:
+   - **Name**: `worker-mcp`
+   - **Command**: `worker-mcp` (if installed globally via Nix) or `nix` (if running ad-hoc).
+   - **Args**: Empty if installed, or `["run", "git+ssh://git@piserver.yattle-tuna.ts.net/mechsoull/worker-mcp.git"]` if using ad-hoc Nix run from your private Gitea instance.
+
+### Option 2: Declarative Configuration (`mcp_config.json`)
+Antigravity CLI resolves MCP servers from dedicated configuration files (rather than the old `settings.json`). Add the configuration in one of the following locations:
+* **Global Configuration**: `~/.gemini/config/mcp_config.json`
+* **Project-local Configuration**: `.agents/mcp_config.json` (at the root of your project workspace)
+
+#### Configuration file schemas:
+
+##### If installed globally via Nix:
+```json
+{
+  "mcpServers": {
+    "worker-mcp": {
+      "command": "worker-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+##### If running ad-hoc via private Gitea Flake:
+```json
+{
+  "mcpServers": {
+    "worker-mcp": {
+      "command": "nix",
+      "args": [
+        "run",
+        "git+ssh://git@piserver.yattle-tuna.ts.net/mechsoull/worker-mcp.git?ref=main"
+      ]
+    }
+  }
+}
+```
+
 ---
 
 ## Operational Configuration
