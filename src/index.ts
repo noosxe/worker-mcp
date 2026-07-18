@@ -260,12 +260,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 					actionId: string;
 				};
 				const session = sessionManager.getSession(sessionId);
-				await session.approveAction(actionId);
+				const result = await session.approveAction(actionId);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Action ${actionId} approved. Resuming execution loop.`,
+							text: result,
 						},
 					],
 				};
@@ -278,12 +278,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 					reason?: string;
 				};
 				const session = sessionManager.getSession(sessionId);
-				await session.rejectAction(actionId, reason);
+				const result = await session.rejectAction(actionId, reason);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Action ${actionId} rejected. Feedback dispatched to agent.`,
+							text: result,
 						},
 					],
 				};

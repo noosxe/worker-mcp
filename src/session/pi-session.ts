@@ -196,6 +196,13 @@ export class PiSession {
 					this.log(
 						`[INTERCEPTED] Action ${obj.id} awaiting coordinator approval: ${obj.message}`,
 					);
+					if (this.resolveCommand) {
+						this.resolveCommand(
+							`AWAITING_APPROVAL: Intercepted tool call. Action ID: ${obj.id}. Message: ${obj.message}`,
+						);
+						this.resolveCommand = null;
+						this.rejectCommand = null;
+					}
 				}
 				return;
 			}
@@ -259,7 +266,7 @@ export class PiSession {
 		});
 	}
 
-	public async approveAction(actionId: string): Promise<void> {
+	public approveAction(actionId: string): Promise<string> {
 		if (
 			this.status !== "AWAITING_APPROVAL" ||
 			!this.pendingAction ||
@@ -274,14 +281,22 @@ export class PiSession {
 		this.status = "RUNNING";
 		this.pendingAction = null;
 
-		await this.writeRaw({
-			type: "extension_ui_response",
-			id: actionId,
-			confirmed: true,
+		return new Promise((resolve, reject) => {
+			this.resolveCommand = resolve;
+			this.rejectCommand = reject;
+
+			this.writeRaw({
+				type: "extension_ui_response",
+				id: actionId,
+				confirmed: true,
+			}).catch((err) => {
+				this.status = "IDLE";
+				reject(err);
+			});
 		});
 	}
 
-	public async rejectAction(actionId: string, reason?: string): Promise<void> {
+	public rejectAction(actionId: string, reason?: string): Promise<string> {
 		if (
 			this.status !== "AWAITING_APPROVAL" ||
 			!this.pendingAction ||
@@ -296,11 +311,19 @@ export class PiSession {
 		this.status = "RUNNING";
 		this.pendingAction = null;
 
-		await this.writeRaw({
-			type: "extension_ui_response",
-			id: actionId,
-			confirmed: false,
-			value: reason, // Convey the feedback text in case the prompt logic consumes it
+		return new Promise((resolve, reject) => {
+			this.resolveCommand = resolve;
+			this.rejectCommand = reject;
+
+			this.writeRaw({
+				type: "extension_ui_response",
+				id: actionId,
+				confirmed: false,
+				value: reason,
+			}).catch((err) => {
+				this.status = "IDLE";
+				reject(err);
+			});
 		});
 	}
 
