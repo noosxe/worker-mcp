@@ -124,7 +124,7 @@ Antigravity CLI resolves MCP servers from dedicated configuration files (rather 
 }
 ```
 
-##### Option B: If running ad-hoc via private Gitea Flake
+##### Option B: If running ad-hoc via GitHub Flake
 ```json
 {
   "mcpServers": {
@@ -132,7 +132,7 @@ Antigravity CLI resolves MCP servers from dedicated configuration files (rather 
       "command": "nix",
       "args": [
         "run",
-        "git+ssh://git@piserver.yattle-tuna.ts.net/mechsoull/worker-mcp.git?ref=main"
+        "github:noosxe/worker-mcp?ref=main"
       ]
     }
   }
@@ -152,7 +152,7 @@ home.file.".gemini/config/mcp_config.json".text = builtins.toJSON {
 
       # Alternatively, if running ad-hoc:
       # command = "nix";
-      # args = [ "run" "git+ssh://git@piserver.yattle-tuna.ts.net/mechsoull/worker-mcp.git?ref=main" ];
+      # args = [ "run" "github:noosxe/worker-mcp?ref=main" ];
     };
   };
 };
