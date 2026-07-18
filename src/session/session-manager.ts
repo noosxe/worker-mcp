@@ -137,7 +137,18 @@ export default function(pi: any) {
 		this.sessions.set(sessionId, session);
 		this.saveRegistry();
 
-		await session.start();
+		try {
+			await session.start();
+		} catch (e) {
+			// A session that never started still holds its id, and its status is
+			// whatever it was before start() threw — often "IDLE", which reads as
+			// active and makes the id permanently unusable. Roll the registration
+			// back so the caller can simply retry.
+			this.sessions.delete(sessionId);
+			this.saveRegistry();
+			throw e;
+		}
+
 		return session;
 	}
 
