@@ -127,7 +127,13 @@ export default function(pi: any) {
 	): Promise<PiSession> {
 		const existing = this.sessions.get(sessionId);
 		if (existing) {
-			if (existing.status !== "FINISHED" && existing.status !== "CRASHED") {
+			// A session with no subprocess is dead however its status reads —
+			// sessions restored from the registry have never been started at all.
+			const active =
+				existing.isAlive() &&
+				existing.status !== "FINISHED" &&
+				existing.status !== "CRASHED";
+			if (active) {
 				throw new Error(`Session ${sessionId} already exists and is active.`);
 			}
 			existing.terminate();
