@@ -19,14 +19,14 @@
         worker-mcp = let
           pnpmDeps = pkgs.fetchPnpmDeps {
             pname = "worker-mcp-deps";
-            version = "1.0.0";
+            version = "0.1.0";
             src = ./.;
             fetcherVersion = 4;
             hash = "sha256-5t/vaqqwpNisuHvm82a8kGQuUcxbzkJFvPkMZ8GL8Pw=";
           };
         in pkgs.stdenv.mkDerivation {
           pname = "worker-mcp";
-          version = "1.0.0";
+          version = "0.1.0";
           src = ./.;
 
           inherit pnpmDeps;
