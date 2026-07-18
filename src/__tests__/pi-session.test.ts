@@ -1,5 +1,6 @@
-import { test, describe } from "node:test";
+/* biome-ignore-all lint/suspicious/noExplicitAny: testing private methods */
 import assert from "node:assert";
+import { describe, test } from "node:test";
 import { PiSession } from "../session/pi-session.js";
 
 describe("PiSession - Unit Tests", () => {
@@ -41,8 +42,13 @@ describe("PiSession - Unit Tests", () => {
 		const session = new PiSession("test", "./scratch");
 		const detectLoop = (session as any).detectLoop.bind(session);
 
-		assert.strictEqual(detectLoop("a".repeat(15999)), false);
-		assert.strictEqual(detectLoop("a".repeat(16001)), true);
+		let longNonRepeating = "";
+		for (let i = 0; i < 3000; i++) {
+			longNonRepeating += `word${i} `;
+		}
+
+		assert.strictEqual(detectLoop(longNonRepeating.substring(0, 15999)), false);
+		assert.strictEqual(detectLoop(longNonRepeating.substring(0, 16001)), true);
 	});
 
 	test("Buffer splitting - splits stdout chunks by newline", () => {
@@ -57,7 +63,9 @@ describe("PiSession - Unit Tests", () => {
 			(session as any).stdoutBuffer += chunk.toString("utf8");
 			let boundary = (session as any).stdoutBuffer.indexOf("\n");
 			while (boundary !== -1) {
-				const line = (session as any).stdoutBuffer.substring(0, boundary).trim();
+				const line = (session as any).stdoutBuffer
+					.substring(0, boundary)
+					.trim();
 				(session as any).stdoutBuffer = (session as any).stdoutBuffer.substring(
 					boundary + 1,
 				);
@@ -68,7 +76,9 @@ describe("PiSession - Unit Tests", () => {
 			}
 		};
 
-		stdoutBufferReceiver(Buffer.from('{"type":"turn_start"}\n{"type":"message'));
+		stdoutBufferReceiver(
+			Buffer.from('{"type":"turn_start"}\n{"type":"message'),
+		);
 		assert.deepStrictEqual(parsedLines, ['{"type":"turn_start"}']);
 
 		stdoutBufferReceiver(Buffer.from('_update","text":"Hello"}\n'));
