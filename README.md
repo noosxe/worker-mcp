@@ -139,6 +139,26 @@ Antigravity CLI resolves MCP servers from dedicated configuration files (rather 
 }
 ```
 
+##### Option C: Declarative Home Manager Configuration
+If you manage your user configuration via Home Manager, you can declare the global `mcp_config.json` file in your `home.nix` using `home.file` combined with `builtins.toJSON`:
+
+```nix
+home.file.".gemini/config/mcp_config.json".text = builtins.toJSON {
+  mcpServers = {
+    worker-mcp = {
+      # If installed via overlay in system/home packages:
+      command = "worker-mcp";
+      args = [];
+
+      # Alternatively, if running ad-hoc:
+      # command = "nix";
+      # args = [ "run" "git+ssh://git@piserver.yattle-tuna.ts.net/mechsoull/worker-mcp.git?ref=main" ];
+    };
+  };
+};
+```
+
+
 ### Step 2: Verify and Manage via TUI (`/mcp` command)
 Once you have added the server configuration to `mcp_config.json`, you can manage it interactively inside the CLI:
 1. Launch the Antigravity TUI:
