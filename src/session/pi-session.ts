@@ -31,6 +31,7 @@ export class PiSession {
 	private rejectCommand: ((reason: Error) => void) | null = null;
 	private currentTurnOutput = "";
 	private abortTimeout: ReturnType<typeof setTimeout> | null = null;
+	private terminating = false;
 
 	constructor(
 		sessionId: string,
@@ -108,28 +109,17 @@ export class PiSession {
 		});
 
 		// Handle process exits
-		this.process.on("close", (code) => {
-			if (code !== 0 && code !== null) {
-				this.status = "CRASHED";
-				this.log(`Process exited with non-zero code: ${code}`);
-			} else {
-				this.status = "FINISHED";
-				this.log(`Process completed and exited successfully.`);
-			}
-			this.process = null;
-			if (this.resolveCommand) {
-				this.resolveCommand("Process terminated");
-				this.resolveCommand = null;
-			}
-		});
+		this.process.on("close", (code) => this.handleClose(code));
 
 		this.process.on("error", (err) => {
 			this.status = "CRASHED";
 			this.log(`Process error event: ${err.message}`);
+			this.pendingAction = null;
 			if (this.rejectCommand) {
 				this.rejectCommand(err);
-				this.rejectCommand = null;
 			}
+			this.resolveCommand = null;
+			this.rejectCommand = null;
 		});
 
 		// Apply model override if specified
@@ -150,6 +140,28 @@ export class PiSession {
 				modelId,
 			});
 		}
+	}
+
+	private handleClose(code: number | null) {
+		if (this.terminating) {
+			// pi exits non-zero when killed, which is not a crash.
+			this.status = "FINISHED";
+			this.log(`Process terminated on request (exit code: ${code}).`);
+		} else if (code !== 0 && code !== null) {
+			this.status = "CRASHED";
+			this.log(`Process exited with non-zero code: ${code}`);
+		} else {
+			this.status = "FINISHED";
+			this.log(`Process completed and exited successfully.`);
+		}
+
+		this.process = null;
+		this.pendingAction = null;
+		if (this.resolveCommand) {
+			this.resolveCommand("Process terminated");
+		}
+		this.resolveCommand = null;
+		this.rejectCommand = null;
 	}
 
 	private handleStdoutLine(line: string) {
@@ -360,6 +372,7 @@ export class PiSession {
 
 	public terminate() {
 		this.log("Terminating subprocess...");
+		this.terminating = true;
 		if (this.abortTimeout) {
 			clearTimeout(this.abortTimeout);
 			this.abortTimeout = null;
@@ -369,6 +382,7 @@ export class PiSession {
 			this.status = "FINISHED";
 			this.process = null;
 		}
+		this.pendingAction = null;
 	}
 
 	private detectLoop(text: string): boolean {

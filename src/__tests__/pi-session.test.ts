@@ -143,4 +143,65 @@ describe("PiSession - Unit Tests", () => {
 		assert.strictEqual(await pending, "Agent finished task run successfully.");
 		assert.strictEqual(session.status, "IDLE");
 	});
+
+	test("terminate() clears the pending action", () => {
+		const session = new PiSession("test", "./scratch");
+
+		session.status = "AWAITING_APPROVAL";
+		session.pendingAction = {
+			actionId: "a1",
+			tool: "confirm",
+			arguments: {},
+			context: "",
+		};
+
+		session.terminate();
+
+		// get_pending_actions must not hand out an approval for a dead process.
+		assert.strictEqual(session.pendingAction, null);
+	});
+
+	test("process exit clears a pending action left behind by a dead agent", () => {
+		const session = new PiSession("test", "./scratch");
+
+		session.status = "AWAITING_APPROVAL";
+		session.pendingAction = {
+			actionId: "a1",
+			tool: "confirm",
+			arguments: {},
+			context: "",
+		};
+
+		(session as any).handleClose(1);
+
+		assert.strictEqual(session.pendingAction, null);
+		assert.strictEqual(session.status, "CRASHED");
+	});
+
+	test("a requested termination is not reported as a crash", () => {
+		const session = new PiSession("test", "./scratch");
+
+		session.terminate();
+		// pi exits non-zero when killed; that is not a crash.
+		(session as any).handleClose(143);
+
+		assert.strictEqual(session.status, "FINISHED");
+	});
+
+	test("process exit clears both command handlers", () => {
+		const session = new PiSession("test", "./scratch");
+
+		let resolvedWith: string | null = null;
+		session.status = "RUNNING";
+		(session as any).resolveCommand = (value: string) => {
+			resolvedWith = value;
+		};
+		(session as any).rejectCommand = () => {};
+
+		(session as any).handleClose(0);
+
+		assert.strictEqual(resolvedWith, "Process terminated");
+		assert.strictEqual((session as any).resolveCommand, null);
+		assert.strictEqual((session as any).rejectCommand, null);
+	});
 });
