@@ -84,6 +84,35 @@ export class PiSession {
 			throw e;
 		}
 
+		// spawn() only throws synchronously for invalid arguments; a missing or
+		// non-executable binary surfaces as an async 'error' event. Wait for the
+		// outcome so a failed spawn is reported to the caller instead of being
+		// mistaken for a healthy session.
+		const child = this.process;
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const onSpawn = () => {
+					child.off("error", onError);
+					resolve();
+				};
+				const onError = (err: Error) => {
+					child.off("spawn", onSpawn);
+					reject(err);
+				};
+				child.once("spawn", onSpawn);
+				child.once("error", onError);
+			});
+		} catch (e) {
+			this.status = "CRASHED";
+			this.process = null;
+			this.log(
+				`Failed to spawn process: ${e instanceof Error ? e.message : String(e)}`,
+			);
+			throw new Error(
+				`Failed to start pi (${piPath}): ${e instanceof Error ? e.message : String(e)}`,
+			);
+		}
+
 		this.status = "IDLE";
 
 		// Set up stdout buffering and line splitting
