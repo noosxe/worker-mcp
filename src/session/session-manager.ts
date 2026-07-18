@@ -82,13 +82,14 @@ export default function(pi: any) {
 			const entries: SessionRegistryEntry[] = JSON.parse(content);
 
 			for (const entry of entries) {
-				// Create session in IDLE state (process not running yet)
+				// Create session in FINISHED state because the process is not running yet
 				const session = new PiSession(
 					entry.sessionId,
 					entry.cwd,
 					entry.model,
 					entry.systemPrompt,
 				);
+				session.status = "FINISHED";
 				this.sessions.set(entry.sessionId, session);
 			}
 			console.error(`Loaded ${entries.length} sessions from registry.`);
