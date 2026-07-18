@@ -87,4 +87,60 @@ describe("PiSession - Unit Tests", () => {
 			'{"type":"message_update","text":"Hello"}',
 		]);
 	});
+
+	test("agent_end settles a running command and returns session to IDLE", () => {
+		const session = new PiSession("test", "./scratch");
+
+		let resolved: string | null = null;
+		session.status = "RUNNING";
+		(session as any).resolveCommand = (value: string) => {
+			resolved = value;
+		};
+
+		(session as any).handleStdoutLine('{"type":"agent_end"}');
+
+		assert.strictEqual(session.status, "IDLE");
+		assert.strictEqual(resolved, "Agent finished task run successfully.");
+		assert.strictEqual((session as any).resolveCommand, null);
+	});
+
+	test("turn_end does not settle a command mid tool-call loop", () => {
+		const session = new PiSession("test", "./scratch");
+
+		let resolved = false;
+		session.status = "RUNNING";
+		(session as any).resolveCommand = () => {
+			resolved = true;
+		};
+
+		(session as any).handleStdoutLine('{"type":"turn_end"}');
+
+		assert.strictEqual(resolved, false);
+		assert.strictEqual(session.status, "RUNNING");
+	});
+
+	test("approveAction resolves once the agent ends", async () => {
+		const session = new PiSession("test", "./scratch");
+
+		(session as any).writeRaw = async () => {};
+		session.status = "AWAITING_APPROVAL";
+		session.pendingAction = {
+			actionId: "a1",
+			tool: "confirm",
+			arguments: {},
+			context: "",
+		};
+
+		const pending = session.approveAction("a1");
+		assert.strictEqual(session.status, "RUNNING");
+
+		// Intermediate turn boundaries must not settle the approval.
+		(session as any).handleStdoutLine('{"type":"turn_end"}');
+		assert.strictEqual(session.status, "RUNNING");
+
+		(session as any).handleStdoutLine('{"type":"agent_end"}');
+
+		assert.strictEqual(await pending, "Agent finished task run successfully.");
+		assert.strictEqual(session.status, "IDLE");
+	});
 });

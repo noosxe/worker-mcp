@@ -233,7 +233,9 @@ export class PiSession {
 				}
 			}
 
-			if (obj.type === "agent_settled") {
+			// pi signals completion of a whole run with `agent_end`. `turn_end` fires
+			// once per tool-call round, so it cannot be used to settle a command.
+			if (obj.type === "agent_end" || obj.type === "agent_settled") {
 				this.log(`Agent settled.`);
 				if (this.abortTimeout) {
 					clearTimeout(this.abortTimeout);
