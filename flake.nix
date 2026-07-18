@@ -6,51 +6,59 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
     let
       overlays.default = final: prev: {
         worker-mcp = self.packages.${final.system}.worker-mcp;
       };
     in
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = import nixpkgs { inherit system; };
 
-        worker-mcp = let
-          pnpmDeps = pkgs.fetchPnpmDeps {
-            pname = "worker-mcp-deps";
-            version = "0.1.3";
+        worker-mcp =
+          let
+            pnpmDeps = pkgs.fetchPnpmDeps {
+              pname = "worker-mcp-deps";
+              version = "0.1.4";
+              src = ./.;
+              fetcherVersion = 4;
+              hash = "sha256-5t/vaqqwpNisuHvm82a8kGQuUcxbzkJFvPkMZ8GL8Pw=";
+            };
+          in
+          pkgs.stdenv.mkDerivation {
+            pname = "worker-mcp";
+            version = "0.1.4";
             src = ./.;
-            fetcherVersion = 4;
-            hash = "sha256-5t/vaqqwpNisuHvm82a8kGQuUcxbzkJFvPkMZ8GL8Pw=";
+
+            inherit pnpmDeps;
+
+            nativeBuildInputs = [
+              pkgs.nodejs_24
+              pkgs.pnpmConfigHook
+              pkgs.pnpm
+              pkgs.makeWrapper
+            ];
+
+            buildPhase = ''
+              pnpm build
+            '';
+
+            installPhase = ''
+              mkdir -p $out/lib/node_modules/worker-mcp
+              cp -r dist node_modules package.json $out/lib/node_modules/worker-mcp/
+
+              mkdir -p $out/bin
+              makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/worker-mcp \
+                --add-flags "$out/lib/node_modules/worker-mcp/dist/index.js"
+            '';
           };
-        in pkgs.stdenv.mkDerivation {
-          pname = "worker-mcp";
-          version = "0.1.3";
-          src = ./.;
-
-          inherit pnpmDeps;
-
-          nativeBuildInputs = [
-            pkgs.nodejs_24
-            pkgs.pnpmConfigHook
-            pkgs.pnpm
-            pkgs.makeWrapper
-          ];
-
-          buildPhase = ''
-            pnpm build
-          '';
-
-          installPhase = ''
-            mkdir -p $out/lib/node_modules/worker-mcp
-            cp -r dist node_modules package.json $out/lib/node_modules/worker-mcp/
-            
-            mkdir -p $out/bin
-            makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/worker-mcp \
-              --add-flags "$out/lib/node_modules/worker-mcp/dist/index.js"
-          '';
-        };
       in
       {
         packages.default = worker-mcp;
@@ -78,5 +86,8 @@
           '';
         };
       }
-    ) // { inherit overlays; };
+    )
+    // {
+      inherit overlays;
+    };
 }
