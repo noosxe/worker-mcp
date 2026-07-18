@@ -1,289 +1,315 @@
-import { spawn, ChildProcess } from "child_process";
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
+import { type ChildProcess, spawn } from "node:child_process";
+import * as fs from "node:fs";
 
-export type SessionStatus = "IDLE" | "RUNNING" | "AWAITING_APPROVAL" | "CRASHED" | "FINISHED";
+export type SessionStatus =
+	| "IDLE"
+	| "RUNNING"
+	| "AWAITING_APPROVAL"
+	| "CRASHED"
+	| "FINISHED";
 
 export interface PendingAction {
-  actionId: string;
-  tool: string;
-  arguments: any;
-  context: string;
+	actionId: string;
+	tool: string;
+	arguments: unknown;
+	context: string;
 }
 
 export class PiSession {
-  public sessionId: string;
-  public cwd: string;
-  public model: string | undefined;
-  public systemPrompt: string | undefined;
-  public status: SessionStatus = "IDLE";
-  public pendingAction: PendingAction | null = null;
-  public logs: string[] = [];
-  public history: any[] = [];
-  
-  private process: ChildProcess | null = null;
-  private stdoutBuffer: string = "";
-  private resolveCommand: ((value: string) => void) | null = null;
-  private rejectCommand: ((reason: any) => void) | null = null;
+	public sessionId: string;
+	public cwd: string;
+	public model: string | undefined;
+	public systemPrompt: string | undefined;
+	public status: SessionStatus = "IDLE";
+	public pendingAction: PendingAction | null = null;
+	public logs: string[] = [];
+	public history: unknown[] = [];
 
-  constructor(sessionId: string, cwd: string, model?: string, systemPrompt?: string) {
-    this.sessionId = sessionId;
-    this.cwd = cwd;
-    this.model = model;
-    this.systemPrompt = systemPrompt;
-    this.log(`Session initialized for directory: ${cwd}`);
-  }
+	private process: ChildProcess | null = null;
+	private stdoutBuffer: string = "";
+	private resolveCommand: ((value: string) => void) | null = null;
+	private rejectCommand: ((reason: Error) => void) | null = null;
 
-  private log(message: string) {
-    const timestamp = new Date().toISOString();
-    const formatted = `[${timestamp}] ${message}`;
-    this.logs.push(formatted);
-    console.error(`[Session ${this.sessionId}] ${formatted}`);
-  }
+	constructor(
+		sessionId: string,
+		cwd: string,
+		model?: string,
+		systemPrompt?: string,
+	) {
+		this.sessionId = sessionId;
+		this.cwd = cwd;
+		this.model = model;
+		this.systemPrompt = systemPrompt;
+		this.log(`Session initialized for directory: ${cwd}`);
+	}
 
-  public async start(): Promise<void> {
-    const piPath = process.env.WORKER_MCP_PI_PATH || "pi";
-    
-    this.log(`Spawning pi subprocess in: ${this.cwd} using executable: ${piPath}`);
-    
-    // Check if directory exists
-    if (!fs.existsSync(this.cwd)) {
-      throw new Error(`Workspace directory does not exist: ${this.cwd}`);
-    }
+	private log(message: string) {
+		const timestamp = new Date().toISOString();
+		const formatted = `[${timestamp}] ${message}`;
+		this.logs.push(formatted);
+		console.error(`[Session ${this.sessionId}] ${formatted}`);
+	}
 
-    const args = ["--mode", "rpc"];
-    if (this.systemPrompt) {
-      args.push("--system-prompt", this.systemPrompt);
-    }
+	public async start(): Promise<void> {
+		const piPath = process.env.WORKER_MCP_PI_PATH || "pi";
 
-    try {
-      this.process = spawn(piPath, args, {
-        cwd: this.cwd,
-        env: { ...process.env },
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch (e: any) {
-      this.status = "CRASHED";
-      this.log(`Failed to spawn process: ${e.message}`);
-      throw e;
-    }
+		this.log(
+			`Spawning pi subprocess in: ${this.cwd} using executable: ${piPath}`,
+		);
 
-    this.status = "IDLE";
+		// Check if directory exists
+		if (!fs.existsSync(this.cwd)) {
+			throw new Error(`Workspace directory does not exist: ${this.cwd}`);
+		}
 
-    // Set up stdout buffering and line splitting
-    this.process.stdout!.on("data", (chunk: Buffer) => {
-      this.stdoutBuffer += chunk.toString("utf8");
-      let boundary = this.stdoutBuffer.indexOf("\n");
-      while (boundary !== -1) {
-        const line = this.stdoutBuffer.substring(0, boundary).trim();
-        this.stdoutBuffer = this.stdoutBuffer.substring(boundary + 1);
-        if (line) {
-          this.handleStdoutLine(line);
-        }
-        boundary = this.stdoutBuffer.indexOf("\n");
-      }
-    });
+		const args = ["--mode", "rpc"];
+		if (this.systemPrompt) {
+			args.push("--system-prompt", this.systemPrompt);
+		}
 
-    // Set up stderr parsing
-    this.process.stderr!.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf8").trim();
-      if (text) {
-        this.log(`[stderr] ${text}`);
-      }
-    });
+		try {
+			this.process = spawn(piPath, args, {
+				cwd: this.cwd,
+				env: { ...process.env },
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+		} catch (e) {
+			this.status = "CRASHED";
+			this.log(
+				`Failed to spawn process: ${e instanceof Error ? e.message : String(e)}`,
+			);
+			throw e;
+		}
 
-    // Handle process exits
-    this.process.on("close", (code) => {
-      if (code !== 0 && code !== null) {
-        this.status = "CRASHED";
-        this.log(`Process exited with non-zero code: ${code}`);
-      } else {
-        this.status = "FINISHED";
-        this.log(`Process completed and exited successfully.`);
-      }
-      this.process = null;
-      if (this.resolveCommand) {
-        this.resolveCommand("Process terminated");
-        this.resolveCommand = null;
-      }
-    });
+		this.status = "IDLE";
 
-    this.process.on("error", (err) => {
-      this.status = "CRASHED";
-      this.log(`Process error event: ${err.message}`);
-      if (this.rejectCommand) {
-        this.rejectCommand(err);
-        this.rejectCommand = null;
-      }
-    });
+		// Set up stdout buffering and line splitting
+		this.process.stdout?.on("data", (chunk: Buffer) => {
+			this.stdoutBuffer += chunk.toString("utf8");
+			let boundary = this.stdoutBuffer.indexOf("\n");
+			while (boundary !== -1) {
+				const line = this.stdoutBuffer.substring(0, boundary).trim();
+				this.stdoutBuffer = this.stdoutBuffer.substring(boundary + 1);
+				if (line) {
+					this.handleStdoutLine(line);
+				}
+				boundary = this.stdoutBuffer.indexOf("\n");
+			}
+		});
 
-    // Apply model override if specified
-    if (this.model) {
-      // Split into provider/modelId, default to ollama if not specified
-      let provider = "ollama";
-      let modelId = this.model;
-      const slashIndex = this.model.indexOf("/");
-      if (slashIndex !== -1) {
-        provider = this.model.substring(0, slashIndex);
-        modelId = this.model.substring(slashIndex + 1);
-      }
-      
-      this.log(`Configuring model: ${provider}/${modelId}`);
-      await this.writeRaw({
-        type: "set_model",
-        provider,
-        modelId,
-      });
-    }
-  }
+		// Set up stderr parsing
+		this.process.stderr?.on("data", (chunk: Buffer) => {
+			const text = chunk.toString("utf8").trim();
+			if (text) {
+				this.log(`[stderr] ${text}`);
+			}
+		});
 
-  private handleStdoutLine(line: string) {
-    try {
-      const obj = JSON.parse(line);
-      this.log(`[Event Received] ${JSON.stringify(obj)}`);
-      
-      // Store trace in history
-      this.history.push(obj);
+		// Handle process exits
+		this.process.on("close", (code) => {
+			if (code !== 0 && code !== null) {
+				this.status = "CRASHED";
+				this.log(`Process exited with non-zero code: ${code}`);
+			} else {
+				this.status = "FINISHED";
+				this.log(`Process completed and exited successfully.`);
+			}
+			this.process = null;
+			if (this.resolveCommand) {
+				this.resolveCommand("Process terminated");
+				this.resolveCommand = null;
+			}
+		});
 
-      // 1. Handle command response resolutions
-      if (obj.type === "response") {
-        if (obj.success === false) {
-          this.log(`Command failed: ${obj.error}`);
-          if (this.rejectCommand) {
-            this.rejectCommand(new Error(obj.error));
-            this.rejectCommand = null;
-            this.status = "IDLE";
-          }
-        } else {
-          this.log(`Command successfully executed: ${obj.command}`);
-          // If it was a set_model command, we don't resolve the prompt execution promise
-          if (obj.command !== "set_model" && this.resolveCommand) {
-            this.resolveCommand(JSON.stringify(obj.data || { success: true }));
-            this.resolveCommand = null;
-            this.status = "IDLE";
-          }
-        }
-        return;
-      }
+		this.process.on("error", (err) => {
+			this.status = "CRASHED";
+			this.log(`Process error event: ${err.message}`);
+			if (this.rejectCommand) {
+				this.rejectCommand(err);
+				this.rejectCommand = null;
+			}
+		});
 
-      // 2. Handle interactive gating requests from Extensions (e.g. confirm UI dialogs)
-      if (obj.type === "extension_ui_request") {
-        if (obj.method === "confirm") {
-          this.status = "AWAITING_APPROVAL";
-          this.pendingAction = {
-            actionId: obj.id,
-            tool: "confirm",
-            arguments: {
-              title: obj.title,
-              message: obj.message,
-            },
-            context: "A tool execution or high-risk operation requires supervisor consent."
-          };
-          this.log(`[INTERCEPTED] Action ${obj.id} awaiting coordinator approval: ${obj.message}`);
-        }
-        return;
-      }
+		// Apply model override if specified
+		if (this.model) {
+			// Split into provider/modelId, default to ollama if not specified
+			let provider = "ollama";
+			let modelId = this.model;
+			const slashIndex = this.model.indexOf("/");
+			if (slashIndex !== -1) {
+				provider = this.model.substring(0, slashIndex);
+				modelId = this.model.substring(slashIndex + 1);
+			}
 
-      // 3. Handle turn lifecycle events
-      if (obj.type === "agent_settled") {
-        this.log(`Agent settled.`);
-        if (this.status === "RUNNING") {
-          this.status = "IDLE";
-          if (this.resolveCommand) {
-            this.resolveCommand("Agent finished task run successfully.");
-            this.resolveCommand = null;
-          }
-        }
-      }
+			this.log(`Configuring model: ${provider}/${modelId}`);
+			await this.writeRaw({
+				type: "set_model",
+				provider,
+				modelId,
+			});
+		}
+	}
 
-    } catch (e) {
-      this.log(`Failed to parse stdout line: ${line} - Error: ${e}`);
-    }
-  }
+	private handleStdoutLine(line: string) {
+		try {
+			const obj = JSON.parse(line);
+			this.log(`[Event Received] ${JSON.stringify(obj)}`);
 
-  private writeRaw(obj: object): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.process || !this.process.stdin) {
-        return reject(new Error("Process not running"));
-      }
+			// Store trace in history
+			this.history.push(obj);
 
-      const payload = JSON.stringify(obj) + "\n";
-      this.process.stdin.write(payload, "utf8", (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          this.log(`[Command Sent] ${JSON.stringify(obj)}`);
-          resolve();
-        }
-      });
-    });
-  }
+			// 1. Handle command response resolutions
+			if (obj.type === "response") {
+				if (obj.success === false) {
+					this.log(`Command failed: ${obj.error}`);
+					if (this.rejectCommand) {
+						this.rejectCommand(new Error(obj.error));
+						this.rejectCommand = null;
+						this.status = "IDLE";
+					}
+				} else {
+					this.log(`Command successfully executed: ${obj.command}`);
+					// If it was a set_model command, we don't resolve the prompt execution promise
+					if (obj.command !== "set_model" && this.resolveCommand) {
+						this.resolveCommand(JSON.stringify(obj.data || { success: true }));
+						this.resolveCommand = null;
+						this.status = "IDLE";
+					}
+				}
+				return;
+			}
 
-  public sendCommand(commandText: string): Promise<string> {
-    if (this.status !== "IDLE" && this.status !== "FINISHED") {
-      throw new Error(`Cannot send command when session status is ${this.status}`);
-    }
+			// 2. Handle interactive gating requests from Extensions (e.g. confirm UI dialogs)
+			if (obj.type === "extension_ui_request") {
+				if (obj.method === "confirm") {
+					this.status = "AWAITING_APPROVAL";
+					this.pendingAction = {
+						actionId: obj.id,
+						tool: "confirm",
+						arguments: {
+							title: obj.title,
+							message: obj.message,
+						},
+						context:
+							"A tool execution or high-risk operation requires supervisor consent.",
+					};
+					this.log(
+						`[INTERCEPTED] Action ${obj.id} awaiting coordinator approval: ${obj.message}`,
+					);
+				}
+				return;
+			}
 
-    this.status = "RUNNING";
-    const cmdId = `cmd_${Date.now()}`;
-    
-    return new Promise(async (resolve, reject) => {
-      this.resolveCommand = resolve;
-      this.rejectCommand = reject;
+			// 3. Handle turn lifecycle events
+			if (obj.type === "agent_settled") {
+				this.log(`Agent settled.`);
+				if (this.status === "RUNNING") {
+					this.status = "IDLE";
+					if (this.resolveCommand) {
+						this.resolveCommand("Agent finished task run successfully.");
+						this.resolveCommand = null;
+					}
+				}
+			}
+		} catch (e) {
+			this.log(`Failed to parse stdout line: ${line} - Error: ${e}`);
+		}
+	}
 
-      try {
-        await this.writeRaw({
-          id: cmdId,
-          type: "prompt",
-          message: commandText,
-        });
-      } catch (err) {
-        this.status = "IDLE";
-        reject(err);
-      }
-    });
-  }
+	private writeRaw(obj: object): Promise<void> {
+		return new Promise((resolve, reject) => {
+			if (!this.process?.stdin) {
+				return reject(new Error("Process not running"));
+			}
 
-  public async approveAction(actionId: string): Promise<void> {
-    if (this.status !== "AWAITING_APPROVAL" || !this.pendingAction || this.pendingAction.actionId !== actionId) {
-      throw new Error(`No pending action matching ID: ${actionId} currently awaiting approval`);
-    }
+			const payload = `${JSON.stringify(obj)}\n`;
+			this.process.stdin.write(payload, "utf8", (err) => {
+				if (err) {
+					reject(err);
+				} else {
+					this.log(`[Command Sent] ${JSON.stringify(obj)}`);
+					resolve();
+				}
+			});
+		});
+	}
 
-    this.log(`Approving action ${actionId}`);
-    this.status = "RUNNING";
-    this.pendingAction = null;
-    
-    await this.writeRaw({
-      type: "extension_ui_response",
-      id: actionId,
-      confirmed: true,
-    });
-  }
+	public sendCommand(commandText: string): Promise<string> {
+		if (this.status !== "IDLE" && this.status !== "FINISHED") {
+			throw new Error(
+				`Cannot send command when session status is ${this.status}`,
+			);
+		}
 
-  public async rejectAction(actionId: string, reason?: string): Promise<void> {
-    if (this.status !== "AWAITING_APPROVAL" || !this.pendingAction || this.pendingAction.actionId !== actionId) {
-      throw new Error(`No pending action matching ID: ${actionId} currently awaiting approval`);
-    }
+		this.status = "RUNNING";
+		const cmdId = `cmd_${Date.now()}`;
 
-    this.log(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
-    this.status = "RUNNING";
-    this.pendingAction = null;
+		return new Promise((resolve, reject) => {
+			this.resolveCommand = resolve;
+			this.rejectCommand = reject;
 
-    await this.writeRaw({
-      type: "extension_ui_response",
-      id: actionId,
-      confirmed: false,
-      value: reason, // Convey the feedback text in case the prompt logic consumes it
-    });
-  }
+			this.writeRaw({
+				id: cmdId,
+				type: "prompt",
+				message: commandText,
+			}).catch((err) => {
+				this.status = "IDLE";
+				reject(err);
+			});
+		});
+	}
 
-  public terminate() {
-    this.log("Terminating subprocess...");
-    if (this.process) {
-      this.process.kill("SIGTERM");
-      this.status = "FINISHED";
-      this.process = null;
-    }
-  }
+	public async approveAction(actionId: string): Promise<void> {
+		if (
+			this.status !== "AWAITING_APPROVAL" ||
+			!this.pendingAction ||
+			this.pendingAction.actionId !== actionId
+		) {
+			throw new Error(
+				`No pending action matching ID: ${actionId} currently awaiting approval`,
+			);
+		}
+
+		this.log(`Approving action ${actionId}`);
+		this.status = "RUNNING";
+		this.pendingAction = null;
+
+		await this.writeRaw({
+			type: "extension_ui_response",
+			id: actionId,
+			confirmed: true,
+		});
+	}
+
+	public async rejectAction(actionId: string, reason?: string): Promise<void> {
+		if (
+			this.status !== "AWAITING_APPROVAL" ||
+			!this.pendingAction ||
+			this.pendingAction.actionId !== actionId
+		) {
+			throw new Error(
+				`No pending action matching ID: ${actionId} currently awaiting approval`,
+			);
+		}
+
+		this.log(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
+		this.status = "RUNNING";
+		this.pendingAction = null;
+
+		await this.writeRaw({
+			type: "extension_ui_response",
+			id: actionId,
+			confirmed: false,
+			value: reason, // Convey the feedback text in case the prompt logic consumes it
+		});
+	}
+
+	public terminate() {
+		this.log("Terminating subprocess...");
+		if (this.process) {
+			this.process.kill("SIGTERM");
+			this.status = "FINISHED";
+			this.process = null;
+		}
+	}
 }

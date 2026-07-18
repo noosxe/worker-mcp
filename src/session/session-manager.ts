@@ -1,46 +1,51 @@
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
-import { PiSession, SessionStatus } from "./pi-session.js";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { PiSession } from "./pi-session.js";
 
 interface SessionRegistryEntry {
-  sessionId: string;
-  cwd: string;
-  model?: string;
-  systemPrompt?: string;
+	sessionId: string;
+	cwd: string;
+	model?: string;
+	systemPrompt?: string;
 }
 
 export class SessionManager {
-  private sessions: Map<string, PiSession> = new Map();
-  private registryPath: string;
+	private sessions: Map<string, PiSession> = new Map();
+	private registryPath: string;
 
-  constructor() {
-    const homeDir = os.homedir();
-    this.registryPath = path.join(homeDir, ".config", "worker-mcp", "sessions.json");
-    
-    this.ensureRegistryDirectory();
-    this.deployGatingExtension();
-    this.loadRegistry();
-  }
+	constructor() {
+		const homeDir = os.homedir();
+		this.registryPath = path.join(
+			homeDir,
+			".config",
+			"worker-mcp",
+			"sessions.json",
+		);
 
-  private ensureRegistryDirectory() {
-    const dir = path.dirname(this.registryPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-  }
+		this.ensureRegistryDirectory();
+		this.deployGatingExtension();
+		this.loadRegistry();
+	}
 
-  private deployGatingExtension() {
-    const homeDir = os.homedir();
-    const extensionsDir = path.join(homeDir, ".pi", "agent", "extensions");
-    
-    if (!fs.existsSync(extensionsDir)) {
-      fs.mkdirSync(extensionsDir, { recursive: true });
-    }
+	private ensureRegistryDirectory() {
+		const dir = path.dirname(this.registryPath);
+		if (!fs.existsSync(dir)) {
+			fs.mkdirSync(dir, { recursive: true });
+		}
+	}
 
-    const extensionPath = path.join(extensionsDir, "worker-mcp-gate.ts");
-    
-    const extensionCode = `// Gating extension for worker-mcp
+	private deployGatingExtension() {
+		const homeDir = os.homedir();
+		const extensionsDir = path.join(homeDir, ".pi", "agent", "extensions");
+
+		if (!fs.existsSync(extensionsDir)) {
+			fs.mkdirSync(extensionsDir, { recursive: true });
+		}
+
+		const extensionPath = path.join(extensionsDir, "worker-mcp-gate.ts");
+
+		const extensionCode = `// Gating extension for worker-mcp
 // Intercepts all tool execution requests and prompts the coordinator for approval.
 
 export default function(pi: any) {
@@ -57,93 +62,111 @@ export default function(pi: any) {
 }
 `;
 
-    // Only write if it doesn't exist, to allow users to customize it if they want
-    if (!fs.existsSync(extensionPath)) {
-      fs.writeFileSync(extensionPath, extensionCode, "utf8");
-      console.error(`Deployed supervisor gating extension to: ${extensionPath}`);
-    }
-  }
+		// Only write if it doesn't exist, to allow users to customize it if they want
+		if (!fs.existsSync(extensionPath)) {
+			fs.writeFileSync(extensionPath, extensionCode, "utf8");
+			console.error(
+				`Deployed supervisor gating extension to: ${extensionPath}`,
+			);
+		}
+	}
 
-  private loadRegistry() {
-    if (!fs.existsSync(this.registryPath)) {
-      this.saveRegistry();
-      return;
-    }
+	private loadRegistry() {
+		if (!fs.existsSync(this.registryPath)) {
+			this.saveRegistry();
+			return;
+		}
 
-    try {
-      const content = fs.readFileSync(this.registryPath, "utf8");
-      const entries: SessionRegistryEntry[] = JSON.parse(content);
-      
-      for (const entry of entries) {
-        // Create session in IDLE state (process not running yet)
-        const session = new PiSession(entry.sessionId, entry.cwd, entry.model, entry.systemPrompt);
-        this.sessions.set(entry.sessionId, session);
-      }
-      console.error(`Loaded ${entries.length} sessions from registry.`);
-    } catch (e) {
-      console.error(`Failed to load session registry: ${e}`);
-    }
-  }
+		try {
+			const content = fs.readFileSync(this.registryPath, "utf8");
+			const entries: SessionRegistryEntry[] = JSON.parse(content);
 
-  private saveRegistry() {
-    try {
-      const entries: SessionRegistryEntry[] = Array.from(this.sessions.values()).map(s => ({
-        sessionId: s.sessionId,
-        cwd: s.cwd,
-        model: s.model,
-        systemPrompt: s.systemPrompt
-      }));
-      
-      fs.writeFileSync(this.registryPath, JSON.stringify(entries, null, 2), "utf8");
-    } catch (e) {
-      console.error(`Failed to save session registry: ${e}`);
-    }
-  }
+			for (const entry of entries) {
+				// Create session in IDLE state (process not running yet)
+				const session = new PiSession(
+					entry.sessionId,
+					entry.cwd,
+					entry.model,
+					entry.systemPrompt,
+				);
+				this.sessions.set(entry.sessionId, session);
+			}
+			console.error(`Loaded ${entries.length} sessions from registry.`);
+		} catch (e) {
+			console.error(`Failed to load session registry: ${e}`);
+		}
+	}
 
-  public async createSession(sessionId: string, cwd: string, model?: string, systemPrompt?: string): Promise<PiSession> {
-    if (this.sessions.has(sessionId)) {
-      const existing = this.sessions.get(sessionId)!;
-      if (existing.status !== "FINISHED" && existing.status !== "CRASHED") {
-        throw new Error(`Session ${sessionId} already exists and is active.`);
-      }
-      existing.terminate();
-    }
+	private saveRegistry() {
+		try {
+			const entries: SessionRegistryEntry[] = Array.from(
+				this.sessions.values(),
+			).map((s) => ({
+				sessionId: s.sessionId,
+				cwd: s.cwd,
+				model: s.model,
+				systemPrompt: s.systemPrompt,
+			}));
 
-    const session = new PiSession(sessionId, cwd, model, systemPrompt);
-    this.sessions.set(sessionId, session);
-    this.saveRegistry();
+			fs.writeFileSync(
+				this.registryPath,
+				JSON.stringify(entries, null, 2),
+				"utf8",
+			);
+		} catch (e) {
+			console.error(`Failed to save session registry: ${e}`);
+		}
+	}
 
-    await session.start();
-    return session;
-  }
+	public async createSession(
+		sessionId: string,
+		cwd: string,
+		model?: string,
+		systemPrompt?: string,
+	): Promise<PiSession> {
+		const existing = this.sessions.get(sessionId);
+		if (existing) {
+			if (existing.status !== "FINISHED" && existing.status !== "CRASHED") {
+				throw new Error(`Session ${sessionId} already exists and is active.`);
+			}
+			existing.terminate();
+		}
 
-  public getSession(sessionId: string): PiSession {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
-    return session;
-  }
+		const session = new PiSession(sessionId, cwd, model, systemPrompt);
+		this.sessions.set(sessionId, session);
+		this.saveRegistry();
 
-  public listSessions() {
-    return Array.from(this.sessions.values()).map(s => ({
-      sessionId: s.sessionId,
-      cwd: s.cwd,
-      status: s.status,
-      pendingAction: s.pendingAction
-    }));
-  }
+		await session.start();
+		return session;
+	}
 
-  public terminateSession(sessionId: string) {
-    const session = this.getSession(sessionId);
-    session.terminate();
-    this.sessions.delete(sessionId);
-    this.saveRegistry();
-  }
+	public getSession(sessionId: string): PiSession {
+		const session = this.sessions.get(sessionId);
+		if (!session) {
+			throw new Error(`Session not found: ${sessionId}`);
+		}
+		return session;
+	}
 
-  public terminateAll() {
-    for (const session of this.sessions.values()) {
-      session.terminate();
-    }
-  }
+	public listSessions() {
+		return Array.from(this.sessions.values()).map((s) => ({
+			sessionId: s.sessionId,
+			cwd: s.cwd,
+			status: s.status,
+			pendingAction: s.pendingAction,
+		}));
+	}
+
+	public terminateSession(sessionId: string) {
+		const session = this.getSession(sessionId);
+		session.terminate();
+		this.sessions.delete(sessionId);
+		this.saveRegistry();
+	}
+
+	public terminateAll() {
+		for (const session of this.sessions.values()) {
+			session.terminate();
+		}
+	}
 }

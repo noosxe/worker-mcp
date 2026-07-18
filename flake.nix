@@ -17,7 +17,7 @@
             version = "1.0.0";
             src = ./.;
             fetcherVersion = 4;
-            hash = "sha256-HWna6NKqq4jE2DWkf9GmB5WH6x+eIgU8IjFkffhBWGs=";
+            hash = "sha256-5t/vaqqwpNisuHvm82a8kGQuUcxbzkJFvPkMZ8GL8Pw=";
           };
         in pkgs.stdenv.mkDerivation {
           pname = "worker-mcp";
@@ -61,6 +61,7 @@
             pnpm
             typescript
             typescript-language-server
+            biome
           ];
 
           shellHook = ''
