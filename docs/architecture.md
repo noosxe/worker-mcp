@@ -102,6 +102,12 @@ Sends a prompt or slash command to a running session.
   * `command` (string, required): The text prompt or slash command (e.g., `/model`, `/reload`, or a standard prompt).
 * **Returns**: `{ success: boolean, responseText: string }` (or starts streaming response if supported).
 
+#### `terminate_pi_session`
+Stops a session and removes it, freeing its id for reuse. Use this to clear sessions that have crashed, wedged, or are no longer needed.
+* **Arguments**:
+  * `sessionId` (string, required): The ID of the session to terminate.
+* **Returns**: `{ success: boolean }`
+
 #### `list_pi_sessions`
 Lists all active sessions and their status.
 * **Arguments**: None.

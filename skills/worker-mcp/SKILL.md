@@ -26,10 +26,11 @@ Delegate a task to a local worker if it is:
 You have access to the following MCP tools for worker management:
 1. `spawn_pi_session(sessionId, cwd, model?, systemPrompt?)`: Creates and initializes a supervisor-gated worker process in a target directory.
 2. `send_pi_command(sessionId, command)`: Dispatches a prompt or slash command to the worker.
-3. `list_pi_sessions()`: Lists all active session IDs, directories, and statuses.
-4. `get_pending_actions(sessionId)`: Retrieves details of the action currently waiting for your review.
-5. `approve_action(sessionId, actionId)`: Approves the execution of the paused tool call.
-6. `reject_action(sessionId, actionId, reason?)`: Blocks the execution of the tool call and returns feed-back/instructions to correct the worker.
+3. `terminate_pi_session(sessionId)`: Stops a session and removes it, freeing its id for reuse. Use this to clear sessions that have crashed, wedged, or are no longer needed.
+4. `list_pi_sessions()`: Lists all active session IDs, directories, and statuses.
+5. `get_pending_actions(sessionId)`: Retrieves details of the action currently waiting for your review.
+6. `approve_action(sessionId, actionId)`: Approves the execution of the paused tool call.
+7. `reject_action(sessionId, actionId, reason?)`: Blocks the execution of the tool call and returns feed-back/instructions to correct the worker.
 
 ---
 
@@ -67,4 +68,9 @@ When you detect this state (e.g., when a tool returns `AWAITING_APPROVAL` or log
 When the worker finishes its task and transitions to `Idle` or `Finished`:
 1. Read the complete conversation history using `worker-mcp://sessions/sess_debug_1/history`.
 2. Inspect the workspace directory using standard file tools to verify that the files written are correct and compile successfully.
-3. Terminate or keep the session open for follow-up prompts.
+3. Keep the session open for follow-up prompts, or clean it up with `terminate_pi_session(sessionId: "sess_debug_1")` to free the id for reuse.
+
+### Recovering Dead / Wedged Sessions
+If a session's process has exited (crashed, finished, or lost after a server restart), it may appear stuck — you cannot send commands to it, and you cannot respawn the same id. To recover:
+1. Call `terminate_pi_session(sessionId: "sess_debug_1")` to remove the dead session and free its id.
+2. Call `spawn_pi_session(sessionId: "sess_debug_1", cwd: "...")` to start a fresh session with the same id.
