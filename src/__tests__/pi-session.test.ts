@@ -119,6 +119,56 @@ describe("PiSession - Unit Tests", () => {
 		assert.strictEqual(session.status, "RUNNING");
 	});
 
+	test("prompt acknowledgement does not settle the command", () => {
+		const session = new PiSession("test", "./scratch");
+
+		let resolved = false;
+		session.status = "RUNNING";
+		(session as any).resolveCommand = () => {
+			resolved = true;
+		};
+
+		(session as any).handleStdoutLine(
+			'{"type":"response","command":"prompt","success":true}',
+		);
+
+		// The ack only means pi accepted the prompt; the agent is still working.
+		assert.strictEqual(resolved, false);
+		assert.strictEqual(session.status, "RUNNING");
+
+		(session as any).handleStdoutLine('{"type":"agent_end"}');
+		assert.strictEqual(resolved, true);
+		assert.strictEqual(session.status, "IDLE");
+	});
+
+	test("failed response rejects and clears both command handlers", () => {
+		const session = new PiSession("test", "./scratch");
+
+		let rejection: Error | null = null;
+		session.status = "RUNNING";
+		(session as any).rejectCommand = (err: Error) => {
+			rejection = err;
+		};
+		(session as any).resolveCommand = () => {
+			throw new Error("resolveCommand must not survive a rejection");
+		};
+
+		(session as any).handleStdoutLine(
+			'{"type":"response","command":"prompt","success":false,"error":"Agent is already processing."}',
+		);
+
+		assert.strictEqual(
+			(rejection as unknown as Error)?.message,
+			"Agent is already processing.",
+		);
+		assert.strictEqual(session.status, "IDLE");
+		assert.strictEqual((session as any).resolveCommand, null);
+		assert.strictEqual((session as any).rejectCommand, null);
+
+		// A later agent_end must not fire the stale resolve handler.
+		(session as any).handleStdoutLine('{"type":"agent_end"}');
+	});
+
 	test("approveAction resolves once the agent ends", async () => {
 		const session = new PiSession("test", "./scratch");
 

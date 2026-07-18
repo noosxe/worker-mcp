@@ -167,16 +167,14 @@ export class PiSession {
 					if (this.rejectCommand) {
 						this.rejectCommand(new Error(obj.error));
 						this.rejectCommand = null;
-						this.status = "IDLE";
-					}
-				} else {
-					this.log(`Command successfully executed: ${obj.command}`);
-					// If it was a set_model command, we don't resolve the prompt execution promise
-					if (obj.command !== "set_model" && this.resolveCommand) {
-						this.resolveCommand(JSON.stringify(obj.data || { success: true }));
 						this.resolveCommand = null;
 						this.status = "IDLE";
 					}
+				} else {
+					// Acknowledgement only: pi echoes a `response` as soon as it accepts
+					// the command, long before the agent has done any work. The run is
+					// settled by `agent_end`, so nothing is resolved here.
+					this.log(`Command acknowledged: ${obj.command}`);
 				}
 				return;
 			}
