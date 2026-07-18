@@ -29,6 +29,8 @@ export class PiSession {
 	private stdoutBuffer: string = "";
 	private resolveCommand: ((value: string) => void) | null = null;
 	private rejectCommand: ((reason: Error) => void) | null = null;
+	private currentTurnOutput = "";
+	private abortTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(
 		sessionId: string,
@@ -208,8 +210,35 @@ export class PiSession {
 			}
 
 			// 3. Handle turn lifecycle events
+			if (obj.type === "turn_start") {
+				this.currentTurnOutput = "";
+			}
+
+			if (obj.type === "message_update") {
+				let delta = "";
+				if (
+					obj.assistantMessageEvent &&
+					typeof obj.assistantMessageEvent.delta === "string"
+				) {
+					delta = obj.assistantMessageEvent.delta;
+				} else if (typeof obj.text === "string") {
+					delta = obj.text;
+				}
+
+				if (delta) {
+					this.currentTurnOutput += delta;
+					if (this.detectLoop(this.currentTurnOutput)) {
+						this.handleLoopDetected();
+					}
+				}
+			}
+
 			if (obj.type === "agent_settled") {
 				this.log(`Agent settled.`);
+				if (this.abortTimeout) {
+					clearTimeout(this.abortTimeout);
+					this.abortTimeout = null;
+				}
 				if (this.status === "RUNNING") {
 					this.status = "IDLE";
 					if (this.resolveCommand) {
@@ -329,10 +358,77 @@ export class PiSession {
 
 	public terminate() {
 		this.log("Terminating subprocess...");
+		if (this.abortTimeout) {
+			clearTimeout(this.abortTimeout);
+			this.abortTimeout = null;
+		}
 		if (this.process) {
 			this.process.kill("SIGTERM");
 			this.status = "FINISHED";
 			this.process = null;
+		}
+	}
+
+	private detectLoop(text: string): boolean {
+		const len = text.length;
+		if (len > 16000) return true; // Safeguard limit
+		if (len < 5) return false;
+
+		const maxPatternLen = Math.min(50, Math.floor(len / 2));
+		for (let patternLen = 1; patternLen <= maxPatternLen; patternLen++) {
+			let minRepetitions = 5;
+			if (patternLen === 1) minRepetitions = 20;
+			else if (patternLen === 2) minRepetitions = 10;
+			else if (patternLen === 3) minRepetitions = 8;
+
+			const requiredLen = patternLen * minRepetitions;
+			if (len < requiredLen) continue;
+
+			const pattern = text.slice(-patternLen);
+			let isLoop = true;
+			for (let i = 1; i < minRepetitions; i++) {
+				const start = len - patternLen * (i + 1);
+				const end = len - patternLen * i;
+				const prevPattern = text.slice(start, end);
+				if (prevPattern !== pattern) {
+					isLoop = false;
+					break;
+				}
+			}
+			if (isLoop) return true;
+		}
+		return false;
+	}
+
+	private handleLoopDetected() {
+		this.log("[WARNING] Endless output loop detected! Aborting turn...");
+
+		// Attempt clean abort first
+		const abortId = `abort_${Date.now()}`;
+		this.writeRaw({
+			id: abortId,
+			type: "abort",
+		}).catch((err) => {
+			this.log(`Failed to send abort command: ${err.message}`);
+		});
+
+		// Set a timer to forcefully kill the process if it doesn't settle/abort within 2 seconds
+		if (!this.abortTimeout) {
+			this.abortTimeout = setTimeout(() => {
+				this.log(
+					"[WARNING] Subprocess failed to abort loop. Force terminating...",
+				);
+				this.terminate();
+				this.status = "CRASHED";
+				if (this.rejectCommand) {
+					this.rejectCommand(
+						new Error("Subprocess terminated due to endless output loop."),
+					);
+					this.rejectCommand = null;
+					this.resolveCommand = null;
+				}
+				this.abortTimeout = null;
+			}, 2000);
 		}
 	}
 }

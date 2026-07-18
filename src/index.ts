@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const pkgPath = join(__dirname, "..", "package.json");
 
-let version = "0.1.2";
+let version = "0.1.3";
 try {
 	const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 	version = pkg.version || version;
