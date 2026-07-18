@@ -23,13 +23,13 @@ This project provides a Nix flake to ensure consistent environments and easy ins
 ### 1. Run Directly (Ad-hoc)
 You can run the server on stdio immediately without installing it:
 ```bash
-nix run github:mechsoull/worker-mcp
+nix run github:noosxe/worker-mcp
 ```
 
 ### 2. Install to User Profile
 Install the `worker-mcp` executable globally in your user profile:
 ```bash
-nix profile install github:mechsoull/worker-mcp
+nix profile install github:noosxe/worker-mcp
 ```
 Once installed, run it with:
 ```bash
@@ -46,7 +46,7 @@ inputs = {
   nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
   
   # Add worker-mcp input
-  worker-mcp.url = "github:mechsoull/worker-mcp";
+  worker-mcp.url = "github:noosxe/worker-mcp";
 };
 ```
 
