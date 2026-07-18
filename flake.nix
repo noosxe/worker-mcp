@@ -1,5 +1,5 @@
 {
-  description = "Development environment for worker-mcp";
+  description = "worker-mcp server: supervises local pi coding-agent sessions via MCP";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -10,8 +10,51 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+
+        worker-mcp = let
+          pnpmDeps = pkgs.fetchPnpmDeps {
+            pname = "worker-mcp-deps";
+            version = "1.0.0";
+            src = ./.;
+            fetcherVersion = 4;
+            hash = "sha256-HWna6NKqq4jE2DWkf9GmB5WH6x+eIgU8IjFkffhBWGs=";
+          };
+        in pkgs.stdenv.mkDerivation {
+          pname = "worker-mcp";
+          version = "1.0.0";
+          src = ./.;
+
+          inherit pnpmDeps;
+
+          nativeBuildInputs = [
+            pkgs.nodejs_24
+            pkgs.pnpmConfigHook
+            pkgs.pnpm
+            pkgs.makeWrapper
+          ];
+
+          buildPhase = ''
+            pnpm build
+          '';
+
+          installPhase = ''
+            mkdir -p $out/lib/node_modules/worker-mcp
+            cp -r dist node_modules package.json $out/lib/node_modules/worker-mcp/
+            
+            mkdir -p $out/bin
+            makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/worker-mcp \
+              --add-flags "$out/lib/node_modules/worker-mcp/dist/index.js"
+          '';
+        };
       in
       {
+        packages.default = worker-mcp;
+        packages.worker-mcp = worker-mcp;
+
+        apps.default = flake-utils.lib.mkApp {
+          drv = worker-mcp;
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             nodejs_24
