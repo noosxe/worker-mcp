@@ -88,6 +88,27 @@ describe("PiSession - Unit Tests", () => {
 		]);
 	});
 
+	test("start() rejects when the pi binary cannot be spawned", async () => {
+		const previous = process.env.WORKER_MCP_PI_PATH;
+		process.env.WORKER_MCP_PI_PATH = "worker-mcp-nonexistent-binary-xyz";
+
+		try {
+			const session = new PiSession("test", ".");
+			await assert.rejects(
+				() => session.start(),
+				/Failed to start pi/,
+				"a missing binary must not look like a healthy session",
+			);
+			assert.strictEqual(session.status, "CRASHED");
+		} finally {
+			if (previous === undefined) {
+				delete process.env.WORKER_MCP_PI_PATH;
+			} else {
+				process.env.WORKER_MCP_PI_PATH = previous;
+			}
+		}
+	});
+
 	test("agent_end settles a running command and returns session to IDLE", () => {
 		const session = new PiSession("test", "./scratch");
 
