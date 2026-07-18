@@ -138,3 +138,25 @@ Denies a pending tool call and sends a rejection/error message back to the worke
 
 ### 4.2. Prompts (Templates)
 * **`supervise-task`**: A prompt template for the coordinator agent explaining how to command the worker, monitor the progress, and audit tool execution safely.
+
+---
+
+## 5. Operational Design
+
+### 5.1. Locating the Pi Executable
+* By default, `worker-mcp` attempts to execute the `pi` binary from the system's `PATH`.
+* The binary path can be explicitly overridden by setting the `WORKER_MCP_PI_PATH` environment variable (e.g., `WORKER_MCP_PI_PATH=/usr/local/bin/pi`).
+
+### 5.2. Automatic Gating Extension Injection
+* Upon server startup, `worker-mcp` checks for the presence of the supervisor gating extension file at `~/.pi/agent/extensions/worker-mcp-gate.ts` (creating directories as needed).
+* If missing, `worker-mcp` automatically writes the extension file. This ensures that any `pi` process spawned by the server (or run manually by the user) immediately inherits the interactive confirmation hooks.
+
+### 5.3. Session Registry Persistence
+* To survive restarts of the `worker-mcp` server, session metadata (mapping of `sessionId` -> `cwd`, model overrides, status, and system prompts) is persisted locally in `~/.config/worker-mcp/sessions.json`.
+* When the server boots up, it reads this registry. Active sessions are marked as `Finished` or `Disconnected` until they are explicitly re-connected or spawned.
+
+### 5.4. Subprocess Lifecycle & Stderr Management
+* **Stderr Capture**: Stderr is piped separately from stdout. All stderr output from the `pi` child process is buffered and appended directly to the session's log stream (`worker-mcp://sessions/{sessionId}/logs`) to aid debugging.
+* **Crash Detection**: If the child process exits with a non-zero code without completing, the session state transitions to `Crashed`.
+* **State Transition back to Idle**: When `pi` emits the `agent_settled` event on stdout, `worker-mcp` updates the session status from `Running Task` back to `Idle`, notifying the coordinator that it is ready for the next command.
+
