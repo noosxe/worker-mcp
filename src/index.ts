@@ -348,12 +348,24 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 		const session = sessionManager.getSession(sessionId);
 
 		if (type === "history") {
+			const cleanHistory = session.history
+				.filter((event): event is { type: string; message: unknown } => {
+					return (
+						event !== null &&
+						typeof event === "object" &&
+						"type" in event &&
+						(event as { type: string }).type === "message_end" &&
+						"message" in event
+					);
+				})
+				.map((event) => event.message);
+
 			return {
 				contents: [
 					{
 						uri: request.params.uri,
 						mimeType: "application/json",
-						text: JSON.stringify(session.history, null, 2),
+						text: JSON.stringify(cleanHistory, null, 2),
 					},
 				],
 			};
