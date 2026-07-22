@@ -10,6 +10,8 @@ import {
 	ListToolsRequestSchema,
 	ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { RiskLevel } from "./session/risk-classifier.js";
+import type { RiskPolicy } from "./session/risk-policy.js";
 import { SessionManager } from "./session/session-manager.js";
 
 // Parse version from package.json
@@ -89,6 +91,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 						systemPrompt: {
 							type: "string",
 							description: "Custom system instructions to append/override.",
+						},
+						riskPolicy: {
+							type: "object",
+							description:
+								"Risk-based auto-approval policy. Controls which tool calls are auto-approved based on risk level. If not specified, defaults to auto-approve LOW risk and notify on MEDIUM risk.",
+							properties: {
+								autoApproveUpTo: {
+									type: "number",
+									description:
+										"Actions at or below this risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) are auto-approved silently. Default: 0 (LOW).",
+								},
+								notifyUpTo: {
+									type: "number",
+									description:
+										"Actions at or below this level (but above autoApproveUpTo) are auto-approved with a logged notification. Default: 1 (MEDIUM).",
+								},
+								overrides: {
+									type: "array",
+									description:
+										"Custom overrides for specific command patterns.",
+									items: {
+										type: "object",
+										properties: {
+											pattern: {
+												type: "string",
+												description:
+													"Glob pattern to match against command string or tool name.",
+											},
+											action: {
+												type: "string",
+												enum: ["allow", "block"],
+												description:
+													"Force allow (auto-approve) or block (require approval).",
+											},
+										},
+										required: ["pattern", "action"],
+									},
+								},
+							},
 						},
 					},
 					required: ["sessionId", "cwd"],
@@ -193,6 +234,68 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 					required: ["sessionId", "actionId"],
 				},
 			},
+			{
+				name: "set_risk_policy",
+				description:
+					"Update the risk-based auto-approval policy for a session at runtime. Controls which actions are auto-approved based on risk level.",
+				inputSchema: {
+					type: "object",
+					properties: {
+						sessionId: {
+							type: "string",
+							description: "The target session ID.",
+						},
+						riskPolicy: {
+							type: "object",
+							description: "The new risk policy to apply.",
+							properties: {
+								autoApproveUpTo: {
+									type: "number",
+									description:
+										"Risk level threshold for silent auto-approval (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL).",
+								},
+								notifyUpTo: {
+									type: "number",
+									description:
+										"Risk level threshold for auto-approval with notification.",
+								},
+								overrides: {
+									type: "array",
+									description: "Custom overrides.",
+									items: {
+										type: "object",
+										properties: {
+											pattern: { type: "string" },
+											action: {
+												type: "string",
+												enum: ["allow", "block"],
+											},
+										},
+										required: ["pattern", "action"],
+									},
+								},
+							},
+							required: ["autoApproveUpTo", "notifyUpTo"],
+						},
+					},
+					required: ["sessionId", "riskPolicy"],
+				},
+			},
+			{
+				name: "get_auto_approved_log",
+				description:
+					"Retrieve the audit log of actions that were auto-approved by the risk policy. Useful for reviewing what the worker did without coordinator intervention.",
+				inputSchema: {
+					type: "object",
+					properties: {
+						sessionId: {
+							type: "string",
+							description: "The target session ID.",
+						},
+					},
+					required: ["sessionId"],
+				},
+			},
 		],
 	};
 });
@@ -204,17 +307,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 	try {
 		switch (name) {
 			case "spawn_pi_session": {
-				const { sessionId, cwd, model, systemPrompt } = args as {
+				const { sessionId, cwd, model, systemPrompt, riskPolicy } = args as {
 					sessionId: string;
 					cwd: string;
 					model?: string;
 					systemPrompt?: string;
+					riskPolicy?: RiskPolicy;
 				};
 				const session = await sessionManager.createSession(
 					sessionId,
 					cwd,
 					model,
 					systemPrompt,
+					riskPolicy,
 				);
 				return {
 					content: [
@@ -313,6 +418,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 						{
 							type: "text",
 							text: result,
+						},
+					],
+				};
+			}
+
+			case "set_risk_policy": {
+				const { sessionId, riskPolicy } = args as {
+					sessionId: string;
+					riskPolicy: RiskPolicy;
+				};
+				sessionManager.setRiskPolicy(sessionId, riskPolicy);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Risk policy updated for session ${sessionId}. Auto-approve up to: ${RiskLevel[riskPolicy.autoApproveUpTo] ?? riskPolicy.autoApproveUpTo}, Notify up to: ${RiskLevel[riskPolicy.notifyUpTo] ?? riskPolicy.notifyUpTo}, Overrides: ${riskPolicy.overrides?.length ?? 0}`,
+						},
+					],
+				};
+			}
+
+			case "get_auto_approved_log": {
+				const { sessionId } = args as { sessionId: string };
+				const session = sessionManager.getSession(sessionId);
+				const log = session.getAutoApprovedLog();
+				return {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify(log, null, 2),
 						},
 					],
 				};

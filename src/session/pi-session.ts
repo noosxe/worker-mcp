@@ -1,5 +1,15 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
+import {
+	classifyAction,
+	parseToolFromMessage,
+	type RiskLevel,
+} from "./risk-classifier.js";
+import {
+	DEFAULT_RISK_POLICY,
+	type RiskPolicy,
+	shouldAutoApprove,
+} from "./risk-policy.js";
 
 export type SessionStatus =
 	| "IDLE"
@@ -8,11 +18,23 @@ export type SessionStatus =
 	| "CRASHED"
 	| "FINISHED";
 
+export interface AutoApprovedAction {
+	actionId: string;
+	toolName: string;
+	input: Record<string, unknown>;
+	riskLevel: RiskLevel;
+	riskLabel: string;
+	reason: string;
+	timestamp: string;
+}
+
 export interface PendingAction {
 	actionId: string;
 	tool: string;
 	arguments: unknown;
 	context: string;
+	riskLevel?: RiskLevel;
+	riskLabel?: string;
 }
 
 export class PiSession {
@@ -26,6 +48,9 @@ export class PiSession {
 	public pendingAction: PendingAction | null = null;
 	public logs: string[] = [];
 	public history: unknown[] = [];
+	public riskPolicy: RiskPolicy;
+	public autoApprovedActions: AutoApprovedAction[] = [];
+	private static readonly MAX_AUTO_APPROVED_LOG = 500;
 
 	private process: ChildProcess | null = null;
 	private stdoutBuffer: string = "";
@@ -40,11 +65,13 @@ export class PiSession {
 		cwd: string,
 		model?: string,
 		systemPrompt?: string,
+		riskPolicy?: RiskPolicy,
 	) {
 		this.sessionId = sessionId;
 		this.cwd = cwd;
 		this.model = model;
 		this.systemPrompt = systemPrompt;
+		this.riskPolicy = riskPolicy ?? DEFAULT_RISK_POLICY;
 		this.log(`Session initialized for directory: ${cwd}`);
 	}
 
@@ -238,6 +265,61 @@ export class PiSession {
 			// 2. Handle interactive gating requests from Extensions (e.g. confirm UI dialogs)
 			if (obj.type === "extension_ui_request") {
 				if (obj.method === "confirm") {
+					const toolCall = parseToolFromMessage(obj.title, obj.message);
+
+					if (toolCall) {
+						const classified = classifyAction(toolCall, this.cwd);
+						const decision = shouldAutoApprove(
+							classified,
+							this.riskPolicy,
+							toolCall,
+						);
+
+						if (decision.approved) {
+							// Auto-approve: respond immediately without coordinator intervention
+							const logPrefix = decision.notify
+								? "[AUTO-APPROVED+NOTIFY]"
+								: "[AUTO-APPROVED]";
+							this.log(
+								`${logPrefix} [${classified.riskLabel}] Action ${obj.id}: ${obj.message} (${classified.reason})`,
+							);
+
+							this.autoApprovedActions.push({
+								actionId: obj.id,
+								toolName: toolCall.toolName,
+								input: toolCall.input,
+								riskLevel: classified.riskLevel,
+								riskLabel: classified.riskLabel,
+								reason: classified.reason,
+								timestamp: new Date().toISOString(),
+							});
+							if (
+								this.autoApprovedActions.length >
+								PiSession.MAX_AUTO_APPROVED_LOG
+							) {
+								this.autoApprovedActions.splice(
+									0,
+									this.autoApprovedActions.length -
+										PiSession.MAX_AUTO_APPROVED_LOG,
+								);
+							}
+
+							this.writeRaw({
+								type: "extension_ui_response",
+								id: obj.id,
+								confirmed: true,
+							}).catch((err) => {
+								this.log(
+									`Failed to auto-approve action ${obj.id}: ${err.message}`,
+								);
+							});
+							return;
+						}
+					}
+
+					// Requires coordinator approval (existing flow, enhanced with risk info)
+					const riskInfo = toolCall ? classifyAction(toolCall, this.cwd) : null;
+
 					this.status = "AWAITING_APPROVAL";
 					this.pendingAction = {
 						actionId: obj.id,
@@ -248,13 +330,15 @@ export class PiSession {
 						},
 						context:
 							"A tool execution or high-risk operation requires supervisor consent.",
+						riskLevel: riskInfo?.riskLevel,
+						riskLabel: riskInfo?.riskLabel,
 					};
 					this.log(
-						`[INTERCEPTED] Action ${obj.id} awaiting coordinator approval: ${obj.message}`,
+						`[INTERCEPTED] [${riskInfo?.riskLabel ?? "UNKNOWN"}] Action ${obj.id} awaiting coordinator approval: ${obj.message}`,
 					);
 					if (this.resolveCommand) {
 						this.resolveCommand(
-							`AWAITING_APPROVAL: Intercepted tool call. Action ID: ${obj.id}. Message: ${obj.message}`,
+							`AWAITING_APPROVAL: [${riskInfo?.riskLabel ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${obj.id}. Message: ${obj.message}`,
 						);
 						this.resolveCommand = null;
 						this.rejectCommand = null;
@@ -324,6 +408,10 @@ export class PiSession {
 				}
 			});
 		});
+	}
+
+	public getAutoApprovedLog(): AutoApprovedAction[] {
+		return [...this.autoApprovedActions];
 	}
 
 	/** Whether a pi subprocess is actually attached to this session. */
