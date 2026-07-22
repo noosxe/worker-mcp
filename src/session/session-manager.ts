@@ -2,12 +2,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PiSession } from "./pi-session.js";
+import type { RiskPolicy } from "./risk-policy.js";
 
 interface SessionRegistryEntry {
 	sessionId: string;
 	cwd: string;
 	model?: string;
 	systemPrompt?: string;
+	riskPolicy?: RiskPolicy;
 }
 
 export class SessionManager {
@@ -35,6 +37,8 @@ export class SessionManager {
 		}
 	}
 
+	private static readonly GATE_EXTENSION_VERSION = "2";
+
 	private deployGatingExtension() {
 		const homeDir = os.homedir();
 		const extensionsDir = path.join(homeDir, ".pi", "agent", "extensions");
@@ -45,15 +49,17 @@ export class SessionManager {
 
 		const extensionPath = path.join(extensionsDir, "worker-mcp-gate.ts");
 
-		const extensionCode = `// Gating extension for worker-mcp
+		const extensionCode = `// Gating extension for worker-mcp (v${SessionManager.GATE_EXTENSION_VERSION})
 // Intercepts all tool execution requests and prompts the coordinator for approval.
+// Uses structured message format for server-side risk classification.
 
 export default function(pi: any) {
   pi.on("tool_call", async (event: any, ctx: any) => {
-    // Invoke the confirm dialog which streams RpcExtensionUIRequest over RPC
+    // Send structured data for server-side risk classification
+    const payload = JSON.stringify({ toolName: event.toolName, input: event.input });
     const approved = await ctx.ui.confirm(
-      "Allow Tool Execution",
-      \`Allow the "\${event.toolName}" tool to run with arguments: \${JSON.stringify(event.input)}?\`
+      "worker-mcp-gate",
+      payload
     );
     if (!approved) {
       return { block: true, reason: "Tool execution blocked by the coordinator agent." };
@@ -62,11 +68,23 @@ export default function(pi: any) {
 }
 `;
 
-		// Only write if it doesn't exist, to allow users to customize it if they want
-		if (!fs.existsSync(extensionPath)) {
+		// Write if missing or if version has changed
+		let shouldWrite = !fs.existsSync(extensionPath);
+		if (!shouldWrite) {
+			try {
+				const existing = fs.readFileSync(extensionPath, "utf8");
+				if (!existing.includes(`(v${SessionManager.GATE_EXTENSION_VERSION})`)) {
+					shouldWrite = true;
+				}
+			} catch {
+				shouldWrite = true;
+			}
+		}
+
+		if (shouldWrite) {
 			fs.writeFileSync(extensionPath, extensionCode, "utf8");
 			console.error(
-				`Deployed supervisor gating extension to: ${extensionPath}`,
+				`Deployed supervisor gating extension v${SessionManager.GATE_EXTENSION_VERSION} to: ${extensionPath}`,
 			);
 		}
 	}
@@ -88,6 +106,7 @@ export default function(pi: any) {
 					entry.cwd,
 					entry.model,
 					entry.systemPrompt,
+					entry.riskPolicy,
 				);
 				session.status = "FINISHED";
 				this.sessions.set(entry.sessionId, session);
@@ -107,6 +126,7 @@ export default function(pi: any) {
 				cwd: s.cwd,
 				model: s.model,
 				systemPrompt: s.systemPrompt,
+				riskPolicy: s.riskPolicy,
 			}));
 
 			fs.writeFileSync(
@@ -124,6 +144,7 @@ export default function(pi: any) {
 		cwd: string,
 		model?: string,
 		systemPrompt?: string,
+		riskPolicy?: RiskPolicy,
 	): Promise<PiSession> {
 		const existing = this.sessions.get(sessionId);
 		if (existing) {
@@ -139,7 +160,13 @@ export default function(pi: any) {
 			existing.terminate();
 		}
 
-		const session = new PiSession(sessionId, cwd, model, systemPrompt);
+		const session = new PiSession(
+			sessionId,
+			cwd,
+			model,
+			systemPrompt,
+			riskPolicy,
+		);
 		this.sessions.set(sessionId, session);
 		this.saveRegistry();
 
@@ -164,6 +191,12 @@ export default function(pi: any) {
 			throw new Error(`Session not found: ${sessionId}`);
 		}
 		return session;
+	}
+
+	public setRiskPolicy(sessionId: string, riskPolicy: RiskPolicy) {
+		const session = this.getSession(sessionId);
+		session.riskPolicy = riskPolicy;
+		this.saveRegistry();
 	}
 
 	public listSessions() {

@@ -2,6 +2,7 @@
 import assert from "node:assert";
 import { describe, test } from "node:test";
 import { PiSession } from "../session/pi-session.js";
+import { RiskLevel } from "../session/risk-classifier.js";
 
 describe("PiSession - Unit Tests", () => {
 	test("detectLoop - Normal text should not trigger loop detection", () => {
@@ -332,5 +333,174 @@ describe("PiSession - Unit Tests", () => {
 		assert.strictEqual(resolvedWith, "Process terminated");
 		assert.strictEqual((session as any).resolveCommand, null);
 		assert.strictEqual((session as any).rejectCommand, null);
+	});
+
+	test("auto-approves LOW risk action", async () => {
+		const session = new PiSession("test", "./scratch");
+		let writeRawCalled = false;
+		let writeRawObj: any = null;
+		(session as any).writeRaw = async (obj: any) => {
+			writeRawCalled = true;
+			writeRawObj = obj;
+		};
+
+		// extension_ui_request for `ls -la`
+		const obj = {
+			type: "extension_ui_request",
+			method: "confirm",
+			id: "a1",
+			title: "worker-mcp-gate",
+			message: JSON.stringify({
+				toolName: "bash",
+				input: { command: "ls -la" },
+			}),
+		};
+
+		(session as any).handleStdoutLine(JSON.stringify(obj));
+
+		assert.strictEqual(writeRawCalled, true);
+		assert.strictEqual(writeRawObj.type, "extension_ui_response");
+		assert.strictEqual(writeRawObj.confirmed, true);
+		assert.strictEqual(session.status, "IDLE");
+		assert.strictEqual(session.pendingAction, null);
+	});
+
+	test("auto-approves MEDIUM risk action with notification", async () => {
+		const session = new PiSession("test", "./scratch");
+		let writeRawCalled = false;
+		(session as any).writeRaw = async (_obj: any) => {
+			writeRawCalled = true;
+		};
+
+		// extension_ui_request for `pnpm install`
+		const obj = {
+			type: "extension_ui_request",
+			method: "confirm",
+			id: "a2",
+			title: "worker-mcp-gate",
+			message: JSON.stringify({
+				toolName: "bash",
+				input: { command: "pnpm install" },
+			}),
+		};
+
+		(session as any).handleStdoutLine(JSON.stringify(obj));
+
+		assert.strictEqual(writeRawCalled, true);
+		const log = session.getAutoApprovedLog();
+		assert.strictEqual(log.length, 1);
+		assert.strictEqual(log[0].actionId, "a2");
+		assert.strictEqual(log[0].riskLevel, RiskLevel.MEDIUM);
+	});
+
+	test("HIGH risk requires approval", async () => {
+		const session = new PiSession("test", "./scratch");
+		let writeRawCalled = false;
+		(session as any).writeRaw = async (_obj: any) => {
+			writeRawCalled = true;
+		};
+
+		// extension_ui_request for `rm file.txt`
+		const obj = {
+			type: "extension_ui_request",
+			method: "confirm",
+			id: "a3",
+			title: "worker-mcp-gate",
+			message: JSON.stringify({
+				toolName: "bash",
+				input: { command: "rm file.txt" },
+			}),
+		};
+
+		(session as any).handleStdoutLine(JSON.stringify(obj));
+
+		assert.strictEqual(writeRawCalled, false);
+		assert.strictEqual(session.status, "AWAITING_APPROVAL");
+		assert.notStrictEqual(session.pendingAction, null);
+		assert.strictEqual(session.pendingAction?.riskLevel, RiskLevel.HIGH);
+	});
+
+	test("Custom risk policy handles overrides", async () => {
+		const customPolicy = {
+			autoApproveUpTo: RiskLevel.MEDIUM,
+			notifyUpTo: RiskLevel.MEDIUM,
+			overrides: [],
+		};
+		const session = new PiSession(
+			"test",
+			"./scratch",
+			undefined,
+			undefined,
+			customPolicy,
+		);
+		let writeRawCalled = false;
+		(session as any).writeRaw = async (_obj: any) => {
+			writeRawCalled = true;
+		};
+
+		const obj = {
+			type: "extension_ui_request",
+			method: "confirm",
+			id: "a4",
+			title: "worker-mcp-gate",
+			message: JSON.stringify({
+				toolName: "bash",
+				input: { command: "pnpm install" },
+			}), // MEDIUM risk
+		};
+
+		(session as any).handleStdoutLine(JSON.stringify(obj));
+
+		assert.strictEqual(writeRawCalled, true);
+		const logs = session.logs.join("\n");
+		assert.ok(
+			logs.includes("[AUTO-APPROVED]") &&
+				!logs.includes("[AUTO-APPROVED+NOTIFY]"),
+		);
+	});
+
+	test("Auto-approved log is populated and bounded", async () => {
+		const session = new PiSession("test", "./scratch");
+		(session as any).writeRaw = async (_obj: any) => {};
+
+		for (let i = 0; i < 505; i++) {
+			const obj = {
+				type: "extension_ui_request",
+				method: "confirm",
+				id: `a${i}`,
+				title: "worker-mcp-gate",
+				message: JSON.stringify({ toolName: "bash", input: { command: "ls" } }),
+			};
+			(session as any).handleStdoutLine(JSON.stringify(obj));
+		}
+
+		const log = session.getAutoApprovedLog();
+		assert.strictEqual(log.length, 500);
+		assert.strictEqual(log[0].actionId, "a5");
+		assert.strictEqual(log[499].actionId, "a504");
+	});
+
+	test("Old format backward compatibility", async () => {
+		const session = new PiSession("test", "./scratch");
+		let writeRawCalled = false;
+		(session as any).writeRaw = async (_obj: any) => {
+			writeRawCalled = true;
+		};
+
+		// Old format doesn't parse via parseToolFromMessage
+		const obj = {
+			type: "extension_ui_request",
+			method: "confirm",
+			id: "a_old",
+			title: "Allow Tool Execution",
+			message: 'Allow the "bash" tool to run with arguments: {}',
+		};
+
+		(session as any).handleStdoutLine(JSON.stringify(obj));
+
+		assert.strictEqual(writeRawCalled, false);
+		assert.strictEqual(session.status, "AWAITING_APPROVAL");
+		assert.notStrictEqual(session.pendingAction, null);
+		assert.strictEqual(session.pendingAction?.riskLevel, undefined);
 	});
 });

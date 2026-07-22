@@ -42,7 +42,22 @@ graph TD
 
 ## 2. Interactive Supervision & Approval Flow
 
-Because the local `pi` agent is less intelligent, we must gate high-risk actions (like bash commands or file modifications). The following diagram describes how `worker-mcp` intercepts a tool execution to ask the coordinator for approval:
+Because the local `pi` agent is less intelligent, we must gate high-risk actions (like bash commands or file modifications). `worker-mcp` uses a **smart gating system with risk levels** to automatically approve low-risk actions while requiring explicit coordinator approval for high-risk operations.
+
+### 2.1. Risk Levels
+
+| Level | Value | Examples | Default Behavior |
+|---|---|---|---|
+| **LOW** | `0` | `ls`, `cat`, `grep`, `git status`, `pwd` | Auto-approve silently |
+| **MEDIUM** | `1` | `pnpm install`, file writes in `src/`, `git add` | Auto-approve with notification |
+| **HIGH** | `2` | `rm`, `curl`, config file writes, `git commit` | Require explicit approval |
+| **CRITICAL** | `3` | `sudo`, `chmod`, writes outside workspace, `git push --force` | Block by default, require approval |
+
+Risk policy is configurable per session via `spawn_pi_session` (at creation) or `set_risk_policy` (at runtime). The default policy auto-approves LOW silently, auto-approves MEDIUM with notification, and requires approval for HIGH and CRITICAL.
+
+### 2.2. Approval Flow
+
+The following diagram describes how `worker-mcp` intercepts a tool execution, classifies its risk, and either auto-approves or asks the coordinator:
 
 ```mermaid
 sequenceDiagram
@@ -93,6 +108,10 @@ Creates and initializes a new `pi` agent session.
   * `cwd` (string, required): The directory path where the `pi` agent will execute.
   * `model` (string, optional): LLM model name to override the default (e.g., `ollama/qwen2.5-coder:7b`, `anthropic/claude-3-5-sonnet`).
   * `systemPrompt` (string, optional): Custom system instructions to append or override.
+  * `riskPolicy` (object, optional): Risk-based auto-approval policy. Controls which tool calls are auto-approved based on risk level.
+    * `autoApproveUpTo` (number): Actions at or below this risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) are auto-approved silently. Default: `0` (LOW).
+    * `notifyUpTo` (number): Actions at or below this level (but above `autoApproveUpTo`) are auto-approved with a logged notification. Default: `1` (MEDIUM).
+    * `overrides` (array, optional): Custom overrides for specific command patterns. Each entry has `pattern` (glob string) and `action` (`"allow"` or `"block"`).
 * **Returns**: `{ success: boolean, status: string }`
 
 #### `send_pi_command`
@@ -134,6 +153,19 @@ Denies a pending tool call and sends a rejection/error message back to the worke
   * `reason` (string, optional): The reason for rejection (which will be fed back to the LLM to help it correct course).
 * **Returns**: `{ success: boolean }`
 
+#### `set_risk_policy`
+Updates the risk-based auto-approval policy for a session at runtime.
+* **Arguments**:
+  * `sessionId` (string, required): The target session ID.
+  * `riskPolicy` (object, required): The new risk policy (same schema as `spawn_pi_session.riskPolicy`).
+* **Returns**: Summary of the applied policy.
+
+#### `get_auto_approved_log`
+Retrieves the audit log of actions that were auto-approved by the risk policy.
+* **Arguments**:
+  * `sessionId` (string, required): The target session ID.
+* **Returns**: An array of auto-approved action records, each containing `actionId`, `toolName`, `input`, `riskLevel`, `riskLabel`, `reason`, and `timestamp`.
+
 ---
 
 ## 4. MCP Resources & Prompt Templates
@@ -155,7 +187,8 @@ Denies a pending tool call and sends a rejection/error message back to the worke
 
 ### 5.2. Automatic Gating Extension Injection
 * Upon server startup, `worker-mcp` checks for the presence of the supervisor gating extension file at `~/.pi/agent/extensions/worker-mcp-gate.ts` (creating directories as needed).
-* If missing, `worker-mcp` automatically writes the extension file. This ensures that any `pi` process spawned by the server (or run manually by the user) immediately inherits the interactive confirmation hooks.
+* If missing **or outdated** (version mismatch), `worker-mcp` automatically writes the extension file. This ensures that any `pi` process spawned by the server inherits the interactive confirmation hooks with the latest structured message format.
+* The extension is versioned (currently v2). v2 sends structured JSON payloads (`{ toolName, input }`) instead of human-readable text, enabling server-side risk classification.
 
 ### 5.3. Session Registry Persistence
 * To survive restarts of the `worker-mcp` server, session metadata (mapping of `sessionId` -> `cwd`, model overrides, status, and system prompts) is persisted locally in `~/.config/worker-mcp/sessions.json`.
