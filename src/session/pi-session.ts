@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import {
 	classifyAction,
 	parseToolFromMessage,
@@ -580,7 +581,10 @@ export class PiSession {
 
 	private detectLoop(text: string): boolean {
 		const len = text.length;
-		if (len > 16000) return true; // Safeguard limit
+		const maxOutputLimit = process.env.WORKER_MCP_MAX_OUTPUT_CHARS
+			? Number.parseInt(process.env.WORKER_MCP_MAX_OUTPUT_CHARS, 10)
+			: 64000;
+		if (len > maxOutputLimit) return true; // Safeguard limit
 		if (len < 5) return false;
 
 		const maxPatternLen = Math.min(50, Math.floor(len / 2));
@@ -652,13 +656,34 @@ ${text}
 
 Your summary should be concise, focusing only on the final results, key decisions, files changed, and errors encountered. Avoid duplicating the agent's step-by-step thinking process.`;
 
+		// Write prompt to a temporary file inside the session directory to avoid E2BIG / command length issues
+		const tempFilename = `.summarize-${this.sessionId}-${Date.now()}.md`;
+		const tempFilePath = path.join(this.cwd, tempFilename);
+
+		try {
+			fs.writeFileSync(tempFilePath, promptText, "utf8");
+		} catch (err: any) {
+			this.log(`Failed to write temp summarization file: ${err.message}`);
+			throw err;
+		}
+
 		const args = ["--no-session"];
 		if (this.model) {
 			args.push("--model", this.model);
 		}
-		args.push("-p", promptText);
+		args.push("-p", `@${tempFilename}`);
 
-		this.log(`Summarizing response using model: ${this.model || "default"}`);
+		this.log(`Summarizing response using model: ${this.model || "default"} via temp file ${tempFilename}`);
+
+		const cleanUpTempFile = () => {
+			try {
+				if (fs.existsSync(tempFilePath)) {
+					fs.unlinkSync(tempFilePath);
+				}
+			} catch (err: any) {
+				this.log(`Failed to clean up temp file ${tempFilename}: ${err.message}`);
+			}
+		};
 
 		return new Promise<string>((resolve, reject) => {
 			const child = spawn(piPath, args, {
@@ -669,11 +694,15 @@ Your summary should be concise, focusing only on the final results, key decision
 			let output = "";
 			let errorOutput = "";
 
+			const timeoutMs = process.env.WORKER_MCP_SUMMARIZE_TIMEOUT
+				? Number.parseInt(process.env.WORKER_MCP_SUMMARIZE_TIMEOUT, 10)
+				: 60000;
+
 			const timeout = setTimeout(() => {
 				this.log("Summarization process timed out. Killing process.");
 				child.kill("SIGKILL");
 				reject(new Error("Summarization timed out"));
-			}, 10000);
+			}, timeoutMs);
 
 			child.stdout?.on("data", (chunk: Buffer) => {
 				output += chunk.toString("utf8");
@@ -685,6 +714,7 @@ Your summary should be concise, focusing only on the final results, key decision
 
 			child.on("close", (code) => {
 				clearTimeout(timeout);
+				cleanUpTempFile();
 				if (code === 0) {
 					resolve(output.trim());
 				} else {
@@ -695,8 +725,12 @@ Your summary should be concise, focusing only on the final results, key decision
 
 			child.on("error", (err) => {
 				clearTimeout(timeout);
+				cleanUpTempFile();
 				reject(err);
 			});
+		}).catch((err) => {
+			cleanUpTempFile();
+			throw err;
 		});
 	}
 }

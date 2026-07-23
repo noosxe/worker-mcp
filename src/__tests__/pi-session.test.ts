@@ -43,13 +43,17 @@ describe("PiSession - Unit Tests", () => {
 		const session = new PiSession("test", "./scratch");
 		const detectLoop = (session as any).detectLoop.bind(session);
 
+		const limit = process.env.WORKER_MCP_MAX_OUTPUT_CHARS
+			? Number.parseInt(process.env.WORKER_MCP_MAX_OUTPUT_CHARS, 10)
+			: 64000;
+
 		let longNonRepeating = "";
-		for (let i = 0; i < 3000; i++) {
-			longNonRepeating += `word${i} `;
+		for (let i = 0; i < Math.ceil(limit / 5) + 1000; i++) {
+			longNonRepeating += `w${i} `;
 		}
 
-		assert.strictEqual(detectLoop(longNonRepeating.substring(0, 15999)), false);
-		assert.strictEqual(detectLoop(longNonRepeating.substring(0, 16001)), true);
+		assert.strictEqual(detectLoop(longNonRepeating.substring(0, limit - 1)), false);
+		assert.strictEqual(detectLoop(longNonRepeating.substring(0, limit + 1)), true);
 	});
 
 	test("Buffer splitting - splits stdout chunks by newline", () => {
