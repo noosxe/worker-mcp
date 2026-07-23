@@ -150,6 +150,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 							description:
 								"The text prompt or slash command (e.g. '/model', '/reload', or 'Implement main function').",
 						},
+						summarize: {
+							type: "boolean",
+							description:
+								"If true, returns a concise summary of the worker's response instead of the raw output/status.",
+						},
 					},
 					required: ["sessionId", "command"],
 				},
@@ -206,6 +211,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 							type: "string",
 							description: "The ID of the intercepted tool call/action.",
 						},
+						summarize: {
+							type: "boolean",
+							description:
+								"If true, returns a concise summary of the worker's response once it completes.",
+						},
 					},
 					required: ["sessionId", "actionId"],
 				},
@@ -229,6 +239,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 							type: "string",
 							description:
 								"Optional feedback or reason for rejection to guide the agent.",
+						},
+						summarize: {
+							type: "boolean",
+							description:
+								"If true, returns a concise summary of the worker's response once it completes.",
 						},
 					},
 					required: ["sessionId", "actionId"],
@@ -332,14 +347,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 			}
 
 			case "send_pi_command": {
-				const { sessionId, command } = args as {
+				const { sessionId, command, summarize } = args as {
 					sessionId: string;
 					command: string;
+					summarize?: boolean;
 				};
 				const session = sessionManager.getSession(sessionId);
 
 				// This initiates command run in background, resolving when command completes or settles
-				const result = await session.sendCommand(command);
+				const result = await session.sendCommand(command, summarize);
 				return {
 					content: [
 						{
@@ -389,12 +405,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 			}
 
 			case "approve_action": {
-				const { sessionId, actionId } = args as {
+				const { sessionId, actionId, summarize } = args as {
 					sessionId: string;
 					actionId: string;
+					summarize?: boolean;
 				};
 				const session = sessionManager.getSession(sessionId);
-				const result = await session.approveAction(actionId);
+				const result = await session.approveAction(actionId, summarize);
 				return {
 					content: [
 						{
@@ -406,13 +423,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 			}
 
 			case "reject_action": {
-				const { sessionId, actionId, reason } = args as {
+				const { sessionId, actionId, reason, summarize } = args as {
 					sessionId: string;
 					actionId: string;
 					reason?: string;
+					summarize?: boolean;
 				};
 				const session = sessionManager.getSession(sessionId);
-				const result = await session.rejectAction(actionId, reason);
+				const result = await session.rejectAction(actionId, reason, summarize);
 				return {
 					content: [
 						{

@@ -503,4 +503,70 @@ describe("PiSession - Unit Tests", () => {
 		assert.notStrictEqual(session.pendingAction, null);
 		assert.strictEqual(session.pendingAction?.riskLevel, undefined);
 	});
+
+	test("summarizes assistant output when summarize is true", async () => {
+		const session = new PiSession("test", "./scratch");
+
+		let resolved: string | null = null;
+		session.status = "RUNNING";
+		(session as any).summarize = true;
+		(session as any).summarizeText = async (text: string) => `Summary of: ${text}`;
+		(session as any).resolveCommand = (value: string) => {
+			resolved = value;
+		};
+
+		(session as any).handleStdoutLine(
+			JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "text",
+							text: "This is a detailed response about the task.",
+						},
+					],
+				},
+			}),
+		);
+
+		(session as any).handleStdoutLine('{"type":"agent_end"}');
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		assert.strictEqual(session.status, "IDLE");
+		assert.strictEqual(resolved, "Summary of: This is a detailed response about the task.");
+	});
+
+	test("returns raw assistant output when summarize is false", () => {
+		const session = new PiSession("test", "./scratch");
+
+		let resolved: string | null = null;
+		session.status = "RUNNING";
+		(session as any).summarize = false;
+		(session as any).resolveCommand = (value: string) => {
+			resolved = value;
+		};
+
+		(session as any).handleStdoutLine(
+			JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [
+						{
+							type: "text",
+							text: "This is a detailed response about the task.",
+						},
+					],
+				},
+			}),
+		);
+
+		(session as any).handleStdoutLine('{"type":"agent_end"}');
+
+		assert.strictEqual(session.status, "IDLE");
+		assert.strictEqual(resolved, "This is a detailed response about the task.");
+	});
 });
+

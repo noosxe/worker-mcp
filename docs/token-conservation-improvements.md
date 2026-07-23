@@ -4,16 +4,19 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 
 ---
 
-## 1. Summarized Responses Instead of Full Transcripts
+## 1. Summarized Responses Instead of Full Transcripts (Done)
+
+**Status**: ✅ Implemented
 
 **Problem**: `send_pi_command` currently returns `responseText` containing the full worker output. The coordinator must read and process the entire stream of consciousness from the worker, including irrelevant intermediate reasoning steps.
 
 **Proposal**: Introduce a response summarization layer — either at the worker level or within the `worker-mcp` server — that distills worker output into a concise summary before returning it to the coordinator. The coordinator needs the *outcome* and key *decisions*, not every line of thought.
 
-**Implementation Ideas**:
-- Add a `summarize` option to `send_pi_command` that triggers post-processing of the response.
-- Use the local LLM itself to produce a summary before forwarding.
-- Alternatively, implement rule-based extraction (files changed, commands run, errors encountered).
+**Implementation Details**:
+- **Output Extraction**: `worker-mcp` now extracts the clean assistant message text (excluding the thinking and reasoning steps) from completed turns.
+- **Optional Summarization**: Added an optional `summarize` boolean parameter to `send_pi_command`, `approve_action`, and `reject_action`.
+- **LLM-Based Summarization**: When `summarize` is enabled, the server invokes the local LLM in a background process using `pi --no-session` to produce a concise summary of the outcome, decisions, and files changed.
+- **Robust Fallback**: Includes a 10-second timeout that automatically falls back to raw extracted text if the local model server is busy or fails to respond.
 
 ---
 
@@ -97,7 +100,9 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 
 ---
 
-## 6. Smart Gating with Risk Levels
+## 6. Smart Gating with Risk Levels (Done)
+
+**Status**: ✅ Implemented
 
 **Problem**: The current gating model is binary — an action is either gated or not. This means the coordinator sees the same level of detail for a harmless `ls` command as for a destructive `rm -rf`. Processing low-risk approvals wastes coordinator tokens.
 
@@ -110,11 +115,11 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 | **High** | `rm`, network commands, config file changes | Full detail, require explicit approval |
 | **Critical** | `sudo`, writes outside workspace | Block by default, require approval + justification |
 
-**Implementation Ideas**:
-- Define a risk classification engine with configurable rules.
-- Integrate risk levels into the gating extension.
-- Allow the coordinator to adjust risk thresholds per session.
-- Log all auto-approved actions for post-hoc audit.
+**Implementation Details**:
+- **Risk Classification Engine**: Implemented to classify intercepted actions into LOW, MEDIUM, HIGH, and CRITICAL levels.
+- **Configurable Policies**: Added `riskPolicy` configuration in `spawn_pi_session` to specify `autoApproveUpTo`, `notifyUpTo`, and rule overrides.
+- **Dynamic Adjustment**: Added `set_risk_policy` tool to modify the risk policy of active sessions at runtime.
+- **Audit Logging**: Added `get_auto_approved_log` tool to retrieve a record of auto-approved actions.
 
 ---
 
@@ -122,10 +127,10 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 
 | Improvement | Token Savings | Implementation Effort | Priority |
 |---|---|---|---|
+| Smart Gating with Risk Levels | 🟢 High | 🟡 Medium | ✅ **Done** |
+| Summarized Responses | 🟡 Medium | 🟡 Medium | ✅ **Done** |
 | Batch Approval / Auto-Approval Rules | 🟢 High | 🟡 Medium | **P0** |
-| Smart Gating with Risk Levels | 🟢 High | 🟡 Medium | **P0** |
 | Structured Result Schemas | 🟢 High | 🟡 Medium | **P1** |
-| Summarized Responses | 🟡 Medium | 🟡 Medium | **P1** |
 | Task Templates / Recipes | 🟡 Medium | 🔴 High | **P2** |
 | Progress Checkpoints / Diffs | 🟡 Medium | 🔴 High | **P2** |
 

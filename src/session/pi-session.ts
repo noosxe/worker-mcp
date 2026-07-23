@@ -59,6 +59,8 @@ export class PiSession {
 	private currentTurnOutput = "";
 	private abortTimeout: ReturnType<typeof setTimeout> | null = null;
 	private terminating = false;
+	private summarize = false;
+	private historyStartIndex = 0;
 
 	constructor(
 		sessionId: string,
@@ -382,8 +384,47 @@ export class PiSession {
 				if (this.status === "RUNNING") {
 					this.status = "IDLE";
 					if (this.resolveCommand) {
-						this.resolveCommand("Agent finished task run successfully.");
+						const resolve = this.resolveCommand;
 						this.resolveCommand = null;
+						this.rejectCommand = null;
+
+						const runHistory = this.history.slice(this.historyStartIndex);
+						const assistantTextParts: string[] = [];
+
+						for (const event of runHistory) {
+							if (
+								event &&
+								typeof event === "object" &&
+								"type" in event &&
+								(event as any).type === "message_end" &&
+								"message" in event
+							) {
+								const msg = (event as any).message;
+								if (msg && msg.role === "assistant" && Array.isArray(msg.content)) {
+									const text = msg.content
+										.filter((block: any) => block && block.type === "text")
+										.map((block: any) => block.text)
+										.join("\n");
+									if (text) {
+										assistantTextParts.push(text);
+									}
+								}
+							}
+						}
+
+						const fullOutput = assistantTextParts.join("\n\n");
+						const fallbackResult = fullOutput || "Agent finished task run successfully.";
+
+						if (this.summarize && fullOutput) {
+							this.summarizeText(fullOutput)
+								.then((summary) => resolve(summary))
+								.catch((err) => {
+									this.log(`Summarization error, falling back to full output: ${err}`);
+									resolve(fallbackResult);
+								});
+						} else {
+							resolve(fallbackResult);
+						}
 					}
 				}
 			}
@@ -419,7 +460,7 @@ export class PiSession {
 		return this.process !== null;
 	}
 
-	public sendCommand(commandText: string): Promise<string> {
+	public sendCommand(commandText: string, summarize?: boolean): Promise<string> {
 		// Reported before the status check so a session restored from the
 		// registry says what to do instead of failing with "Process not running".
 		if (!this.isAlive()) {
@@ -435,6 +476,8 @@ export class PiSession {
 		}
 
 		this.status = "RUNNING";
+		this.summarize = summarize ?? false;
+		this.historyStartIndex = this.history.length;
 		const cmdId = `cmd_${Date.now()}`;
 
 		return new Promise((resolve, reject) => {
@@ -453,7 +496,7 @@ export class PiSession {
 		});
 	}
 
-	public approveAction(actionId: string): Promise<string> {
+	public approveAction(actionId: string, summarize?: boolean): Promise<string> {
 		if (
 			this.status !== "AWAITING_APPROVAL" ||
 			!this.pendingAction ||
@@ -467,6 +510,9 @@ export class PiSession {
 		this.log(`Approving action ${actionId}`);
 		this.status = "RUNNING";
 		this.pendingAction = null;
+		if (summarize !== undefined) {
+			this.summarize = summarize;
+		}
 
 		return new Promise((resolve, reject) => {
 			this.resolveCommand = resolve;
@@ -483,7 +529,7 @@ export class PiSession {
 		});
 	}
 
-	public rejectAction(actionId: string, reason?: string): Promise<string> {
+	public rejectAction(actionId: string, reason?: string, summarize?: boolean): Promise<string> {
 		if (
 			this.status !== "AWAITING_APPROVAL" ||
 			!this.pendingAction ||
@@ -497,6 +543,9 @@ export class PiSession {
 		this.log(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
 		this.status = "RUNNING";
 		this.pendingAction = null;
+		if (summarize !== undefined) {
+			this.summarize = summarize;
+		}
 
 		return new Promise((resolve, reject) => {
 			this.resolveCommand = resolve;
@@ -590,5 +639,64 @@ export class PiSession {
 				this.abortTimeout = null;
 			}, 2000);
 		}
+	}
+
+	private async summarizeText(text: string): Promise<string> {
+		const piPath = process.env.WORKER_MCP_PI_PATH || "pi";
+		const promptText = `You are a supervisor summarizing the work done by a local agent.
+Please provide a concise summary of the outcome, decisions, and any changes made based on the following transcript:
+
+--- TRANSCRIPT START ---
+${text}
+--- TRANSCRIPT END ---
+
+Your summary should be concise, focusing only on the final results, key decisions, files changed, and errors encountered. Avoid duplicating the agent's step-by-step thinking process.`;
+
+		const args = ["--no-session"];
+		if (this.model) {
+			args.push("--model", this.model);
+		}
+		args.push("-p", promptText);
+
+		this.log(`Summarizing response using model: ${this.model || "default"}`);
+
+		return new Promise<string>((resolve, reject) => {
+			const child = spawn(piPath, args, {
+				cwd: this.cwd,
+				env: { ...process.env },
+			});
+
+			let output = "";
+			let errorOutput = "";
+
+			const timeout = setTimeout(() => {
+				this.log("Summarization process timed out. Killing process.");
+				child.kill("SIGKILL");
+				reject(new Error("Summarization timed out"));
+			}, 10000);
+
+			child.stdout?.on("data", (chunk: Buffer) => {
+				output += chunk.toString("utf8");
+			});
+
+			child.stderr?.on("data", (chunk: Buffer) => {
+				errorOutput += chunk.toString("utf8");
+			});
+
+			child.on("close", (code) => {
+				clearTimeout(timeout);
+				if (code === 0) {
+					resolve(output.trim());
+				} else {
+					this.log(`Summarization failed with code ${code}. Stderr: ${errorOutput}`);
+					reject(new Error(`Summarization failed: ${errorOutput || `exit code ${code}`}`));
+				}
+			});
+
+			child.on("error", (err) => {
+				clearTimeout(timeout);
+				reject(err);
+			});
+		});
 	}
 }
