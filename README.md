@@ -12,7 +12,7 @@ Instead of rolling a custom local LLM tool loop, `worker-mcp` delegates coding, 
 - **MCP Tool Integration**: Standardized tools to spawn worker sessions, dispatch prompts, list active runners, and approve/deny pending commands.
 - **Log and History Resources**: Message history and subprocess logs (including `stderr` feeds) are exposed as standard MCP resources.
 - **Session Registry Persistence**: Session configurations and directory bindings survive server restarts via state files in `~/.config/worker-mcp/sessions.json`.
-- **Automatic Extension Deployment**: Injects its supervisor gate extension directly into `~/.pi/agent/extensions/` on startup.
+- **Automatic Extension Deployment**: Deploys its supervisor gate extension directly into `~/.config/worker-mcp/` and loads it explicitly when spawning the worker agent (leaving standalone `pi` agent runs unaffected).
 
 ---
 

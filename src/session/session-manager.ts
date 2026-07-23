@@ -40,14 +40,13 @@ export class SessionManager {
 	private static readonly GATE_EXTENSION_VERSION = "2";
 
 	private deployGatingExtension() {
-		const homeDir = os.homedir();
-		const extensionsDir = path.join(homeDir, ".pi", "agent", "extensions");
+		const dir = path.dirname(this.registryPath);
 
-		if (!fs.existsSync(extensionsDir)) {
-			fs.mkdirSync(extensionsDir, { recursive: true });
+		if (!fs.existsSync(dir)) {
+			fs.mkdirSync(dir, { recursive: true });
 		}
 
-		const extensionPath = path.join(extensionsDir, "worker-mcp-gate.ts");
+		const extensionPath = path.join(dir, "worker-mcp-gate.ts");
 
 		const extensionCode = `// Gating extension for worker-mcp (v${SessionManager.GATE_EXTENSION_VERSION})
 // Intercepts all tool execution requests and prompts the coordinator for approval.
@@ -86,6 +85,28 @@ export default function(pi: any) {
 			console.error(
 				`Deployed supervisor gating extension v${SessionManager.GATE_EXTENSION_VERSION} to: ${extensionPath}`,
 			);
+		}
+
+		// Clean up the old gating extension path if it exists to avoid breaking standalone pi runs
+		const homeDir = os.homedir();
+		const oldExtensionPath = path.join(
+			homeDir,
+			".pi",
+			"agent",
+			"extensions",
+			"worker-mcp-gate.ts",
+		);
+		if (fs.existsSync(oldExtensionPath)) {
+			try {
+				fs.unlinkSync(oldExtensionPath);
+				console.error(
+					`Cleaned up old supervisor gating extension from: ${oldExtensionPath}`,
+				);
+			} catch (e) {
+				console.error(
+					`Failed to clean up old extension at ${oldExtensionPath}: ${e}`,
+				);
+			}
 		}
 	}
 

@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import {
 	classifyAction,
@@ -104,6 +105,17 @@ export class PiSession {
 		const args = ["--mode", "rpc"];
 		if (this.systemPrompt) {
 			args.push("--system-prompt", this.systemPrompt);
+		}
+
+		// Load the gating extension from the worker-mcp configuration directory
+		const extensionPath = path.join(
+			os.homedir(),
+			".config",
+			"worker-mcp",
+			"worker-mcp-gate.ts",
+		);
+		if (fs.existsSync(extensionPath)) {
+			args.push("--extension", extensionPath);
 		}
 
 		try {
@@ -401,7 +413,11 @@ export class PiSession {
 								"message" in event
 							) {
 								const msg = (event as any).message;
-								if (msg && msg.role === "assistant" && Array.isArray(msg.content)) {
+								if (
+									msg &&
+									msg.role === "assistant" &&
+									Array.isArray(msg.content)
+								) {
 									const text = msg.content
 										.filter((block: any) => block && block.type === "text")
 										.map((block: any) => block.text)
@@ -414,13 +430,16 @@ export class PiSession {
 						}
 
 						const fullOutput = assistantTextParts.join("\n\n");
-						const fallbackResult = fullOutput || "Agent finished task run successfully.";
+						const fallbackResult =
+							fullOutput || "Agent finished task run successfully.";
 
 						if (this.summarize && fullOutput) {
 							this.summarizeText(fullOutput)
 								.then((summary) => resolve(summary))
 								.catch((err) => {
-									this.log(`Summarization error, falling back to full output: ${err}`);
+									this.log(
+										`Summarization error, falling back to full output: ${err}`,
+									);
 									resolve(fallbackResult);
 								});
 						} else {
@@ -461,7 +480,10 @@ export class PiSession {
 		return this.process !== null;
 	}
 
-	public sendCommand(commandText: string, summarize?: boolean): Promise<string> {
+	public sendCommand(
+		commandText: string,
+		summarize?: boolean,
+	): Promise<string> {
 		// Reported before the status check so a session restored from the
 		// registry says what to do instead of failing with "Process not running".
 		if (!this.isAlive()) {
@@ -530,7 +552,11 @@ export class PiSession {
 		});
 	}
 
-	public rejectAction(actionId: string, reason?: string, summarize?: boolean): Promise<string> {
+	public rejectAction(
+		actionId: string,
+		reason?: string,
+		summarize?: boolean,
+	): Promise<string> {
 		if (
 			this.status !== "AWAITING_APPROVAL" ||
 			!this.pendingAction ||
@@ -673,7 +699,9 @@ Your summary should be concise, focusing only on the final results, key decision
 		}
 		args.push("-p", `@${tempFilename}`);
 
-		this.log(`Summarizing response using model: ${this.model || "default"} via temp file ${tempFilename}`);
+		this.log(
+			`Summarizing response using model: ${this.model || "default"} via temp file ${tempFilename}`,
+		);
 
 		const cleanUpTempFile = () => {
 			try {
@@ -681,7 +709,9 @@ Your summary should be concise, focusing only on the final results, key decision
 					fs.unlinkSync(tempFilePath);
 				}
 			} catch (err: any) {
-				this.log(`Failed to clean up temp file ${tempFilename}: ${err.message}`);
+				this.log(
+					`Failed to clean up temp file ${tempFilename}: ${err.message}`,
+				);
 			}
 		};
 
@@ -718,8 +748,14 @@ Your summary should be concise, focusing only on the final results, key decision
 				if (code === 0) {
 					resolve(output.trim());
 				} else {
-					this.log(`Summarization failed with code ${code}. Stderr: ${errorOutput}`);
-					reject(new Error(`Summarization failed: ${errorOutput || `exit code ${code}`}`));
+					this.log(
+						`Summarization failed with code ${code}. Stderr: ${errorOutput}`,
+					);
+					reject(
+						new Error(
+							`Summarization failed: ${errorOutput || `exit code ${code}`}`,
+						),
+					);
 				}
 			});
 
