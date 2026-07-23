@@ -409,18 +409,31 @@ export class PiSession {
 								event &&
 								typeof event === "object" &&
 								"type" in event &&
-								(event as any).type === "message_end" &&
+								(event as { type?: string }).type === "message_end" &&
 								"message" in event
 							) {
-								const msg = (event as any).message;
+								const msg = (
+									event as {
+										message?: {
+											role?: string;
+											content?: Array<{ type?: string; text?: string }>;
+										};
+									}
+								).message;
 								if (
 									msg &&
 									msg.role === "assistant" &&
 									Array.isArray(msg.content)
 								) {
 									const text = msg.content
-										.filter((block: any) => block && block.type === "text")
-										.map((block: any) => block.text)
+										.filter((block): block is { type: string; text: string } =>
+											Boolean(
+												block &&
+													block.type === "text" &&
+													typeof block.text === "string",
+											),
+										)
+										.map((block) => block.text)
 										.join("\n");
 									if (text) {
 										assistantTextParts.push(text);
@@ -688,8 +701,9 @@ Your summary should be concise, focusing only on the final results, key decision
 
 		try {
 			fs.writeFileSync(tempFilePath, promptText, "utf8");
-		} catch (err: any) {
-			this.log(`Failed to write temp summarization file: ${err.message}`);
+		} catch (err) {
+			const errMsg = err instanceof Error ? err.message : String(err);
+			this.log(`Failed to write temp summarization file: ${errMsg}`);
 			throw err;
 		}
 
@@ -708,10 +722,9 @@ Your summary should be concise, focusing only on the final results, key decision
 				if (fs.existsSync(tempFilePath)) {
 					fs.unlinkSync(tempFilePath);
 				}
-			} catch (err: any) {
-				this.log(
-					`Failed to clean up temp file ${tempFilename}: ${err.message}`,
-				);
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				this.log(`Failed to clean up temp file ${tempFilename}: ${errMsg}`);
 			}
 		};
 
