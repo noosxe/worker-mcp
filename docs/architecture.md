@@ -186,8 +186,9 @@ Retrieves the audit log of actions that were auto-approved by the risk policy.
 * The binary path can be explicitly overridden by setting the `WORKER_MCP_PI_PATH` environment variable (e.g., `WORKER_MCP_PI_PATH=/usr/local/bin/pi`).
 
 ### 5.2. Automatic Gating Extension Injection
-* Upon server startup, `worker-mcp` checks for the presence of the supervisor gating extension file at `~/.pi/agent/extensions/worker-mcp-gate.ts` (creating directories as needed).
-* If missing **or outdated** (version mismatch), `worker-mcp` automatically writes the extension file. This ensures that any `pi` process spawned by the server inherits the interactive confirmation hooks with the latest structured message format.
+* Upon server startup, `worker-mcp` checks for the presence of the supervisor gating extension file at `~/.config/worker-mcp/worker-mcp-gate.ts` (creating directories as needed).
+* If missing **or outdated** (version mismatch), `worker-mcp` automatically writes the extension file.
+* When spawning a `pi` agent session, `worker-mcp` explicitly loads the extension file using the `--extension` flag. This ensures that standalone runs of `pi` (which auto-discover extensions from `~/.pi/agent/extensions/`) remain unpolluted and fully functional.
 * The extension is versioned (currently v2). v2 sends structured JSON payloads (`{ toolName, input }`) instead of human-readable text, enabling server-side risk classification.
 
 ### 5.3. Session Registry Persistence

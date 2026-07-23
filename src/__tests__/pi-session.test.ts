@@ -52,8 +52,14 @@ describe("PiSession - Unit Tests", () => {
 			longNonRepeating += `w${i} `;
 		}
 
-		assert.strictEqual(detectLoop(longNonRepeating.substring(0, limit - 1)), false);
-		assert.strictEqual(detectLoop(longNonRepeating.substring(0, limit + 1)), true);
+		assert.strictEqual(
+			detectLoop(longNonRepeating.substring(0, limit - 1)),
+			false,
+		);
+		assert.strictEqual(
+			detectLoop(longNonRepeating.substring(0, limit + 1)),
+			true,
+		);
 	});
 
 	test("Buffer splitting - splits stdout chunks by newline", () => {
@@ -514,7 +520,8 @@ describe("PiSession - Unit Tests", () => {
 		let resolved: string | null = null;
 		session.status = "RUNNING";
 		(session as any).summarize = true;
-		(session as any).summarizeText = async (text: string) => `Summary of: ${text}`;
+		(session as any).summarizeText = async (text: string) =>
+			`Summary of: ${text}`;
 		(session as any).resolveCommand = (value: string) => {
 			resolved = value;
 		};
@@ -539,7 +546,10 @@ describe("PiSession - Unit Tests", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
 		assert.strictEqual(session.status, "IDLE");
-		assert.strictEqual(resolved, "Summary of: This is a detailed response about the task.");
+		assert.strictEqual(
+			resolved,
+			"Summary of: This is a detailed response about the task.",
+		);
 	});
 
 	test("returns raw assistant output when summarize is false", () => {
@@ -573,4 +583,3 @@ describe("PiSession - Unit Tests", () => {
 		assert.strictEqual(resolved, "This is a detailed response about the task.");
 	});
 });
-
