@@ -119,11 +119,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 												description:
 													"Glob pattern to match against command string or tool name.",
 											},
+											pathPattern: {
+												type: "string",
+												description:
+													"Optional glob pattern to match against the target file path. When set, both pattern and pathPattern must match for the override to apply.",
+											},
 											action: {
 												type: "string",
 												enum: ["allow", "block"],
 												description:
 													"Force allow (auto-approve) or block (require approval).",
+											},
+											maxRiskLevel: {
+												type: "number",
+												description:
+													"Only apply this override if the classified risk is at or below this level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL). Omit to apply at any risk level.",
 											},
 										},
 										required: ["pattern", "action"],
@@ -280,10 +290,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 									items: {
 										type: "object",
 										properties: {
-											pattern: { type: "string" },
+											pattern: {
+												type: "string",
+												description:
+													"Glob pattern to match against command string or tool name.",
+											},
+											pathPattern: {
+												type: "string",
+												description:
+													"Optional glob pattern to match against the target file path.",
+											},
 											action: {
 												type: "string",
 												enum: ["allow", "block"],
+											},
+											maxRiskLevel: {
+												type: "number",
+												description:
+													"Only apply this override if the classified risk is at or below this level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL).",
 											},
 										},
 										required: ["pattern", "action"],
@@ -306,6 +330,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 						sessionId: {
 							type: "string",
 							description: "The target session ID.",
+						},
+						pattern: {
+							type: "string",
+							description:
+								"Optional filter: only return log entries whose matched override pattern equals this value.",
 						},
 					},
 					required: ["sessionId"],
@@ -458,9 +487,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 			}
 
 			case "get_auto_approved_log": {
-				const { sessionId } = args as { sessionId: string };
+				const { sessionId, pattern } = args as {
+					sessionId: string;
+					pattern?: string;
+				};
 				const session = sessionManager.getSession(sessionId);
-				const log = session.getAutoApprovedLog();
+				let log = session.getAutoApprovedLog();
+				if (pattern) {
+					log = log.filter((entry) => entry.matchedOverride === pattern);
+				}
 				return {
 					content: [
 						{

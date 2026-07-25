@@ -8,6 +8,7 @@ import {
 import {
 	DEFAULT_RISK_POLICY,
 	getCommandString,
+	getTargetPath,
 	matchesPattern,
 	shouldAutoApprove,
 } from "../session/risk-policy.js";
@@ -259,6 +260,310 @@ describe("risk-policy", () => {
 				shouldAutoApprove(lowAction, policy, lsTool).approved,
 				false,
 			);
+		});
+	});
+
+	describe("getTargetPath", () => {
+		test("extracts path from file tools", () => {
+			assert.strictEqual(
+				getTargetPath({ toolName: "write_file", input: { path: "/a/b/c.ts" } }),
+				"/a/b/c.ts",
+			);
+			assert.strictEqual(
+				getTargetPath({
+					toolName: "read_file",
+					input: { AbsolutePath: "/x/y.js" },
+				}),
+				"/x/y.js",
+			);
+			assert.strictEqual(
+				getTargetPath({
+					toolName: "replace_file_content",
+					input: { TargetFile: "/z/w.ts" },
+				}),
+				"/z/w.ts",
+			);
+		});
+
+		test("returns null for non-file tools", () => {
+			assert.strictEqual(
+				getTargetPath({ toolName: "bash", input: { command: "ls" } }),
+				null,
+			);
+			assert.strictEqual(
+				getTargetPath({ toolName: "unknown", input: {} }),
+				null,
+			);
+		});
+
+		test("returns null for file tools with no path input", () => {
+			assert.strictEqual(
+				getTargetPath({ toolName: "write_file", input: { content: "abc" } }),
+				null,
+			);
+		});
+	});
+
+	describe("shouldAutoApprove - pathPattern overrides", () => {
+		test("allows writes to src/ via pathPattern", () => {
+			const policy = {
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.LOW,
+				overrides: [
+					{
+						pattern: "write_file",
+						pathPattern: "*/src/*",
+						action: "allow" as const,
+					},
+				],
+			};
+			const classified = {
+				riskLevel: RiskLevel.MEDIUM,
+				riskLabel: "MEDIUM",
+				reason: "Source file write",
+				matchedRule: "source_file_write",
+			};
+			const tool = {
+				toolName: "write_file",
+				input: { path: "/work/src/component.ts" },
+			};
+
+			const res = shouldAutoApprove(classified, policy, tool);
+			assert.strictEqual(res.approved, true);
+			assert.strictEqual(res.matchedOverride, "write_file");
+		});
+
+		test("blocks writes to config files even when write_file is allowed", () => {
+			const policy = {
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.LOW,
+				overrides: [
+					{
+						pattern: "write_file",
+						pathPattern: "*/src/*",
+						action: "allow" as const,
+					},
+				],
+			};
+			const classified = {
+				riskLevel: RiskLevel.HIGH,
+				riskLabel: "HIGH",
+				reason: "Config file write",
+				matchedRule: "config_file_write",
+			};
+			const tool = {
+				toolName: "write_file",
+				input: { path: "/work/package.json" },
+			};
+
+			// pathPattern "*/src/*" does NOT match "/work/package.json", so override is skipped
+			const res = shouldAutoApprove(classified, policy, tool);
+			assert.strictEqual(res.approved, false);
+		});
+
+		test("pathPattern is ignored for non-file tools", () => {
+			const policy = {
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.LOW,
+				overrides: [
+					{
+						pattern: "pnpm*",
+						pathPattern: "*/src/*",
+						action: "allow" as const,
+					},
+				],
+			};
+			const classified = {
+				riskLevel: RiskLevel.MEDIUM,
+				riskLabel: "MEDIUM",
+				reason: "",
+				matchedRule: "",
+			};
+			const tool = {
+				toolName: "bash",
+				input: { command: "pnpm install" },
+			};
+
+			// pathPattern specified but tool has no file path → override skipped
+			const res = shouldAutoApprove(classified, policy, tool);
+			assert.strictEqual(res.approved, false);
+		});
+	});
+
+	describe("shouldAutoApprove - maxRiskLevel overrides", () => {
+		test("allows pnpm commands up to MEDIUM risk", () => {
+			const policy = {
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.LOW,
+				overrides: [
+					{
+						pattern: "pnpm*",
+						action: "allow" as const,
+						maxRiskLevel: RiskLevel.MEDIUM,
+					},
+				],
+			};
+
+			const medAction = {
+				riskLevel: RiskLevel.MEDIUM,
+				riskLabel: "MEDIUM",
+				reason: "",
+				matchedRule: "",
+			};
+			const medTool = {
+				toolName: "bash",
+				input: { command: "pnpm install" },
+			};
+			const resMed = shouldAutoApprove(medAction, policy, medTool);
+			assert.strictEqual(resMed.approved, true);
+			assert.strictEqual(resMed.matchedOverride, "pnpm*");
+		});
+
+		test("does not apply override when risk exceeds maxRiskLevel", () => {
+			const policy = {
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.LOW,
+				overrides: [
+					{
+						pattern: "pnpm*",
+						action: "allow" as const,
+						maxRiskLevel: RiskLevel.MEDIUM,
+					},
+				],
+			};
+
+			const highAction = {
+				riskLevel: RiskLevel.HIGH,
+				riskLabel: "HIGH",
+				reason: "",
+				matchedRule: "",
+			};
+			const highTool = {
+				toolName: "bash",
+				input: { command: "pnpm run dangerous-script" },
+			};
+			// HIGH > MEDIUM maxRiskLevel → override skipped → falls through to risk threshold
+			const resHigh = shouldAutoApprove(highAction, policy, highTool);
+			assert.strictEqual(resHigh.approved, false);
+			assert.strictEqual(resHigh.matchedOverride, undefined);
+		});
+	});
+
+	describe("shouldAutoApprove - combined pathPattern + maxRiskLevel", () => {
+		test("allows write_file in src/ only up to MEDIUM risk", () => {
+			const policy = {
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.LOW,
+				overrides: [
+					{
+						pattern: "write_file",
+						pathPattern: "*/src/*",
+						action: "allow" as const,
+						maxRiskLevel: RiskLevel.MEDIUM,
+					},
+				],
+			};
+
+			const medAction = {
+				riskLevel: RiskLevel.MEDIUM,
+				riskLabel: "MEDIUM",
+				reason: "",
+				matchedRule: "",
+			};
+			const srcTool = {
+				toolName: "write_file",
+				input: { path: "/work/src/file.ts" },
+			};
+			const res = shouldAutoApprove(medAction, policy, srcTool);
+			assert.strictEqual(res.approved, true);
+
+			// HIGH risk write to src/ → maxRiskLevel exceeded → override skipped
+			const highAction = {
+				riskLevel: RiskLevel.HIGH,
+				riskLabel: "HIGH",
+				reason: "",
+				matchedRule: "",
+			};
+			const resHigh = shouldAutoApprove(highAction, policy, srcTool);
+			assert.strictEqual(resHigh.approved, false);
+		});
+	});
+
+	describe("shouldAutoApprove - backward compatibility", () => {
+		test("overrides without new fields work identically", () => {
+			const policy = {
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.MEDIUM,
+				overrides: [
+					{ pattern: "rm -rf tmp/*", action: "allow" as const },
+					{ pattern: "ls", action: "block" as const },
+				],
+			};
+
+			const highAction = {
+				riskLevel: RiskLevel.HIGH,
+				riskLabel: "HIGH",
+				reason: "",
+				matchedRule: "",
+			};
+			const rmTool = {
+				toolName: "bash",
+				input: { command: "rm -rf tmp/123" },
+			};
+			assert.strictEqual(
+				shouldAutoApprove(highAction, policy, rmTool).approved,
+				true,
+			);
+
+			const lowAction = {
+				riskLevel: RiskLevel.LOW,
+				riskLabel: "LOW",
+				reason: "",
+				matchedRule: "",
+			};
+			const lsTool = { toolName: "bash", input: { command: "ls" } };
+			assert.strictEqual(
+				shouldAutoApprove(lowAction, policy, lsTool).approved,
+				false,
+			);
+		});
+	});
+
+	describe("shouldAutoApprove - matchedOverride tracking", () => {
+		test("returns matchedOverride for override-triggered decisions", () => {
+			const policy = {
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.MEDIUM,
+				overrides: [
+					{ pattern: "git commit*", action: "allow" as const },
+				],
+			};
+			const action = {
+				riskLevel: RiskLevel.HIGH,
+				riskLabel: "HIGH",
+				reason: "",
+				matchedRule: "",
+			};
+			const tool = {
+				toolName: "bash",
+				input: { command: "git commit -m 'test'" },
+			};
+			const res = shouldAutoApprove(action, policy, tool);
+			assert.strictEqual(res.approved, true);
+			assert.strictEqual(res.matchedOverride, "git commit*");
+		});
+
+		test("returns no matchedOverride for threshold-based decisions", () => {
+			const action = {
+				riskLevel: RiskLevel.LOW,
+				riskLabel: "LOW",
+				reason: "",
+				matchedRule: "",
+			};
+			const tool = { toolName: "bash", input: { command: "ls" } };
+			const res = shouldAutoApprove(action, DEFAULT_RISK_POLICY, tool);
+			assert.strictEqual(res.approved, true);
+			assert.strictEqual(res.matchedOverride, undefined);
 		});
 	});
 });

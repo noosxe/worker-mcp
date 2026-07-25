@@ -111,7 +111,11 @@ Creates and initializes a new `pi` agent session.
   * `riskPolicy` (object, optional): Risk-based auto-approval policy. Controls which tool calls are auto-approved based on risk level.
     * `autoApproveUpTo` (number): Actions at or below this risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) are auto-approved silently. Default: `0` (LOW).
     * `notifyUpTo` (number): Actions at or below this level (but above `autoApproveUpTo`) are auto-approved with a logged notification. Default: `1` (MEDIUM).
-    * `overrides` (array, optional): Custom overrides for specific command patterns. Each entry has `pattern` (glob string) and `action` (`"allow"` or `"block"`).
+    * `overrides` (array, optional): Custom overrides for specific command patterns. Each entry has:
+      * `pattern` (glob string, required): Matches against command string or tool name.
+      * `pathPattern` (glob string, optional): Matches against the target file path. When set, both `pattern` and `pathPattern` must match.
+      * `action` (`"allow"` or `"block"`, required): Force allow or require approval.
+      * `maxRiskLevel` (number, optional): Only apply this override if the classified risk is at or below this level (0–3).
 * **Returns**: `{ success: boolean, status: string }`
 
 #### `send_pi_command`
