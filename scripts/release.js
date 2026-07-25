@@ -69,10 +69,11 @@ try {
 	console.log(`Creating Git tag: ${tagName}...`);
 	execSync(`git tag ${tagName}`, { stdio: "inherit" });
 
-	console.log(
-		"\nRelease prepared successfully! To push to remote and trigger release workflow, run:",
-	);
-	console.log(`  git push && git push origin ${tagName}\n`);
+	// 9. Push changes and tag
+	console.log(`Pushing changes and tag (${tagName}) to remote origin...`);
+	execSync(`git push && git push origin ${tagName}`, { stdio: "inherit" });
+
+	console.log(`\nRelease v${newVersion} created and pushed successfully!`);
 } catch (error) {
 	console.error("Release script failed:", error.message);
 	process.exit(1);
