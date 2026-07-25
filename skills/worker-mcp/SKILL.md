@@ -25,14 +25,14 @@ Delegate a task to a local worker if it is:
 
 You have access to the following MCP tools for worker management:
 1. `spawn_pi_session(sessionId, cwd, model?, systemPrompt?, riskPolicy?)`: Creates and initializes a supervisor-gated worker process in a target directory with an optional risk-based approval policy.
-2. `send_pi_command(sessionId, command)`: Dispatches a prompt or slash command to the worker.
+2. `send_pi_command(sessionId, command, summarize?)`: Dispatches a prompt or slash command to the worker. Set `summarize: true` to get a concise summary instead of raw output.
 3. `terminate_pi_session(sessionId)`: Stops a session and removes it, freeing its id for reuse. Use this to clear sessions that have crashed, wedged, or are no longer needed.
 4. `list_pi_sessions()`: Lists all active session IDs, directories, and statuses.
 5. `get_pending_actions(sessionId)`: Retrieves details of the action currently waiting for your review. Includes `riskLevel` and `riskLabel` for risk-aware decision making.
-6. `approve_action(sessionId, actionId)`: Approves the execution of the paused tool call.
-7. `reject_action(sessionId, actionId, reason?)`: Blocks the execution of the tool call and returns feed-back/instructions to correct the worker.
+6. `approve_action(sessionId, actionId, summarize?)`: Approves the execution of the paused tool call.
+7. `reject_action(sessionId, actionId, reason?, summarize?)`: Blocks the execution of the tool call and returns feedback/instructions to correct the worker.
 8. `set_risk_policy(sessionId, riskPolicy)`: Updates the risk-based auto-approval policy for a session at runtime.
-9. `get_auto_approved_log(sessionId)`: Retrieves the audit log of actions that were automatically approved by the risk policy — useful for post-hoc review of what the worker did without your intervention.
+9. `get_auto_approved_log(sessionId, pattern?)`: Retrieves the audit log of actions that were automatically approved by the risk policy. Pass `pattern` to filter entries by the override pattern that triggered them (e.g., `"pnpm*"`).
 
 ---
 
@@ -87,7 +87,11 @@ When spawning a session, select a risk policy that matches the trust level and t
 
 ### 3.3. Using Overrides for Fine-Grained Control
 
-Overrides let you allow or block specific commands regardless of their classified risk level. Each override has a `pattern` (glob) and an `action` (`"allow"` or `"block"`).
+Overrides let you allow or block specific commands regardless of their classified risk level. Each override has:
+- `pattern` (glob, required): Matches against the command string or tool name.
+- `pathPattern` (glob, optional): Matches against the target file path. When set, **both** `pattern` and `pathPattern` must match for the override to apply. Useful for scoping file write permissions to specific directories.
+- `action` (`"allow"` or `"block"`, required): Force allow (auto-approve) or block (require approval).
+- `maxRiskLevel` (number, optional): Only apply this override if the classified risk is at or below this level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL). This prevents blanket allows from bypassing safety for unexpectedly dangerous operations.
 
 **Example: Allow `pnpm` commands but block all network access:**
 ```json
@@ -114,6 +118,32 @@ Overrides let you allow or block specific commands regardless of their classifie
 }
 ```
 
+**Example: Allow file writes to `src/` and `tests/` but gate everything else:**
+```json
+{
+  "autoApproveUpTo": 0,
+  "notifyUpTo": 0,
+  "overrides": [
+    { "pattern": "write_file", "pathPattern": "*/src/*", "action": "allow" },
+    { "pattern": "write_file", "pathPattern": "*/tests/*", "action": "allow" },
+    { "pattern": "edit_file", "pathPattern": "*/src/*", "action": "allow" },
+    { "pattern": "edit_file", "pathPattern": "*/tests/*", "action": "allow" }
+  ]
+}
+```
+
+**Example: Allow `pnpm` commands but only up to MEDIUM risk (blocks risky scripts):**
+```json
+{
+  "autoApproveUpTo": 0,
+  "notifyUpTo": 0,
+  "overrides": [
+    { "pattern": "pnpm*", "action": "allow", "maxRiskLevel": 1 }
+  ]
+}
+```
+This allows `pnpm install` and `pnpm build` (MEDIUM risk) but still requires approval if `pnpm` somehow triggers a HIGH-risk classification.
+
 ### 3.4. Adjusting Policy at Runtime
 
 You can tighten or loosen the policy mid-session using `set_risk_policy`. Common scenarios:
@@ -122,7 +152,12 @@ You can tighten or loosen the policy mid-session using `set_risk_policy`. Common
 
 ### 3.5. Auditing Auto-Approved Actions
 
-Periodically call `get_auto_approved_log(sessionId)` to review what the worker did without your direct approval. Each entry includes the tool name, arguments, risk level, and timestamp. This is especially important when using moderate or permissive policies.
+Periodically call `get_auto_approved_log(sessionId)` to review what the worker did without your direct approval. Each entry includes the tool name, arguments, risk level, timestamp, and the `matchedOverride` pattern (if an override rule triggered the auto-approval).
+
+You can filter the log by override pattern to verify a specific rule is working as intended:
+- `get_auto_approved_log(sessionId, pattern: "pnpm*")` — only shows actions auto-approved by the `pnpm*` override.
+
+This is especially important when using moderate or permissive policies, or after adding new override rules.
 
 ---
 

@@ -22,6 +22,8 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 
 ## 2. Batch Approval / Auto-Approval Rules
 
+**Status**: ✅ Implemented
+
 **Problem**: Every high-risk action requires a full round-trip approval call from the coordinator. Each approval cycle costs coordinator tokens (reading the pending action details, reasoning about it, calling `approve_action`). For routine operations this overhead is wasteful.
 
 **Proposal**: Allow the coordinator to define **auto-approval policies** at session creation or during a session, so that known-safe operations proceed without coordinator intervention.
@@ -32,10 +34,12 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 - Allow read-only shell commands (`ls`, `cat`, `grep`) unconditionally.
 - Allow all operations matching a glob/regex pattern.
 
-**Implementation Ideas**:
-- Add an `approvalPolicy` argument to `spawn_pi_session`.
-- Add a `set_approval_policy` tool for runtime policy updates.
-- Persist policies in the session registry (`sessions.json`).
+**Implementation Details**:
+- **Path-Scoped Overrides**: Extended `RiskOverride` with an optional `pathPattern` field — a glob pattern matched against the target file path. When set, both the command/tool `pattern` and `pathPattern` must match for the override to apply. This enables rules like "allow `write_file` to `*/src/*` but gate config files".
+- **Risk-Capped Overrides**: Added an optional `maxRiskLevel` field to `RiskOverride`. The override only activates if the classified risk is at or below this level, preventing blanket allows from bypassing safety for unexpectedly dangerous operations (e.g., `pnpm*` with `maxRiskLevel: MEDIUM` allows `pnpm install` but not a risky script).
+- **Override Audit Trail**: Auto-approval decisions now track `matchedOverride` — the pattern that triggered the decision. The `get_auto_approved_log` tool accepts an optional `pattern` filter to query entries by their triggering override.
+- **`getTargetPath()` Helper**: Extracted file-path resolution into a dedicated function for cleaner separation between command-string matching and path matching.
+- **Full Backward Compatibility**: All new fields are optional. Existing overrides without `pathPattern` or `maxRiskLevel` work identically to before.
 
 ---
 
@@ -129,7 +133,7 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 |---|---|---|---|
 | Smart Gating with Risk Levels | 🟢 High | 🟡 Medium | ✅ **Done** |
 | Summarized Responses | 🟡 Medium | 🟡 Medium | ✅ **Done** |
-| Batch Approval / Auto-Approval Rules | 🟢 High | 🟡 Medium | **P0** |
+| Batch Approval / Auto-Approval Rules | 🟢 High | 🟡 Medium | ✅ **Done** |
 | Structured Result Schemas | 🟢 High | 🟡 Medium | **P1** |
 | Task Templates / Recipes | 🟡 Medium | 🔴 High | **P2** |
 | Progress Checkpoints / Diffs | 🟡 Medium | 🔴 High | **P2** |

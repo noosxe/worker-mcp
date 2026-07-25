@@ -28,6 +28,8 @@ export interface AutoApprovedAction {
 	riskLabel: string;
 	reason: string;
 	timestamp: string;
+	/** The override pattern that triggered the auto-approval, if any */
+	matchedOverride?: string;
 }
 
 export interface PendingAction {
@@ -307,6 +309,7 @@ export class PiSession {
 								riskLabel: classified.riskLabel,
 								reason: classified.reason,
 								timestamp: new Date().toISOString(),
+								matchedOverride: decision.matchedOverride,
 							});
 							if (
 								this.autoApprovedActions.length >
