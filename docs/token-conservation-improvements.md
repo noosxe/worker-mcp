@@ -127,6 +127,65 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 
 ---
 
+## 7. Local Auto-Fix Loops ("Inner Loop")
+
+**Problem**: If the worker writes code and runs a compiler or linter and it fails, that failure bubbles up to the Coordinator. The Coordinator must spend expensive tokens to reason about the syntax error and instruct the worker to fix it.
+
+**Proposal**: Allow the worker to execute a bounded "inner loop" autonomously. If a build or lint step fails, `worker-mcp` automatically pipes the error back into the local model to attempt a fix, without notifying the Coordinator.
+
+**Implementation Ideas**:
+- Introduce a retry threshold (e.g., max 3 attempts).
+- The Coordinator only receives the final successful outcome, or a hard failure if the local model cannot resolve the issue.
+
+---
+
+## 8. Output Deduplication and Log Truncation
+
+**Problem**: Compilers, test runners, and linters often output the same error signature repeatedly or generate massive logs. Sending thousands of lines of raw terminal output to the Coordinator is highly wasteful.
+
+**Proposal**: Implement a middleware layer on `worker-mcp`'s terminal output capture to sanitize and compress logs.
+
+**Implementation Ideas**:
+- **Deduplication**: Collapse repeating errors (e.g., `[Error: Cannot find module 'X' - occurred 14 more times]`).
+- **Tail Truncation**: For excessively long logs, capture the exit code and only return the last ~50 lines (where the actual error usually resides).
+
+---
+
+## 9. Sliding Window Summarization (Memory Compression)
+
+**Problem**: Even with incremental diffs, if a Coordinator reviews the history of a very long session, the token cost of retaining past events can grow continuously.
+
+**Proposal**: Use the local model to maintain a "Running State Summary". When history exceeds a certain token threshold, older turns are compressed into a dense summary.
+
+**Implementation Ideas**:
+- Convert older turns into summaries (e.g., "Turns 1-10: Explored src directory and installed JWT library").
+- The Coordinator is provided this dense summary alongside only the most recent raw turns.
+
+---
+
+## 10. Semantic / AST-Aware File Interactions
+
+**Problem**: Reading full files to understand a single function floods the Coordinator's context window with unrelated code (imports, other methods).
+
+**Proposal**: Add tools to query code by symbols rather than full files.
+
+**Implementation Ideas**:
+- Integrate an AST parser (like `tree-sitter`).
+- Provide a `read_symbol` tool that extracts only the specified function, class, or interface.
+
+---
+
+## 11. "Diff-Only" File Modifications
+
+**Problem**: Sending back entire updated files to the Coordinator after modifications is a huge waste of output and context tokens.
+
+**Proposal**: Enforce that the worker uses unified diffs or targeted search-and-replace blocks, and only reports those diffs back to the Coordinator.
+
+**Implementation Ideas**:
+- `worker-mcp` captures the `git diff` output of a file change and sends only that diff.
+
+---
+
 ## Priority & Impact Matrix
 
 | Improvement | Token Savings | Implementation Effort | Priority |
@@ -135,8 +194,13 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 | Summarized Responses | 🟡 Medium | 🟡 Medium | ✅ **Done** |
 | Batch Approval / Auto-Approval Rules | 🟢 High | 🟡 Medium | ✅ **Done** |
 | Structured Result Schemas | 🟢 High | 🟡 Medium | **P1** |
+| Local Auto-Fix Loops | 🟢 High | 🔴 High | **P1** |
+| Output Deduplication & Truncation | 🟢 High | 🟡 Medium | **P1** |
 | Task Templates / Recipes | 🟡 Medium | 🔴 High | **P2** |
 | Progress Checkpoints / Diffs | 🟡 Medium | 🔴 High | **P2** |
+| Diff-Only File Modifications | 🟡 Medium | 🟡 Medium | **P2** |
+| Semantic / AST-Aware Interactions | 🟡 Medium | 🔴 High | **P3** |
+| Sliding Window Summarization | 🟡 Medium | 🔴 High | **P3** |
 
 ---
 
