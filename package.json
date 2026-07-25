@@ -16,7 +16,8 @@
 		"test": "node --import tsx --test src/__tests__/*.test.ts",
 		"lint": "biome check .",
 		"prepublishOnly": "pnpm run build",
-		"publish-npm": "pnpm publish --access public"
+		"publish-npm": "pnpm publish --access public",
+		"release": "node scripts/release.js"
 	},
 	"keywords": [],
 	"author": "",
