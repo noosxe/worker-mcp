@@ -21,6 +21,10 @@
 	"keywords": [],
 	"author": "",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/noosxe/worker-mcp.git"
+	},
 
 	"type": "module",
 	"dependencies": {
