@@ -1,6 +1,6 @@
 {
 	"name": "@noosxe/worker-mcp",
-	"version": "0.3.2",
+	"version": "0.3.3",
 	"description": "",
 	"main": "dist/index.js",
 	"bin": {
@@ -26,7 +26,6 @@
 		"type": "git",
 		"url": "git+https://github.com/noosxe/worker-mcp.git"
 	},
-
 	"type": "module",
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.29.0"
