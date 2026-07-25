@@ -534,9 +534,7 @@ describe("risk-policy", () => {
 			const policy = {
 				autoApproveUpTo: RiskLevel.LOW,
 				notifyUpTo: RiskLevel.MEDIUM,
-				overrides: [
-					{ pattern: "git commit*", action: "allow" as const },
-				],
+				overrides: [{ pattern: "git commit*", action: "allow" as const }],
 			};
 			const action = {
 				riskLevel: RiskLevel.HIGH,
