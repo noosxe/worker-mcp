@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+*'
       - '[0-9]+.[0-9]+.[0-9]+*'
@@ -11,12 +13,58 @@ permissions:
   id-token: write
 
 jobs:
+  check:
+    name: Check if Release is Needed
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check_tag.outputs.should_release }}
+      tag_name: ${{ steps.check_tag.outputs.tag_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Determine if tag exists
+        id: check_tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            echo "Triggered by tag push. Tag: $TAG_NAME"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          else
+            VERSION=$(jq -r .version package.json)
+            TAG_NAME="v$VERSION"
+            echo "Triggered by main push. Package version: $VERSION (tag: $TAG_NAME)"
+            if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+              echo "Tag $TAG_NAME already exists. Skipping release."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "Tag $TAG_NAME does not exist. Proceeding with release."
+              echo "should_release=true" >> "$GITHUB_OUTPUT"
+              echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   release:
     name: Build, Test, and Publish
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Create and Push Git Tag
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ needs.check.outputs.tag_name }}"
+          git push origin "${{ needs.check.outputs.tag_name }}"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
@@ -48,6 +96,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create ${{ github.ref_name }} \
-            --title "${{ github.ref_name }}" \
+          gh release create ${{ needs.check.outputs.tag_name }} \
+            --title "${{ needs.check.outputs.tag_name }}" \
             --generate-notes
