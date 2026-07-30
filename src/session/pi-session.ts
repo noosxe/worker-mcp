@@ -54,7 +54,9 @@ export class PiSession {
 	public history: unknown[] = [];
 	public riskPolicy: RiskPolicy;
 	public autoApprovedActions: AutoApprovedAction[] = [];
-	public onStatusChange: ((sessionId: string, status: SessionStatus, message?: string) => void) | null = null;
+	public onStatusChange:
+		| ((sessionId: string, status: SessionStatus, message?: string) => void)
+		| null = null;
 	private static readonly MAX_AUTO_APPROVED_LOG = 500;
 
 	private process: ChildProcess | null = null;
@@ -341,7 +343,11 @@ export class PiSession {
 					const riskInfo = toolCall ? classifyAction(toolCall, this.cwd) : null;
 
 					this.status = "AWAITING_APPROVAL";
-					this.onStatusChange?.(this.sessionId, "AWAITING_APPROVAL", `Intercepted tool call: ${obj.message}`);
+					this.onStatusChange?.(
+						this.sessionId,
+						"AWAITING_APPROVAL",
+						`Intercepted tool call: ${obj.message}`,
+					);
 					this.pendingAction = {
 						actionId: obj.id,
 						tool: "confirm",
@@ -547,7 +553,11 @@ export class PiSession {
 		}
 
 		this.status = "RUNNING";
-		this.onStatusChange?.(this.sessionId, "RUNNING", `Executing: ${commandText.substring(0, 100)}`);
+		this.onStatusChange?.(
+			this.sessionId,
+			"RUNNING",
+			`Executing: ${commandText.substring(0, 100)}`,
+		);
 		this.summarize = summarize ?? false;
 		this.historyStartIndex = this.history.length;
 		const cmdId = `cmd_${Date.now()}`;

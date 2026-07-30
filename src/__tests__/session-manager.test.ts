@@ -113,7 +113,9 @@ describe("SessionManager - Unit Tests", () => {
 		);
 		const manager = new SessionManager();
 
-		let lastEvent: { sessionId: string; status: string; message?: string } | undefined;
+		let lastEvent:
+			| { sessionId: string; status: string; message?: string }
+			| undefined;
 		manager.onSessionStatusChange = (sessionId, status, message) => {
 			lastEvent = { sessionId, status, message };
 		};
@@ -124,18 +126,22 @@ describe("SessionManager - Unit Tests", () => {
 		assert.strictEqual(
 			manager.findSessionByTaskId("task-123")?.sessionId,
 			"test-events",
-			"Manager should be able to locate session by active task ID"
+			"Manager should be able to locate session by active task ID",
 		);
 
 		// Trigger an event manually to test wiring
 		if (session.onStatusChange) {
 			session.onStatusChange("test-events", "CRASHED", "Test crash");
 		}
-		
-		assert.deepStrictEqual(lastEvent, {
-			sessionId: "test-events",
-			status: "CRASHED",
-			message: "Test crash"
-		}, "Event should bubble up through onSessionStatusChange");
+
+		assert.deepStrictEqual(
+			lastEvent,
+			{
+				sessionId: "test-events",
+				status: "CRASHED",
+				message: "Test crash",
+			},
+			"Event should bubble up through onSessionStatusChange",
+		);
 	});
 });

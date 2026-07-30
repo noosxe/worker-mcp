@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { InMemoryTaskStore } from "@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -10,7 +11,6 @@ import {
 	ListToolsRequestSchema,
 	ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { InMemoryTaskStore } from "@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js";
 import { RiskLevel } from "./session/risk-classifier.js";
 import type { RiskPolicy } from "./session/risk-policy.js";
 import { SessionManager } from "./session/session-manager.js";
@@ -76,7 +76,12 @@ const server = new Server(
 
 // Wire MCP task cancellation to pi session abort
 const originalUpdateTaskStatus = taskStore.updateTaskStatus.bind(taskStore);
-taskStore.updateTaskStatus = async (taskId, status, statusMessage, sessionId) => {
+taskStore.updateTaskStatus = async (
+	taskId,
+	status,
+	statusMessage,
+	sessionId,
+) => {
 	await originalUpdateTaskStatus(taskId, status, statusMessage, sessionId);
 	if (status === "cancelled") {
 		const session = sessionManager.findSessionByTaskId(taskId);
@@ -93,12 +98,18 @@ sessionManager.onSessionStatusChange = (sessionId, status, message) => {
 	if (!taskId) return;
 
 	if (status === "AWAITING_APPROVAL") {
-		taskStore.updateTaskStatus(taskId, "input_required", message).catch(() => {});
+		taskStore
+			.updateTaskStatus(taskId, "input_required", message)
+			.catch(() => {});
 	} else if (status === "CRASHED") {
-		taskStore.storeTaskResult(taskId, "failed", {
-			content: [{ type: "text" as const, text: message ?? "Session crashed" }],
-			isError: true,
-		}).catch(() => {});
+		taskStore
+			.storeTaskResult(taskId, "failed", {
+				content: [
+					{ type: "text" as const, text: message ?? "Session crashed" },
+				],
+				isError: true,
+			})
+			.catch(() => {});
 	}
 };
 
@@ -206,7 +217,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 						},
 						timeout: {
 							type: "number",
-							description: "Max time (ms) to wait for completion in blocking mode. If exceeded, returns with command still running.",
+							description:
+								"Max time (ms) to wait for completion in blocking mode. If exceeded, returns with command still running.",
 						},
 					},
 					required: ["sessionId", "command"],
@@ -455,7 +467,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
 					session.setActiveTaskId(task.taskId);
 
-					session.sendCommand(command, summarize)
+					session
+						.sendCommand(command, summarize)
 						.then(async (result) => {
 							await taskStore.storeTaskResult(task.taskId, "completed", {
 								content: [{ type: "text" as const, text: result }],
@@ -472,8 +485,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 				}
 
 				// Blocking path with optional timeout
-				const effectiveTimeout = timeout
-					?? (process.env.WORKER_MCP_COMMAND_TIMEOUT
+				const effectiveTimeout =
+					timeout ??
+					(process.env.WORKER_MCP_COMMAND_TIMEOUT
 						? Number(process.env.WORKER_MCP_COMMAND_TIMEOUT)
 						: undefined);
 
@@ -525,7 +539,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
 				const activeTaskId = session.getActiveTaskId();
 				if (activeTaskId) {
-					await taskStore.updateTaskStatus(activeTaskId, "cancelled", "Cancelled by coordinator");
+					await taskStore.updateTaskStatus(
+						activeTaskId,
+						"cancelled",
+						"Cancelled by coordinator",
+					);
 				}
 
 				session.abortCommand();

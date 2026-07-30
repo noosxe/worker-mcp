@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PiSession, SessionStatus } from "./pi-session.js";
+import { PiSession, type SessionStatus } from "./pi-session.js";
 import type { RiskPolicy } from "./risk-policy.js";
 
 interface SessionRegistryEntry {
@@ -15,7 +15,11 @@ interface SessionRegistryEntry {
 export class SessionManager {
 	private sessions: Map<string, PiSession> = new Map();
 	private registryPath: string;
-	public onSessionStatusChange?: (sessionId: string, status: SessionStatus, message?: string) => void;
+	public onSessionStatusChange?: (
+		sessionId: string,
+		status: SessionStatus,
+		message?: string,
+	) => void;
 
 	constructor() {
 		const homeDir = os.homedir();

@@ -32,3 +32,4 @@ You **MUST** run all build commands, linters, tests, and scripts inside the Nix 
 
 * **Project Structure**: Follow the architectural design documented in [/docs/architecture.md](file:///home/mechsoull/Projects/worker-mcp/docs/architecture.md).
 * **Code Style**: Ensure typescript linting and formatting conform to standard rules. Run format checks within the Nix shell.
+* **Pre-commit Checklist**: You **MUST** run the project's linter and formatter before committing any code to avoid CI failures. Use `nix develop --command pnpm exec biome check --write .` to auto-fix and format issues.
