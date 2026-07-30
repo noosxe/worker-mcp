@@ -10,6 +10,7 @@ import {
 	ListToolsRequestSchema,
 	ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { InMemoryTaskStore } from "@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js";
 import { RiskLevel } from "./session/risk-classifier.js";
 import type { RiskPolicy } from "./session/risk-policy.js";
 import { SessionManager } from "./session/session-manager.js";
@@ -48,6 +49,7 @@ Options:
 
 // Instantiate session manager
 const sessionManager = new SessionManager();
+const taskStore = new InMemoryTaskStore();
 
 // Initialize the MCP Server
 const server = new Server(
@@ -59,9 +61,46 @@ const server = new Server(
 		capabilities: {
 			resources: {},
 			tools: {},
+			tasks: {
+				list: {},
+				cancel: {},
+				requests: {
+					tools: { call: {} },
+				},
+			},
 		},
+		taskStore,
+		defaultTaskPollInterval: 5000,
 	},
 );
+
+// Wire MCP task cancellation to pi session abort
+const originalUpdateTaskStatus = taskStore.updateTaskStatus.bind(taskStore);
+taskStore.updateTaskStatus = async (taskId, status, statusMessage, sessionId) => {
+	await originalUpdateTaskStatus(taskId, status, statusMessage, sessionId);
+	if (status === "cancelled") {
+		const session = sessionManager.findSessionByTaskId(taskId);
+		if (session && session.status === "RUNNING") {
+			session.abortCommand();
+		}
+	}
+};
+
+// Wire session status changes to task status updates
+sessionManager.onSessionStatusChange = (sessionId, status, message) => {
+	const session = sessionManager.getSession(sessionId);
+	const taskId = session.getActiveTaskId();
+	if (!taskId) return;
+
+	if (status === "AWAITING_APPROVAL") {
+		taskStore.updateTaskStatus(taskId, "input_required", message).catch(() => {});
+	} else if (status === "CRASHED") {
+		taskStore.storeTaskResult(taskId, "failed", {
+			content: [{ type: "text" as const, text: message ?? "Session crashed" }],
+			isError: true,
+		}).catch(() => {});
+	}
+};
 
 // Define tools list
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -165,8 +204,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 							description:
 								"If true, returns a concise summary of the worker's response instead of the raw output/status.",
 						},
+						timeout: {
+							type: "number",
+							description: "Max time (ms) to wait for completion in blocking mode. If exceeded, returns with command still running.",
+						},
 					},
 					required: ["sessionId", "command"],
+				},
+				execution: {
+					taskSupport: "optional",
+				},
+			},
+			{
+				name: "cancel_pi_command",
+				description:
+					"Abort the currently running command in a session. Sends abort to the agent; force-terminates after 2s if it doesn't settle.",
+				inputSchema: {
+					type: "object",
+					properties: {
+						sessionId: {
+							type: "string",
+							description: "The ID of the session whose command to cancel.",
+						},
+					},
+					required: ["sessionId"],
 				},
 			},
 			{
@@ -345,7 +406,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 
 // Handle tool executions
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 	const { name, arguments: args } = request.params;
 
 	try {
@@ -376,20 +437,104 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 			}
 
 			case "send_pi_command": {
-				const { sessionId, command, summarize } = args as {
+				const { sessionId, command, summarize, timeout } = args as {
 					sessionId: string;
 					command: string;
 					summarize?: boolean;
+					timeout?: number;
 				};
 				const session = sessionManager.getSession(sessionId);
 
-				// This initiates command run in background, resolving when command completes or settles
+				// Task-based async path: the SDK provides extra.taskStore
+				// when the client requests task creation via _meta.task
+				if (extra.taskStore) {
+					const task = await extra.taskStore.createTask({
+						ttl: 300_000,
+						pollInterval: 5000,
+					});
+
+					session.setActiveTaskId(task.taskId);
+
+					session.sendCommand(command, summarize)
+						.then(async (result) => {
+							await taskStore.storeTaskResult(task.taskId, "completed", {
+								content: [{ type: "text" as const, text: result }],
+							});
+						})
+						.catch(async (err) => {
+							await taskStore.storeTaskResult(task.taskId, "failed", {
+								content: [{ type: "text" as const, text: err.message }],
+								isError: true,
+							});
+						});
+
+					return { task };
+				}
+
+				// Blocking path with optional timeout
+				const effectiveTimeout = timeout
+					?? (process.env.WORKER_MCP_COMMAND_TIMEOUT
+						? Number(process.env.WORKER_MCP_COMMAND_TIMEOUT)
+						: undefined);
+
+				if (effectiveTimeout != null) {
+					const result = await Promise.race([
+						session.sendCommand(command, summarize),
+						new Promise<null>((resolve) =>
+							setTimeout(() => resolve(null), effectiveTimeout),
+						),
+					]);
+
+					if (result === null) {
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `RUNNING: Command is still executing after ${effectiveTimeout}ms timeout. Session status: ${session.status}. Use list_pi_sessions to check progress.`,
+								},
+							],
+						};
+					}
+
+					return {
+						content: [{ type: "text" as const, text: result }],
+					};
+				}
+
+				// No timeout — block indefinitely (backward compatible)
 				const result = await session.sendCommand(command, summarize);
+				return {
+					content: [{ type: "text" as const, text: result }],
+				};
+			}
+
+			case "cancel_pi_command": {
+				const { sessionId } = args as { sessionId: string };
+				const session = sessionManager.getSession(sessionId);
+
+				if (session.status !== "RUNNING") {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Session ${sessionId} is not currently running a command (status: ${session.status}).`,
+							},
+						],
+					};
+				}
+
+				const activeTaskId = session.getActiveTaskId();
+				if (activeTaskId) {
+					await taskStore.updateTaskStatus(activeTaskId, "cancelled", "Cancelled by coordinator");
+				}
+
+				session.abortCommand();
+
 				return {
 					content: [
 						{
 							type: "text",
-							text: result,
+							text: `Abort signal sent to session ${sessionId}. The agent will attempt graceful shutdown.`,
 						},
 					],
 				};

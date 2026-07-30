@@ -123,7 +123,14 @@ Sends a prompt or slash command to a running session.
 * **Arguments**:
   * `sessionId` (string, required): The ID of the target session.
   * `command` (string, required): The text prompt or slash command (e.g., `/model`, `/reload`, or a standard prompt).
-* **Returns**: `{ success: boolean, responseText: string }` (or starts streaming response if supported).
+  * `timeout` (number, optional): Maximum time in milliseconds to wait in blocking mode. If exceeded, returns with command still running. Environment variable `WORKER_MCP_COMMAND_TIMEOUT` provides a global default.
+* **Returns**: `{ success: boolean, responseText: string }` (or starts streaming response if supported). Note: Supports MCP Tasks API (`execution.taskSupport: "optional"`). Task-aware clients receive a `CreateTaskResult` immediately and can poll via `tasks/get`. Non-task clients retain backward-compatible blocking behavior.
+
+#### `cancel_pi_command`
+Abort the currently running command in a session. Sends an abort signal to the pi agent; if it doesn't settle within 2 seconds, the process is force-terminated.
+* **Arguments**:
+  * `sessionId` (string, required): The ID of the session whose command to cancel.
+* **Returns**: Confirmation message.
 
 #### `terminate_pi_session`
 Stops a session and removes it, freeing its id for reuse. Use this to clear sessions that have crashed, wedged, or are no longer needed.
@@ -203,4 +210,24 @@ Retrieves the audit log of actions that were auto-approved by the risk policy.
 * **Stderr Capture**: Stderr is piped separately from stdout. All stderr output from the `pi` child process is buffered and appended directly to the session's log stream (`worker-mcp://sessions/{sessionId}/logs`) to aid debugging.
 * **Crash Detection**: If the child process exits with a non-zero code without completing, the session state transitions to `Crashed`.
 * **State Transition back to Idle**: When `pi` emits the `agent_settled` event on stdout, `worker-mcp` updates the session status from `Running Task` back to `Idle`, notifying the coordinator that it is ready for the next command.
+
+### 5.5. Environment Variables
+| Variable | Default | Description |
+|---|---|---|
+| `WORKER_MCP_PI_PATH` | `pi` | Path to the pi executable |
+| `WORKER_MCP_SUMMARIZE_TIMEOUT` | `60000` | Timeout (ms) for summarization subprocess |
+| `WORKER_MCP_MAX_OUTPUT_CHARS` | `64000` | Maximum output characters before loop detection |
+| `WORKER_MCP_COMMAND_TIMEOUT` | unset (∞) | Default timeout (ms) for blocking `send_pi_command` calls |
+
+---
+
+## 6. Async Execution Model
+
+- The server advertises `tasks` capability with `list`, `cancel`, and `requests.tools.call` support
+- Uses `InMemoryTaskStore` from the MCP SDK for task state management
+- Task lifecycle: `working` → `completed` | `failed` | `cancelled`
+- The `input_required` task status maps to the existing `AWAITING_APPROVAL` session state
+- `send_pi_command` declares `execution.taskSupport: "optional"` for backward compatibility
+- Non-task clients can use the `timeout` parameter for bounded blocking, and `cancel_pi_command` for cancellation
+
 
