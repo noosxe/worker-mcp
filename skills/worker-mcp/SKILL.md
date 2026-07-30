@@ -25,14 +25,15 @@ Delegate a task to a local worker if it is:
 
 You have access to the following MCP tools for worker management:
 1. `spawn_pi_session(sessionId, cwd, model?, systemPrompt?, riskPolicy?)`: Creates and initializes a supervisor-gated worker process in a target directory with an optional risk-based approval policy.
-2. `send_pi_command(sessionId, command, summarize?)`: Dispatches a prompt or slash command to the worker. Set `summarize: true` to get a concise summary instead of raw output.
-3. `terminate_pi_session(sessionId)`: Stops a session and removes it, freeing its id for reuse. Use this to clear sessions that have crashed, wedged, or are no longer needed.
-4. `list_pi_sessions()`: Lists all active session IDs, directories, and statuses.
-5. `get_pending_actions(sessionId)`: Retrieves details of the action currently waiting for your review. Includes `riskLevel` and `riskLabel` for risk-aware decision making.
-6. `approve_action(sessionId, actionId, summarize?)`: Approves the execution of the paused tool call.
-7. `reject_action(sessionId, actionId, reason?, summarize?)`: Blocks the execution of the tool call and returns feedback/instructions to correct the worker.
-8. `set_risk_policy(sessionId, riskPolicy)`: Updates the risk-based auto-approval policy for a session at runtime.
-9. `get_auto_approved_log(sessionId, pattern?)`: Retrieves the audit log of actions that were automatically approved by the risk policy. Pass `pattern` to filter entries by the override pattern that triggered them (e.g., `"pnpm*"`).
+2. `send_pi_command(sessionId, command, summarize?, timeout?)`: Dispatches a prompt or slash command to the worker. Runs as a background MCP task by default. Set `timeout` (in ms) to execute in blocking mode up to the timeout. Set `summarize: true` to get a concise summary instead of raw output.
+3. `cancel_pi_command(sessionId)`: Aborts the currently running command in a session and cancels its background task.
+4. `terminate_pi_session(sessionId)`: Stops a session and removes it, freeing its id for reuse. Use this to clear sessions that have crashed, wedged, or are no longer needed.
+5. `list_pi_sessions()`: Lists all active session IDs, directories, and statuses.
+6. `get_pending_actions(sessionId)`: Retrieves details of the action currently waiting for your review. Includes `riskLevel` and `riskLabel` for risk-aware decision making.
+7. `approve_action(sessionId, actionId, summarize?)`: Approves the execution of the paused tool call.
+8. `reject_action(sessionId, actionId, reason?, summarize?)`: Blocks the execution of the tool call and returns feedback/instructions to correct the worker.
+9. `set_risk_policy(sessionId, riskPolicy)`: Updates the risk-based auto-approval policy for a session at runtime.
+10. `get_auto_approved_log(sessionId, pattern?)`: Retrieves the audit log of actions that were automatically approved by the risk policy. Pass `pattern` to filter entries by the override pattern that triggered them (e.g., `"pnpm*"`).
 
 ---
 
@@ -185,7 +186,9 @@ With smart gating, **LOW and MEDIUM risk actions are auto-approved** by default 
 
 Whenever the worker attempts a high-risk operation (e.g., `rm`, `curl`, config file writes, `git commit`), the server will intercept the action, pause the worker, transition the session to `AWAITING_APPROVAL`, and yield control to you.
 
-When you detect this state (e.g., when a tool returns `AWAITING_APPROVAL` or logs indicate a pause):
+**CRITICAL NOTE FOR ASYNC EXECUTION**: When using `send_pi_command` asynchronously in the background, you will **NOT** receive a proactive system message waking you up when the agent hits the `AWAITING_APPROVAL` state or when it finishes its task. You **must** proactively poll the worker's status using `list_pi_sessions` (for example, by setting a recurring timer via the `schedule` tool) to discover when the agent is waiting for your intervention or when it has returned to the `IDLE` state.
+
+When you detect this state (via polling):
 1. **Fetch Action Details**: Call `get_pending_actions(sessionId: "sess_debug_1")` to inspect the exact tool, arguments, risk level, and command parameters.
 2. **Review Safety & Accuracy**:
    - Check the `riskLevel` and `riskLabel` to understand why this was escalated.
