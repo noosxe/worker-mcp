@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PiSession } from "./pi-session.js";
+import { PiSession, type SessionStatus } from "./pi-session.js";
 import type { RiskPolicy } from "./risk-policy.js";
 
 interface SessionRegistryEntry {
@@ -15,6 +15,11 @@ interface SessionRegistryEntry {
 export class SessionManager {
 	private sessions: Map<string, PiSession> = new Map();
 	private registryPath: string;
+	public onSessionStatusChange?: (
+		sessionId: string,
+		status: SessionStatus,
+		message?: string,
+	) => void;
 
 	constructor() {
 		const homeDir = os.homedir();
@@ -130,6 +135,9 @@ export default function(pi: any) {
 					entry.riskPolicy,
 				);
 				session.status = "FINISHED";
+				session.onStatusChange = (sid, status, message) => {
+					this.onSessionStatusChange?.(sid, status, message);
+				};
 				this.sessions.set(entry.sessionId, session);
 			}
 			console.error(`Loaded ${entries.length} sessions from registry.`);
@@ -188,6 +196,9 @@ export default function(pi: any) {
 			systemPrompt,
 			riskPolicy,
 		);
+		session.onStatusChange = (sid, status, message) => {
+			this.onSessionStatusChange?.(sid, status, message);
+		};
 		this.sessions.set(sessionId, session);
 		this.saveRegistry();
 
@@ -212,6 +223,15 @@ export default function(pi: any) {
 			throw new Error(`Session not found: ${sessionId}`);
 		}
 		return session;
+	}
+
+	public findSessionByTaskId(taskId: string): PiSession | null {
+		for (const session of this.sessions.values()) {
+			if (session.getActiveTaskId() === taskId) {
+				return session;
+			}
+		}
+		return null;
 	}
 
 	public setRiskPolicy(sessionId: string, riskPolicy: RiskPolicy) {

@@ -105,4 +105,43 @@ describe("SessionManager - Unit Tests", () => {
 		// with "already exists and is active" and the id was unusable forever.
 		assert.throws(() => manager.getSession("wedged"), /Session not found/);
 	});
+
+	test("onSessionStatusChange bubbles up from sessions and active task IDs can be queried", () => {
+		fs.writeFileSync(
+			path.join(tempHome, ".config", "worker-mcp", "sessions.json"),
+			JSON.stringify([{ sessionId: "test-events", cwd: "/tmp" }]),
+		);
+		const manager = new SessionManager();
+
+		let lastEvent:
+			| { sessionId: string; status: string; message?: string }
+			| undefined;
+		manager.onSessionStatusChange = (sessionId, status, message) => {
+			lastEvent = { sessionId, status, message };
+		};
+
+		const session = manager.getSession("test-events");
+		session.setActiveTaskId("task-123");
+
+		assert.strictEqual(
+			manager.findSessionByTaskId("task-123")?.sessionId,
+			"test-events",
+			"Manager should be able to locate session by active task ID",
+		);
+
+		// Trigger an event manually to test wiring
+		if (session.onStatusChange) {
+			session.onStatusChange("test-events", "CRASHED", "Test crash");
+		}
+
+		assert.deepStrictEqual(
+			lastEvent,
+			{
+				sessionId: "test-events",
+				status: "CRASHED",
+				message: "Test crash",
+			},
+			"Event should bubble up through onSessionStatusChange",
+		);
+	});
 });

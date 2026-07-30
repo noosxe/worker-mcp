@@ -54,6 +54,9 @@ export class PiSession {
 	public history: unknown[] = [];
 	public riskPolicy: RiskPolicy;
 	public autoApprovedActions: AutoApprovedAction[] = [];
+	public onStatusChange:
+		| ((sessionId: string, status: SessionStatus, message?: string) => void)
+		| null = null;
 	private static readonly MAX_AUTO_APPROVED_LOG = 500;
 
 	private process: ChildProcess | null = null;
@@ -62,6 +65,7 @@ export class PiSession {
 	private rejectCommand: ((reason: Error) => void) | null = null;
 	private currentTurnOutput = "";
 	private abortTimeout: ReturnType<typeof setTimeout> | null = null;
+	private activeTaskId: string | null = null;
 	private terminating = false;
 	private summarize = false;
 	private historyStartIndex = 0;
@@ -339,6 +343,11 @@ export class PiSession {
 					const riskInfo = toolCall ? classifyAction(toolCall, this.cwd) : null;
 
 					this.status = "AWAITING_APPROVAL";
+					this.onStatusChange?.(
+						this.sessionId,
+						"AWAITING_APPROVAL",
+						`Intercepted tool call: ${obj.message}`,
+					);
 					this.pendingAction = {
 						actionId: obj.id,
 						tool: "confirm",
@@ -399,6 +408,8 @@ export class PiSession {
 				}
 				if (this.status === "RUNNING") {
 					this.status = "IDLE";
+					this.onStatusChange?.(this.sessionId, "IDLE", "Agent settled");
+					this.activeTaskId = null;
 					if (this.resolveCommand) {
 						const resolve = this.resolveCommand;
 						this.resolveCommand = null;
@@ -496,6 +507,33 @@ export class PiSession {
 		return this.process !== null;
 	}
 
+	public setActiveTaskId(taskId: string | null): void {
+		this.activeTaskId = taskId;
+	}
+
+	public getActiveTaskId(): string | null {
+		return this.activeTaskId;
+	}
+
+	/** Abort the currently running command without terminating the session. */
+	public abortCommand(): void {
+		if (this.status !== "RUNNING") return;
+
+		const cmdId = `abort_${Date.now()}`;
+		this.writeRaw({ id: cmdId, type: "abort" }).catch((err) => {
+			this.log(`Failed to send abort: ${err.message}`);
+		});
+
+		this.abortTimeout = setTimeout(() => {
+			if (this.status === "RUNNING") {
+				this.log("Abort timeout reached, force-terminating process");
+				this.terminate();
+			}
+		}, 2000);
+
+		this.log(`Command abort requested (task: ${this.activeTaskId})`);
+	}
+
 	public sendCommand(
 		commandText: string,
 		summarize?: boolean,
@@ -515,6 +553,11 @@ export class PiSession {
 		}
 
 		this.status = "RUNNING";
+		this.onStatusChange?.(
+			this.sessionId,
+			"RUNNING",
+			`Executing: ${commandText.substring(0, 100)}`,
+		);
 		this.summarize = summarize ?? false;
 		this.historyStartIndex = this.history.length;
 		const cmdId = `cmd_${Date.now()}`;
@@ -619,6 +662,8 @@ export class PiSession {
 			this.process = null;
 		}
 		this.pendingAction = null;
+		this.onStatusChange?.(this.sessionId, "CRASHED", "Process terminated");
+		this.activeTaskId = null;
 	}
 
 	private detectLoop(text: string): boolean {
@@ -657,34 +702,7 @@ export class PiSession {
 
 	private handleLoopDetected() {
 		this.log("[WARNING] Endless output loop detected! Aborting turn...");
-
-		// Attempt clean abort first
-		const abortId = `abort_${Date.now()}`;
-		this.writeRaw({
-			id: abortId,
-			type: "abort",
-		}).catch((err) => {
-			this.log(`Failed to send abort command: ${err.message}`);
-		});
-
-		// Set a timer to forcefully kill the process if it doesn't settle/abort within 2 seconds
-		if (!this.abortTimeout) {
-			this.abortTimeout = setTimeout(() => {
-				this.log(
-					"[WARNING] Subprocess failed to abort loop. Force terminating...",
-				);
-				this.terminate();
-				this.status = "CRASHED";
-				if (this.rejectCommand) {
-					this.rejectCommand(
-						new Error("Subprocess terminated due to endless output loop."),
-					);
-					this.rejectCommand = null;
-					this.resolveCommand = null;
-				}
-				this.abortTimeout = null;
-			}, 2000);
-		}
+		this.abortCommand();
 	}
 
 	private async summarizeText(text: string): Promise<string> {
