@@ -231,11 +231,14 @@ Configure your models in `pi` (e.g. using `pi --mode rpc` to set default models,
 
 ### Exposed Tools
 *   `spawn_pi_session`: Spawns a new supervisor-gated worker agent in the specified workspace directory.
-*   `send_pi_command`: Dispatches prompts to the worker session (resolving when the turn settles).
+*   `send_pi_command`: Dispatches prompts to the worker session. Supports background MCP task execution (resolving asynchronously) or blocking mode with an optional timeout.
+*   `cancel_pi_command`: Aborts the currently running command in a session and cancels its background task.
 *   `list_pi_sessions`: Returns a list of active sessions, directory targets, and current states.
 *   `get_pending_actions`: Fetches the details of an intercepted command awaiting consent.
 *   `approve_action`: Approves execution of a gated tool call.
 *   `reject_action`: Blocks a gated tool call and forwards feedback to correct the agent's course.
+*   `set_risk_policy`: Updates the risk-based auto-approval policy for a session at runtime.
+*   `get_auto_approved_log`: Retrieves the audit log of actions that were auto-approved by the risk policy.
 
 ### Exposed Resources
 *   `worker-mcp://sessions/{sessionId}/history`: Returns the conversation log and internal message stream.

@@ -40,30 +40,56 @@ Initializes a new `pi` session by starting a child process or SDK session.
   ```
 
 #### B. `send_pi_command`
-Sends a prompt or slash command to a running session.
+Sends a prompt or slash command to a running session. Supports MCP task tracking (returns `_meta.task` if requested).
 * **Request Schema**:
   ```json
   {
     "name": "send_pi_command",
     "arguments": {
       "sessionId": "string",
-      "command": "string"
+      "command": "string",
+      "summarize": "boolean (optional)",
+      "timeout": "number (optional)"
     }
   }
   ```
-* **Response Schema (Success)**:
+* **Response Schema (Success - Blocking)**:
   ```json
   {
     "content": [
       {
         "type": "text",
-        "text": "Command sent to session <sessionId>."
+        "text": "<Command execution result>"
       }
     ]
   }
   ```
 
-#### C. `list_pi_sessions`
+#### C. `cancel_pi_command`
+Aborts the currently running command in a session and cancels its background task.
+* **Request Schema**:
+  ```json
+  {
+    "name": "cancel_pi_command",
+    "arguments": {
+      "sessionId": "string"
+    }
+  }
+  ```
+
+#### D. `terminate_pi_session`
+Stops a session and removes it, freeing its id for reuse.
+* **Request Schema**:
+  ```json
+  {
+    "name": "terminate_pi_session",
+    "arguments": {
+      "sessionId": "string"
+    }
+  }
+  ```
+
+#### E. `list_pi_sessions`
 Queries all active sessions and their states.
 * **Request Schema**:
   ```json
@@ -84,7 +110,19 @@ Queries all active sessions and their states.
   }
   ```
 
-#### D. `approve_action`
+#### F. `get_pending_actions`
+Retrieves details of a tool call or action currently awaiting approval.
+* **Request Schema**:
+  ```json
+  {
+    "name": "get_pending_actions",
+    "arguments": {
+      "sessionId": "string"
+    }
+  }
+  ```
+
+#### G. `approve_action`
 Approves an intercepted tool execution.
 * **Request Schema**:
   ```json
@@ -92,7 +130,8 @@ Approves an intercepted tool execution.
     "name": "approve_action",
     "arguments": {
       "sessionId": "string",
-      "actionId": "string"
+      "actionId": "string",
+      "summarize": "boolean (optional)"
     }
   }
   ```
@@ -103,7 +142,7 @@ Approves an intercepted tool execution.
   }
   ```
 
-#### E. `reject_action`
+#### H. `reject_action`
 Denies an intercepted tool execution and feeds a rejection back to the worker.
 * **Request Schema**:
   ```json
@@ -112,7 +151,8 @@ Denies an intercepted tool execution and feeds a rejection back to the worker.
     "arguments": {
       "sessionId": "string",
       "actionId": "string",
-      "reason": "string (optional)"
+      "reason": "string (optional)",
+      "summarize": "boolean (optional)"
     }
   }
   ```
@@ -120,6 +160,32 @@ Denies an intercepted tool execution and feeds a rejection back to the worker.
   ```json
   {
     "content": [{ "type": "text", "text": "Action rejected." }]
+  }
+  ```
+
+#### I. `set_risk_policy`
+Updates the risk-based auto-approval policy for a session at runtime.
+* **Request Schema**:
+  ```json
+  {
+    "name": "set_risk_policy",
+    "arguments": {
+      "sessionId": "string",
+      "riskPolicy": "object"
+    }
+  }
+  ```
+
+#### J. `get_auto_approved_log`
+Retrieves the audit log of actions that were auto-approved by the risk policy.
+* **Request Schema**:
+  ```json
+  {
+    "name": "get_auto_approved_log",
+    "arguments": {
+      "sessionId": "string",
+      "pattern": "string (optional)"
+    }
   }
   ```
 
