@@ -26,7 +26,7 @@
             inherit version;
             src = ./.;
             fetcherVersion = 4;
-            hash = "sha256-CabYMfu1DE49R7QT2BGDCxQ+t0IjsLPvXudx9xm3pVs=";
+            hash = "sha256-U3hT0lpD4fi2uL/LvSomHvY9WjaidwfdSC6B970QnA4=";
           };
         in
         pkgs.stdenv.mkDerivation {
