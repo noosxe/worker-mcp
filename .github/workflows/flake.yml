@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload updated flake.lock on success
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: flake-lock-latest-nixpkgs
           path: flake.lock
