@@ -23,6 +23,8 @@ jobs:
 
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
 
       - name: Update flake.lock and open PR
         uses: DeterminateSystems/update-flake-lock@v28

@@ -33,9 +33,15 @@ jobs:
 
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          # We are not on FlakeHub; skip its opportunistic auth noise and use
+          # the GitHub Actions cache only.
+          use-flakehub: false
 
       - name: nix flake check
-        run: nix --print-build-logs flake check --all-systems
+        # Not --all-systems: nixpkgs unstable has dropped x86_64-darwin, so
+        # evaluating it throws. CI runs on x86_64-linux, which is what we gate.
+        run: nix --print-build-logs flake check
 
       - name: nix build .#worker-mcp
         run: nix build .#worker-mcp --print-build-logs
@@ -66,6 +72,8 @@ jobs:
 
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
 
       - name: Re-resolve nixpkgs to latest
         run: nix flake update nixpkgs
