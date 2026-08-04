@@ -1,0 +1,44 @@
+name: Update flake.lock
+
+on:
+  schedule:
+    # Mondays 04:00 UTC — after the drift-guard cron has had a chance to surface issues.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Open PR bumping flake inputs
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer@v3
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+
+      - name: Update flake.lock and open PR
+        uses: DeterminateSystems/update-flake-lock@v28
+        with:
+          commit-msg: "chore(flake): update flake.lock"
+          pr-title: "chore(flake): update flake.lock"
+          pr-body: |
+            Automated `nix flake update` run.
+
+            CI on this PR (the *Build (locked)* job) validates that the bumped
+            inputs still build. Merge once green; if it's red, the failure
+            tells you what needs fixing before the next `nixpkgs` roll.
+          pr-labels: |
+            dependencies
+            nix
+          # Bump only what can move; systems is a fixed list repo, skip it.
+          inputs: nixpkgs
+          # If an identical open PR already exists, skip creating a new one.
+          pr-branch-suffix: timestamp

@@ -1,0 +1,82 @@
+name: Nix flake
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 03:00 UTC — catch nixpkgs drift between bot cycles.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: flake-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Regression guard: does the committed flake.lock build?
+  # Add this job to branch-protection required checks.
+  build:
+    name: Build (locked)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer@v3
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+
+      - name: nix flake check
+        run: nix --print-build-logs flake check --all-systems
+
+      - name: nix build .#worker-mcp
+        run: nix build .#worker-mcp --print-build-logs
+
+      - name: Smoke test
+        run: |
+          set -o pipefail
+          # Server reads session registry from $HOME/.config/worker-mcp; on a fresh
+          # runner it loads 0 sessions and still prints the stdio banner.
+          out=$(timeout 15 ./result/bin/worker-mcp </dev/null 2>&1 || true)
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -q "worker-mcp server running on stdio"
+
+  # Drift guard: will nixpkgs-latest break us? Not a required check — red here
+  # means upstream moved, fix before merging a lock bump.
+  build-latest-nixpkgs:
+    name: Build (latest nixpkgs)
+    runs-on: ubuntu-24.04
+    # Don't gate merges; this is forward-looking signal only.
+    continue-on-error: true
+    if: github.event_name != 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer@v3
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+
+      - name: Re-resolve nixpkgs to latest
+        run: nix flake update nixpkgs
+
+      - name: nix build .#worker-mcp (latest nixpkgs)
+        run: nix build .#worker-mcp --print-build-logs
+
+      - name: Upload updated flake.lock on success
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-lock-latest-nixpkgs
+          path: flake.lock
+          if-no-files-found: error
