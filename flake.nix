@@ -29,7 +29,7 @@
               version = "0.4.1";
               src = ./.;
               fetcherVersion = 4;
-              hash = "sha256-5t/vaqqwpNisuHvm82a8kGQuUcxbzkJFvPkMZ8GL8Pw=";
+              hash = "sha256-M01f0fX/rREicX3w7cYCNNbWFJnivWWbohicOAti6pg=";
             };
           in
           pkgs.stdenv.mkDerivation {
