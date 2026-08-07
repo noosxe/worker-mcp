@@ -18,6 +18,7 @@
 		"prepublishOnly": "pnpm run build",
 		"publish-npm": "pnpm publish --access public",
 		"release": "node scripts/release.js",
+		"update-pnpm-hash": "node scripts/update-pnpm-hash.js",
 		"prepare": "husky"
 	},
 	"keywords": [],
