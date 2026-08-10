@@ -42,5 +42,3 @@ jobs:
             nix
           # Bump only what can move; systems is a fixed list repo, skip it.
           inputs: nixpkgs
-          # If an identical open PR already exists, skip creating a new one.
-          pr-branch-suffix: timestamp
