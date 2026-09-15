@@ -1,6 +1,7 @@
 # Protocol Specification: worker-mcp
 
 This document specifies the exact protocols and payload schemas for:
+
 1. **The MCP Interface** (Coordinator agent <-> `worker-mcp` server).
 2. **The Pi RPC Wire Protocol** (`worker-mcp` server <-> `pi --mode rpc` child process).
 3. **The Gating & Approval Protocol** (Human-in-the-Loop interception).
@@ -14,194 +15,215 @@ The coordinator (e.g., Antigravity or Claude Desktop) communicates with `worker-
 ### 1.1. Tool Definitions & Payload Schemas
 
 #### A. `spawn_pi_session`
+
 Initializes a new `pi` session by starting a child process or SDK session.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "spawn_pi_session",
-    "arguments": {
-      "sessionId": "string",
-      "cwd": "string",
-      "model": "string (optional)",
-      "systemPrompt": "string (optional)"
-    }
+  	"name": "spawn_pi_session",
+  	"arguments": {
+  		"sessionId": "string",
+  		"cwd": "string",
+  		"model": "string (optional)",
+  		"systemPrompt": "string (optional)"
+  	}
   }
   ```
-* **Response Schema (Success)**:
+- **Response Schema (Success)**:
   ```json
   {
-    "content": [
-      {
-        "type": "text",
-        "text": "Successfully initialized session <sessionId> in <cwd>"
-      }
-    ]
+  	"content": [
+  		{
+  			"type": "text",
+  			"text": "Successfully initialized session <sessionId> in <cwd>"
+  		}
+  	]
   }
   ```
 
 #### B. `send_pi_command`
+
 Sends a prompt or slash command to a running session. Supports MCP task tracking (returns `_meta.task` if requested).
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "send_pi_command",
-    "arguments": {
-      "sessionId": "string",
-      "command": "string",
-      "summarize": "boolean (optional)",
-      "timeout": "number (optional)"
-    }
+  	"name": "send_pi_command",
+  	"arguments": {
+  		"sessionId": "string",
+  		"command": "string",
+  		"summarize": "boolean (optional)",
+  		"timeout": "number (optional)"
+  	}
   }
   ```
-* **Response Schema (Success - Blocking)**:
+- **Response Schema (Success - Blocking)**:
   ```json
   {
-    "content": [
-      {
-        "type": "text",
-        "text": "<Command execution result>"
-      }
-    ]
+  	"content": [
+  		{
+  			"type": "text",
+  			"text": "<Command execution result>"
+  		}
+  	]
   }
   ```
 
 #### C. `cancel_pi_command`
+
 Aborts the currently running command in a session and cancels its background task.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "cancel_pi_command",
-    "arguments": {
-      "sessionId": "string"
-    }
+  	"name": "cancel_pi_command",
+  	"arguments": {
+  		"sessionId": "string"
+  	}
   }
   ```
 
 #### D. `terminate_pi_session`
+
 Stops a session and removes it, freeing its id for reuse.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "terminate_pi_session",
-    "arguments": {
-      "sessionId": "string"
-    }
+  	"name": "terminate_pi_session",
+  	"arguments": {
+  		"sessionId": "string"
+  	}
   }
   ```
 
 #### E. `list_pi_sessions`
+
 Queries all active sessions and their states.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "list_pi_sessions",
-    "arguments": {}
+  	"name": "list_pi_sessions",
+  	"arguments": {}
   }
   ```
-* **Response Schema (Success)**:
+- **Response Schema (Success)**:
   ```json
   {
-    "content": [
-      {
-        "type": "text",
-        "text": "[{\"sessionId\":\"sess_1\",\"cwd\":\"/path/to/project\",\"status\":\"AWAITING_APPROVAL\",\"pendingAction\":{...}}]"
-      }
-    ]
+  	"content": [
+  		{
+  			"type": "text",
+  			"text": "[{\"sessionId\":\"sess_1\",\"cwd\":\"/path/to/project\",\"status\":\"AWAITING_APPROVAL\",\"pendingAction\":{...}}]"
+  		}
+  	]
   }
   ```
 
 #### F. `get_pending_actions`
+
 Retrieves details of a tool call or action currently awaiting approval.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "get_pending_actions",
-    "arguments": {
-      "sessionId": "string"
-    }
+  	"name": "get_pending_actions",
+  	"arguments": {
+  		"sessionId": "string"
+  	}
   }
   ```
 
 #### G. `approve_action`
+
 Approves an intercepted tool execution.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "approve_action",
-    "arguments": {
-      "sessionId": "string",
-      "actionId": "string",
-      "summarize": "boolean (optional)"
-    }
+  	"name": "approve_action",
+  	"arguments": {
+  		"sessionId": "string",
+  		"actionId": "string",
+  		"summarize": "boolean (optional)"
+  	}
   }
   ```
-* **Response Schema**:
+- **Response Schema**:
   ```json
   {
-    "content": [{ "type": "text", "text": "Action approved." }]
+  	"content": [{ "type": "text", "text": "Action approved." }]
   }
   ```
 
 #### H. `reject_action`
+
 Denies an intercepted tool execution and feeds a rejection back to the worker.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "reject_action",
-    "arguments": {
-      "sessionId": "string",
-      "actionId": "string",
-      "reason": "string (optional)",
-      "summarize": "boolean (optional)"
-    }
+  	"name": "reject_action",
+  	"arguments": {
+  		"sessionId": "string",
+  		"actionId": "string",
+  		"reason": "string (optional)",
+  		"summarize": "boolean (optional)"
+  	}
   }
   ```
-* **Response Schema**:
+- **Response Schema**:
   ```json
   {
-    "content": [{ "type": "text", "text": "Action rejected." }]
+  	"content": [{ "type": "text", "text": "Action rejected." }]
   }
   ```
 
 #### I. `set_risk_policy`
+
 Updates the risk-based auto-approval policy for a session at runtime.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "set_risk_policy",
-    "arguments": {
-      "sessionId": "string",
-      "riskPolicy": "object"
-    }
+  	"name": "set_risk_policy",
+  	"arguments": {
+  		"sessionId": "string",
+  		"riskPolicy": "object"
+  	}
   }
   ```
 
 #### J. `get_auto_approved_log`
+
 Retrieves the audit log of actions that were auto-approved by the risk policy.
-* **Request Schema**:
+
+- **Request Schema**:
   ```json
   {
-    "name": "get_auto_approved_log",
-    "arguments": {
-      "sessionId": "string",
-      "pattern": "string (optional)"
-    }
+  	"name": "get_auto_approved_log",
+  	"arguments": {
+  		"sessionId": "string",
+  		"pattern": "string (optional)"
+  	}
   }
   ```
 
 ### 1.2. MCP Resources & Notifications
-* **Resource URIs**:
-  * `worker-mcp://sessions/{sessionId}/history`: Exposes the conversation log from the `pi` agent.
-  * `worker-mcp://sessions/{sessionId}/logs`: Exposes stderr, stdout lines, and raw event traces.
-* **Real-time Notifications**:
+
+- **Resource URIs**:
+  - `worker-mcp://sessions/{sessionId}/history`: Exposes the conversation log from the `pi` agent.
+  - `worker-mcp://sessions/{sessionId}/logs`: Exposes stderr, stdout lines, and raw event traces.
+- **Real-time Notifications**:
   `worker-mcp` sends custom notifications to the client when a state transitions or an action needs review.
-  * Event: `notifications/session_status_changed`
+  - Event: `notifications/session_status_changed`
     ```json
     {
-      "method": "notifications/resources/updated",
-      "params": {
-        "uri": "worker-mcp://sessions/{sessionId}/logs"
-      }
+    	"method": "notifications/resources/updated",
+    	"params": {
+    		"uri": "worker-mcp://sessions/{sessionId}/logs"
+    	}
     }
     ```
 
@@ -215,19 +237,23 @@ Communication between `worker-mcp` and the `pi` subprocess is handled using stri
 
 Commands sent to the `pi` process must conform to the `RpcCommand` typescript types:
 
-* **Send a Prompt**:
+- **Send a Prompt**:
   ```json
-  { "id": "cmd_1", "type": "prompt", "message": "Write a hello world script in JS" }
+  {
+  	"id": "cmd_1",
+  	"type": "prompt",
+  	"message": "Write a hello world script in JS"
+  }
   ```
-* **Abort Execution**:
+- **Abort Execution**:
   ```json
   { "id": "cmd_2", "type": "abort" }
   ```
-* **Query Current State**:
+- **Query Current State**:
   ```json
   { "id": "cmd_3", "type": "get_state" }
   ```
-* **UI Dialog Response (Gating Return)**:
+- **UI Dialog Response (Gating Return)**:
   ```json
   { "type": "extension_ui_response", "id": "req_uuid_123", "confirmed": true }
   ```
@@ -238,43 +264,76 @@ Commands sent to the `pi` process must conform to the `RpcCommand` typescript ty
 ### 2.2. Responses & Events emitted by Pi (on child `stdout`)
 
 #### A. RpcResponse (Command Results)
+
 Sent by `pi` to acknowledge the completion of an input command.
-* **Success Response**:
+
+- **Success Response**:
   ```json
-  { "id": "cmd_3", "type": "response", "command": "get_state", "success": true, "data": { "sessionId": "sess_1", "model": { "id": "qwen2.5-coder" }, "isStreaming": false } }
+  {
+  	"id": "cmd_3",
+  	"type": "response",
+  	"command": "get_state",
+  	"success": true,
+  	"data": {
+  		"sessionId": "sess_1",
+  		"model": { "id": "qwen2.5-coder" },
+  		"isStreaming": false
+  	}
+  }
   ```
-* **Error Response**:
+- **Error Response**:
   ```json
-  { "id": "cmd_1", "type": "response", "command": "prompt", "success": false, "error": "LLM timeout occurred" }
+  {
+  	"id": "cmd_1",
+  	"type": "response",
+  	"command": "prompt",
+  	"success": false,
+  	"error": "LLM timeout occurred"
+  }
   ```
 
 #### B. RpcExtensionUIRequest (UI & Tool Interception Hooks)
+
 Emitted by `pi` when an extension (such as the permission gate) triggers a user-facing check.
-* **Confirmation (Crucial for gating)**:
+
+- **Confirmation (Crucial for gating)**:
   ```json
   {
-    "type": "extension_ui_request",
-    "id": "ui_req_abc123",
-    "method": "confirm",
-    "title": "Allow tool execution",
-    "message": "Allow bash tool to run command 'npm install'?"
+  	"type": "extension_ui_request",
+  	"id": "ui_req_abc123",
+  	"method": "confirm",
+  	"title": "Allow tool execution",
+  	"message": "Allow bash tool to run command 'npm install'?"
   }
   ```
-* **Input Request**:
+- **Input Request**:
   ```json
-  { "type": "extension_ui_request", "id": "ui_req_xyz", "method": "input", "title": "Enter API Key" }
+  {
+  	"type": "extension_ui_request",
+  	"id": "ui_req_xyz",
+  	"method": "input",
+  	"title": "Enter API Key"
+  }
   ```
-* **Notification (Streaming log/status)**:
+- **Notification (Streaming log/status)**:
   ```json
-  { "type": "extension_ui_request", "id": "ui_req_status", "method": "notify", "message": "Starting server...", "notifyType": "info" }
+  {
+  	"type": "extension_ui_request",
+  	"id": "ui_req_status",
+  	"method": "notify",
+  	"message": "Starting server...",
+  	"notifyType": "info"
+  }
   ```
 
 #### C. Session Events (Real-time Progress)
+
 Emitted during prompt execution to stream progress:
-* **Turn Starts**: `{"type": "turn_start"}`
-* **Message Streams**: `{"type": "message_update", "text": "Creating file..."}`
-* **Tool Running**: `{"type": "tool_execution_start", "tool": "bash", "arguments": {"command": "npm install"}}`
-* **Tool Finished**: `{"type": "tool_execution_end", "tool": "bash", "exitCode": 0}`
+
+- **Turn Starts**: `{"type": "turn_start"}`
+- **Message Streams**: `{"type": "message_update", "text": "Creating file..."}`
+- **Tool Running**: `{"type": "tool_execution_start", "tool": "bash", "arguments": {"command": "npm install"}}`
+- **Tool Finished**: `{"type": "tool_execution_end", "tool": "bash", "exitCode": 0}`
 
 ---
 
@@ -288,23 +347,32 @@ To restrict the `pi` agent from executing actions autonomously without consent, 
 2. The extension registers a listener for `tool_call` events:
    ```typescript
    pi.on("tool_call", async (event, ctx) => {
-     // Trigger the standard confirm UI context
-     const approved = await confirm(
-       "Allow tool execution",
-       `Allow ${event.tool} tool to run with arguments ${JSON.stringify(event.input)}?`
-     );
-     if (!approved) {
-       return { block: true, reason: "Command execution rejected by coordinator." };
-     }
+   	// Trigger the standard confirm UI context
+   	const approved = await confirm(
+   		"Allow tool execution",
+   		`Allow ${event.tool} tool to run with arguments ${JSON.stringify(event.input)}?`,
+   	);
+   	if (!approved) {
+   		return {
+   			block: true,
+   			reason: "Command execution rejected by coordinator.",
+   		};
+   	}
    });
    ```
 3. Inside the `pi` engine, the `confirm` call is routed to `RpcExtensionUIRequest` because the agent is running in RPC mode.
 4. `pi` outputs the `confirm` request to stdout:
    ```json
-   { "type": "extension_ui_request", "id": "req_123", "method": "confirm", "title": "Allow tool execution", "message": "Allow bash tool to run with arguments ..." }
+   {
+   	"type": "extension_ui_request",
+   	"id": "req_123",
+   	"method": "confirm",
+   	"title": "Allow tool execution",
+   	"message": "Allow bash tool to run with arguments ..."
+   }
    ```
 5. `worker-mcp` intercepts this message, marks the session as `AWAITING_APPROVAL`, and cache-maps `req_123` to the session.
 6. The coordinator receives notification, reviews the payload, and calls:
-   * **`approve_action`**: `worker-mcp` writes `{"type": "extension_ui_response", "id": "req_123", "confirmed": true}` to `pi`'s `stdin`.
-   * **`reject_action`**: `worker-mcp` writes `{"type": "extension_ui_response", "id": "req_123", "confirmed": false}` to `pi`'s `stdin`.
+   - **`approve_action`**: `worker-mcp` writes `{"type": "extension_ui_response", "id": "req_123", "confirmed": true}` to `pi`'s `stdin`.
+   - **`reject_action`**: `worker-mcp` writes `{"type": "extension_ui_response", "id": "req_123", "confirmed": false}` to `pi`'s `stdin`.
 7. The `confirm` promise inside the child process resolves with `true` or `false`, allowing or blocking the tool execution safely.

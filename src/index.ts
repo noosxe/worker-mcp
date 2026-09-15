@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
 import { InMemoryTaskStore } from "@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -11,6 +12,7 @@ import {
 	ListToolsRequestSchema,
 	ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+
 import { RiskLevel } from "./session/risk-classifier.js";
 import type { RiskPolicy } from "./session/risk-policy.js";
 import { SessionManager } from "./session/session-manager.js";
@@ -762,6 +764,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 	} catch (error) {
 		throw new Error(
 			`Failed to read resource: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
 		);
 	}
 });

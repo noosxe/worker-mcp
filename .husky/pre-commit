@@ -1,1 +1,8 @@
-pnpm exec biome check --write --staged --no-errors-on-unmatched
+# Lint + format staged files only (oxlint/oxfmt have no --staged flag).
+FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(js|mjs|cjs|ts|tsx|jsx|json|jsonc|md|css)$' || true)
+
+if [ -n "$FILES" ]; then
+	printf '%s\n' "$FILES" | xargs pnpm exec oxfmt
+	printf '%s\n' "$FILES" | xargs pnpm exec oxlint --fix
+	printf '%s\n' "$FILES" | xargs git add --
+fi

@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+
 import {
 	classifyAction,
 	parseToolFromMessage,
@@ -164,6 +165,7 @@ export class PiSession {
 			);
 			throw new Error(
 				`Failed to start pi (${piPath}): ${e instanceof Error ? e.message : String(e)}`,
+				{ cause: e },
 			);
 		}
 
@@ -443,8 +445,8 @@ export class PiSession {
 										.filter((block): block is { type: string; text: string } =>
 											Boolean(
 												block &&
-													block.type === "text" &&
-													typeof block.text === "string",
+												block.type === "text" &&
+												typeof block.text === "string",
 											),
 										)
 										.map((block) => block.text)

@@ -81,7 +81,7 @@ function main() {
 		console.log(
 			`Successfully updated pnpmHash in ${FLAKE_PATH} to ${newHash}!`,
 		);
-	} catch (_err) {
+	} catch {
 		console.error("Verification build failed. Restoring original flake.nix.");
 		fs.writeFileSync(FLAKE_PATH, flakeContent, "utf8");
 		process.exit(1);
