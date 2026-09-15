@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import test, { describe } from "node:test";
+
 import {
 	classifyAction,
 	parseToolFromMessage,
@@ -12,6 +13,9 @@ import {
 	matchesPattern,
 	shouldAutoApprove,
 } from "../session/risk-policy.js";
+
+const checkShell = (cmd: string) =>
+	classifyAction({ toolName: "bash", input: { command: cmd } }, "/work");
 
 describe("risk-classifier", () => {
 	describe("parseToolFromMessage", () => {
@@ -43,9 +47,6 @@ describe("risk-classifier", () => {
 	});
 
 	describe("classifyAction - shell commands", () => {
-		const checkShell = (cmd: string) =>
-			classifyAction({ toolName: "bash", input: { command: cmd } }, "/work");
-
 		test("classifies LOW risk commands", () => {
 			assert.strictEqual(checkShell("ls").riskLevel, RiskLevel.LOW);
 			assert.strictEqual(checkShell("cat file.txt").riskLevel, RiskLevel.LOW);
@@ -238,16 +239,10 @@ describe("risk-policy", () => {
 				matchedRule: "",
 			};
 			const rmTool = { toolName: "bash", input: { command: "rm -rf tmp/123" } };
-			const _resAllowed = shouldAutoApprove(highAction, policy, {
-				toolName: "bash",
-				input: { command: "rm -rf tmp/123" },
-			});
+			const resAllowed = shouldAutoApprove(highAction, policy, rmTool);
 			// The override matches "rm -rf tmp/*" exactly via glob? Let's check matchesPattern
 			// Oh wait, my matchesPattern for "rm -rf tmp/*" against "rm -rf tmp/123" works because * becomes .*
-			assert.strictEqual(
-				shouldAutoApprove(highAction, policy, rmTool).approved,
-				true,
-			);
+			assert.strictEqual(resAllowed.approved, true);
 
 			const lowAction = {
 				riskLevel: RiskLevel.LOW,

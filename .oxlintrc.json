@@ -1,0 +1,17 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "unicorn", "oxc"],
+	"categories": {
+		"correctness": "error",
+		"suspicious": "error"
+	},
+	"rules": {
+		"eslint/no-underscore-dangle": [
+			"error",
+			{ "allow": ["__filename", "__dirname"] }
+		]
+	},
+	"env": {
+		"builtin": true
+	}
+}

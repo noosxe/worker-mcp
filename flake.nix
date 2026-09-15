@@ -17,7 +17,7 @@
       eachSystem = f: nixpkgs.lib.genAttrs (import systems) (system: f system nixpkgs.legacyPackages.${system});
 
       version = "0.4.1";
-      pnpmHash = "sha256-BDGKLf65M44F9eH5BTW5N9HhhHeETrfx1LoFFueQ+bM=";
+      pnpmHash = "sha256-AS7puF54eAzK5Sd1RaUg0VA3DVH+wi5v5Hv/n9Q9MhA=";
 
       worker-mcp-for =
         pkgs:
@@ -108,7 +108,8 @@
             pnpm
             typescript
             typescript-language-server
-            biome
+            oxlint
+            oxfmt
           ];
 
           shellHook = ''

@@ -23,16 +23,21 @@ Instead of rolling a custom local LLM tool loop, `worker-mcp` delegates coding, 
 ### 1. Install via npm (Recommended)
 
 #### Option A: Global Installation
+
 Install the package globally on your system:
+
 ```bash
 npm install -g @noosxe/worker-mcp
 # or using pnpm
 pnpm add -g @noosxe/worker-mcp
 ```
+
 Once installed globally, you can run the server using the `worker-mcp` command.
 
 #### Option B: Run ad-hoc via npx
+
 Alternatively, you can run the server on stdio immediately without installing it:
+
 ```bash
 npx @noosxe/worker-mcp
 ```
@@ -40,20 +45,27 @@ npx @noosxe/worker-mcp
 ---
 
 ### 2. Install via Nix
+
 This project also provides a Nix flake to ensure consistent environments and easy installation.
 
 #### Option A: Run Directly (Ad-hoc)
+
 You can run the server on stdio immediately using Nix:
+
 ```bash
 nix run github:noosxe/worker-mcp
 ```
 
 #### Option B: Install to User Profile
+
 Install the `worker-mcp` executable globally in your user profile:
+
 ```bash
 nix profile install github:noosxe/worker-mcp
 ```
+
 Once installed, run it with:
+
 ```bash
 worker-mcp
 ```
@@ -61,14 +73,17 @@ worker-mcp
 ---
 
 ### 3. Declarative Installation via Flake Overlay (System / Home Manager)
+
 If you manage your operating system or user profile declaratively via NixOS or Home Manager, you can consume our default overlay.
 
 #### Step 3.1: Add the Flake Input
+
 Add `worker-mcp` to your system's `flake.nix` input section:
+
 ```nix
 inputs = {
   nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-  
+
   # Add worker-mcp input
   worker-mcp.url = "github:noosxe/worker-mcp";
 };
@@ -77,7 +92,9 @@ inputs = {
 #### Step 3.2: Configure the Overlay and Install
 
 ##### Option A: NixOS Configuration
+
 Add the overlay to `nixpkgs` and include `worker-mcp` in your system packages:
+
 ```nix
 outputs = { self, nixpkgs, worker-mcp, ... }@inputs: {
   nixosConfigurations.my-system = nixpkgs.lib.nixosSystem {
@@ -101,7 +118,9 @@ outputs = { self, nixpkgs, worker-mcp, ... }@inputs: {
 ```
 
 ##### Option B: Home Manager Configuration
+
 Add the overlay to `nixpkgs` and install it in your user packages:
+
 ```nix
 outputs = { self, nixpkgs, worker-mcp, ... }@inputs: {
   homeConfigurations.my-user = inputs.home-manager.lib.homeManagerConfiguration {
@@ -122,7 +141,6 @@ outputs = { self, nixpkgs, worker-mcp, ... }@inputs: {
 };
 ```
 
-
 ---
 
 ## Harness Integration (Antigravity CLI / `agy`)
@@ -130,55 +148,55 @@ outputs = { self, nixpkgs, worker-mcp, ... }@inputs: {
 To register the `worker-mcp` server with your Antigravity TUI/CLI (`agy`), follow these steps:
 
 ### Step 1: Register the Server via `mcp_config.json` (Declarative)
+
 Antigravity CLI resolves MCP servers from dedicated configuration files (rather than the old `settings.json`). Add the configuration in one of the following locations:
-* **Global Configuration**: `~/.gemini/config/mcp_config.json`
-* **Project-local Configuration**: `.agents/mcp_config.json` (at the root of your project workspace)
+
+- **Global Configuration**: `~/.gemini/config/mcp_config.json`
+- **Project-local Configuration**: `.agents/mcp_config.json` (at the root of your project workspace)
 
 #### Configuration file schemas:
 
 ##### Option A: If installed globally (via npm or Nix)
+
 ```json
 {
-  "mcpServers": {
-    "worker-mcp": {
-      "command": "worker-mcp",
-      "args": []
-    }
-  }
+	"mcpServers": {
+		"worker-mcp": {
+			"command": "worker-mcp",
+			"args": []
+		}
+	}
 }
 ```
 
 ##### Option B: If running ad-hoc via npx
+
 ```json
 {
-  "mcpServers": {
-    "worker-mcp": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@noosxe/worker-mcp"
-      ]
-    }
-  }
+	"mcpServers": {
+		"worker-mcp": {
+			"command": "npx",
+			"args": ["-y", "@noosxe/worker-mcp"]
+		}
+	}
 }
 ```
 
 ##### Option C: If running ad-hoc via GitHub Flake
+
 ```json
 {
-  "mcpServers": {
-    "worker-mcp": {
-      "command": "nix",
-      "args": [
-        "run",
-        "github:noosxe/worker-mcp?ref=main"
-      ]
-    }
-  }
+	"mcpServers": {
+		"worker-mcp": {
+			"command": "nix",
+			"args": ["run", "github:noosxe/worker-mcp?ref=main"]
+		}
+	}
 }
 ```
 
 ##### Option D: Declarative Home Manager Configuration
+
 If you manage your user configuration via Home Manager, you can declare the global `mcp_config.json` file in your `home.nix` using `home.file` combined with `builtins.toJSON`:
 
 ```nix
@@ -201,9 +219,10 @@ home.file.".gemini/config/mcp_config.json".text = builtins.toJSON {
 };
 ```
 
-
 ### Step 2: Verify and Manage via TUI (`/mcp` command)
+
 Once you have added the server configuration to `mcp_config.json`, you can manage it interactively inside the CLI:
+
 1. Launch the Antigravity TUI:
    ```bash
    agy
@@ -216,13 +235,17 @@ Once you have added the server configuration to `mcp_config.json`, you can manag
 ## Operational Configuration
 
 ### Environment Variables
+
 - **`WORKER_MCP_PI_PATH`**: Absolute path to the `pi` coding-agent binary (defaults to searching `PATH` for `pi`).
 
 ### Pre-requisites
+
 Make sure you have the global `pi` coding-agent CLI installed in your local system:
+
 ```bash
 npm install -g @earendil-works/pi-coding-agent
 ```
+
 Configure your models in `pi` (e.g. using `pi --mode rpc` to set default models, or registering Ollama model definitions).
 
 ---
@@ -230,37 +253,42 @@ Configure your models in `pi` (e.g. using `pi --mode rpc` to set default models,
 ## MCP Reference
 
 ### Exposed Tools
-*   `spawn_pi_session`: Spawns a new supervisor-gated worker agent in the specified workspace directory.
-*   `send_pi_command`: Dispatches prompts to the worker session. Supports background MCP task execution (resolving asynchronously) or blocking mode with an optional timeout.
-*   `cancel_pi_command`: Aborts the currently running command in a session and cancels its background task.
-*   `list_pi_sessions`: Returns a list of active sessions, directory targets, and current states.
-*   `get_pending_actions`: Fetches the details of an intercepted command awaiting consent.
-*   `approve_action`: Approves execution of a gated tool call.
-*   `reject_action`: Blocks a gated tool call and forwards feedback to correct the agent's course.
-*   `set_risk_policy`: Updates the risk-based auto-approval policy for a session at runtime.
-*   `get_auto_approved_log`: Retrieves the audit log of actions that were auto-approved by the risk policy.
+
+- `spawn_pi_session`: Spawns a new supervisor-gated worker agent in the specified workspace directory.
+- `send_pi_command`: Dispatches prompts to the worker session. Supports background MCP task execution (resolving asynchronously) or blocking mode with an optional timeout.
+- `cancel_pi_command`: Aborts the currently running command in a session and cancels its background task.
+- `list_pi_sessions`: Returns a list of active sessions, directory targets, and current states.
+- `get_pending_actions`: Fetches the details of an intercepted command awaiting consent.
+- `approve_action`: Approves execution of a gated tool call.
+- `reject_action`: Blocks a gated tool call and forwards feedback to correct the agent's course.
+- `set_risk_policy`: Updates the risk-based auto-approval policy for a session at runtime.
+- `get_auto_approved_log`: Retrieves the audit log of actions that were auto-approved by the risk policy.
 
 ### Exposed Resources
-*   `worker-mcp://sessions/{sessionId}/history`: Returns the conversation log and internal message stream.
-*   `worker-mcp://sessions/{sessionId}/logs`: Returns the stdout/stderr trace logs of the subprocess.
+
+- `worker-mcp://sessions/{sessionId}/history`: Returns the conversation log and internal message stream.
+- `worker-mcp://sessions/{sessionId}/logs`: Returns the stdout/stderr trace logs of the subprocess.
 
 ---
 
 ## Local Development
 
 If you are contributing to this codebase, you **must** enter the Nix development shell:
+
 ```bash
 nix develop
 ```
 
 This enters an environment pre-packaged with:
+
 - **Node.js 24**
 - **pnpm**
 - **TypeScript**
-- **BiomeJS**
+- **Oxlint + Oxfmt (Oxc)**
 
 ### Dev Tasks
-- **Code Quality (Check, Lint, Format)**: `biome check --write src/`
+
+- **Code Quality (Check, Lint, Format)**: `pnpm run lint:fix`
 - **Compile TypeScript**: `pnpm run build`
 - **Run local server**: `pnpm run dev`
 - **Build Nix Derivation**: `nix build`

@@ -1,6 +1,7 @@
-/* biome-ignore-all lint/suspicious/noExplicitAny: testing private methods */
+/* oxlint-disable no-explicit-any -- testing private methods */
 import assert from "node:assert";
 import { describe, test } from "node:test";
+
 import { PiSession } from "../session/pi-session.js";
 import { RiskLevel } from "../session/risk-classifier.js";
 

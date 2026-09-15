@@ -2,40 +2,43 @@
 	"name": "@noosxe/worker-mcp",
 	"version": "0.4.1",
 	"description": "",
-	"main": "dist/index.js",
+	"keywords": [],
+	"license": "MIT",
+	"author": "",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/noosxe/worker-mcp.git"
+	},
 	"bin": {
 		"worker-mcp": "./dist/index.js"
 	},
 	"files": [
 		"dist"
 	],
+	"type": "module",
+	"main": "dist/index.js",
 	"scripts": {
 		"build": "tsc",
 		"start": "node dist/index.js",
 		"dev": "tsx src/index.ts",
 		"test": "node --import tsx --test src/__tests__/*.test.ts",
-		"lint": "biome check .",
+		"lint": "oxlint && oxfmt --check .",
+		"lint:fix": "oxlint --fix && oxfmt .",
+		"format": "oxfmt .",
 		"prepublishOnly": "pnpm run build",
 		"publish-npm": "pnpm publish --access public",
 		"release": "node scripts/release.js",
 		"update-pnpm-hash": "node scripts/update-pnpm-hash.js",
 		"prepare": "husky"
 	},
-	"keywords": [],
-	"author": "",
-	"license": "MIT",
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/noosxe/worker-mcp.git"
-	},
-	"type": "module",
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.29.0"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.4",
 		"@types/node": "^26.1.1",
 		"husky": "^9.1.7",
+		"oxfmt": "^0.68.0",
+		"oxlint": "^1.83.0",
 		"tsx": "^4.23.1",
 		"typescript": "^7.0.2"
 	}
