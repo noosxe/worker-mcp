@@ -1,8 +1,18 @@
 # Lint + format staged files only (oxlint/oxfmt have no --staged flag).
-FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(js|mjs|cjs|ts|tsx|jsx|json|jsonc|md|css)$' || true)
+# oxfmt also formats markdown/css; oxlint only understands JS/TS/JSON files,
+# so feeding it other extensions fails with "No files found to lint" (exit 123).
+ALL_FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(js|mjs|cjs|ts|tsx|jsx|json|jsonc|md|css)$' || true)
+LINT_FILES=$(printf '%s\n' "$ALL_FILES" | grep -E '\.(js|mjs|cjs|ts|tsx|jsx|json|jsonc)$' || true)
 
-if [ -n "$FILES" ]; then
-	printf '%s\n' "$FILES" | xargs pnpm exec oxfmt
-	printf '%s\n' "$FILES" | xargs pnpm exec oxlint --fix
-	printf '%s\n' "$FILES" | xargs git add --
+if [ -n "$ALL_FILES" ]; then
+	printf '%s\n' "$ALL_FILES" | xargs pnpm exec oxfmt
+fi
+
+if [ -n "$LINT_FILES" ]; then
+	printf '%s\n' "$LINT_FILES" | xargs pnpm exec oxlint --fix
+fi
+
+# Re-stage anything the tools rewrote.
+if [ -n "$ALL_FILES" ]; then
+	printf '%s\n' "$ALL_FILES" | xargs git add --
 fi
