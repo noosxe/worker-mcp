@@ -7,3 +7,4 @@ dist/
 .DS_Store
 result
 scratch/
+.pi/tasks/
