@@ -87,7 +87,7 @@ Merge the release PR once green.
 2. Sets up pnpm + Node (cached), `pnpm install --frozen-lockfile`.
 3. **Lint → Build → Test** (same gates as CI).
 4. **Publishes to npm**: `pnpm publish --access public --provenance
---no-git-checks` (`prepublishOnly` runs the build again first).
+   --no-git-checks` (`prepublishOnly` runs the build again first).
 5. **Creates the GitHub Release**: `gh release create {tag} --generate-notes`
    (changelog auto-generated from commits).
 
