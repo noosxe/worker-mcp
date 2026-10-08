@@ -17,7 +17,7 @@
       eachSystem = f: nixpkgs.lib.genAttrs (import systems) (system: f system nixpkgs.legacyPackages.${system});
 
       version = "0.4.1";
-      pnpmHash = "sha256-AxowWqsZbxOKKhnZohrOSnwClkv8kDHIwXax3TgP+Yg=";
+      pnpmHash = "sha256-hu1SLtJR9m7yZ2LbiAEFjFgfwCZKn/TNhpA9qO/gY7E=";
 
       worker-mcp-for =
         pkgs:
@@ -32,6 +32,22 @@
               inherit version;
               src = ./.;
               fetcherVersion = 4;
+              # oxfmt/oxlint ship optional native bindings for ~20 platforms,
+              # and pnpm only fetches the ones matching the host platform,
+              # which makes the store (and its hash) platform-dependent again
+              # (the v11/links workaround below no longer suffices). Widen
+              # supportedArchitectures for the fetch only, so the fetched
+              # store is identical on every platform; the main derivation
+              # still installs just the host platform's bindings.
+              prePnpmInstall = ''
+                cat >> pnpm-workspace.yaml <<'EOF'
+
+supportedArchitectures:
+  os: [current, linux, darwin, win32, android, freebsd, openharmony]
+  cpu: [current, x64, arm64, ia32, arm, riscv64, ppc64, s390x, loong64, mips64el]
+  libc: [current, glibc, musl]
+EOF
+              '';
               hash = pnpmHash;
             }).overrideAttrs
               (old: {

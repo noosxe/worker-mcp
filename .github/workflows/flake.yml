@@ -12,7 +12,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -46,28 +45,6 @@ jobs:
 
       - name: nix build .#worker-mcp
         run: nix build .#worker-mcp --print-build-logs
-
-      - name: DEBUG dump pnpm deps store
-        run: |
-          nix build .#worker-mcp.pnpmDeps -o /tmp/pnpm-deps-result
-          mkdir /tmp/store-extract
-          tar --zstd -xf /tmp/pnpm-deps-result/pnpm-store.tar.zst -C /tmp/store-extract
-          (cd /tmp/store-extract && find . -type f | sort | xargs sha256sum > /tmp/manifest-linux.txt)
-          tar --zstd -cf /tmp/linux-store.tar.zst -C /tmp/store-extract .
-
-      - name: DEBUG upload store
-        uses: actions/upload-artifact@v5
-        with:
-          name: linux-pnpm-store
-          path: /tmp/linux-store.tar.zst
-          if-no-files-found: error
-
-      - name: DEBUG upload manifest
-        uses: actions/upload-artifact@v5
-        with:
-          name: linux-store-manifest
-          path: /tmp/manifest-linux.txt
-          if-no-files-found: error
 
       - name: Smoke test
         run: |
