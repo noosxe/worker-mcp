@@ -17,7 +17,7 @@
       eachSystem = f: nixpkgs.lib.genAttrs (import systems) (system: f system nixpkgs.legacyPackages.${system});
 
       version = "0.4.1";
-      pnpmHash = "sha256-UjMThBm75eV3HrppGz13VkkOlj44EDoph7oDinVWkGM=";
+      pnpmHash = "sha256-AteI+h/JmCYPGMNN44htXU1RubSPdOt91N2JOo42kgo=";
 
       worker-mcp-for =
         pkgs:
@@ -40,6 +40,12 @@
               # store is identical on every platform; the main derivation
               # still installs just the host platform's bindings.
               prePnpmInstall = ''
+                # nixpkgs' fetch-pnpm-deps exports pnpm_config_force_ignores_platform
+                # itself since fetch-pnpm-deps@84098fa4 (2026-10), which adds every
+                # platform's optional deps to the store and changes pnpmHash.
+                # Export it here too, so the store (and one pnpmHash) stays
+                # identical across nixpkgs revisions with and without that change.
+                export pnpm_config_force_ignores_platform=true
                 cat >> pnpm-workspace.yaml <<'EOF'
 
 supportedArchitectures:
