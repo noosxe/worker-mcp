@@ -17,7 +17,7 @@
       eachSystem = f: nixpkgs.lib.genAttrs (import systems) (system: f system nixpkgs.legacyPackages.${system});
 
       version = "0.4.1";
-      pnpmHash = "sha256-oUz6ddGdu5qU9GzXN83QH4LFbsBgfr5qH+kAB5nX1lI=";
+      pnpmHash = "sha256-ZSfTNyNgIxjOVfxVwPTftI+Fo0upE6/4q9kirPV9als=";
 
       worker-mcp-for =
         pkgs:
