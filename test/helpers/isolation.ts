@@ -150,13 +150,16 @@ export function createIsolation(): Isolation {
 		async cleanup() {
 			// Give a just-signalled worker a moment to exit before judging it.
 			await waitUntil(
-				() => iso.workers().every((p) => leaks.has(p) || pidGone(p)),
+				() =>
+					[...iso.workers(), ...iso.grandchildren()].every(
+						(p) => leaks.has(p) || pidGone(p),
+					),
 				3000,
 				"workers to exit",
 			).catch(() => {});
-			const survivors = iso
-				.workers()
-				.filter((p) => !leaks.has(p) && !pidGone(p));
+			const survivors = [...iso.workers(), ...iso.grandchildren()].filter(
+				(p) => !leaks.has(p) && !pidGone(p),
+			);
 			for (const pid of [...iso.workers(), ...iso.grandchildren()]) {
 				try {
 					process.kill(pid, "SIGKILL");
@@ -166,7 +169,9 @@ export function createIsolation(): Isolation {
 			}
 			fs.rmSync(root, { recursive: true, force: true });
 			if (survivors.length > 0) {
-				throw new Error(`fake-pi processes survived: ${survivors.join(", ")}`);
+				throw new Error(
+					`fake-pi processes (or their children) survived: ${survivors.join(", ")}`,
+				);
 			}
 		},
 	};

@@ -1,7 +1,7 @@
-import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 
 import { type Config, defaultConfig } from "../config.js";
+import { ChildRegistry, type ManagedChild } from "../core/child.js";
 import type { GateOutcome } from "../gate/classifier.js";
 import {
 	DEFAULT_MAX_AUTO_APPROVE,
@@ -17,7 +17,6 @@ import { parseToolFromMessage } from "../gate/request.js";
 import { RISK_LABELS, RiskLevel } from "../gate/risk.js";
 import {
 	assertGatePresent,
-	buildWorkerEnv,
 	type Gate,
 	PI_HARDENING_FLAGS,
 	removeGate,
@@ -87,6 +86,8 @@ export interface PiSessionDeps {
 	runtime?: RuntimeDir;
 	/** The server's environment, the source of the worker's allowlisted env. */
 	env?: NodeJS.ProcessEnv;
+	/** Starts and kills worker processes; one per server. */
+	children?: ChildRegistry;
 }
 
 export class PiSession {
@@ -115,8 +116,7 @@ export class PiSession {
 		| null = null;
 	private static readonly MAX_AUTO_APPROVED_LOG = 500;
 
-	private process: ChildProcess | null = null;
-	private stdoutBuffer: string = "";
+	private child: ManagedChild | null = null;
 	private resolveCommand: ((value: string) => void) | null = null;
 	private rejectCommand: ((reason: Error) => void) | null = null;
 	private currentTurnOutput = "";
@@ -131,6 +131,7 @@ export class PiSession {
 	private readonly config: Config;
 	private readonly runtime: RuntimeDir | undefined;
 	private readonly processEnv: NodeJS.ProcessEnv;
+	private readonly children: ChildRegistry;
 
 	constructor(
 		sessionId: string,
@@ -143,6 +144,9 @@ export class PiSession {
 		this.config = deps.config ?? defaultConfig();
 		this.runtime = deps.runtime;
 		this.processEnv = deps.env ?? {};
+		this.children =
+			deps.children ??
+			new ChildRegistry({ env: this.processEnv, envConfig: this.config.env });
 		this.sessionId = sessionId;
 		this.cwd = cwd;
 		this.model = model;
@@ -201,43 +205,22 @@ export class PiSession {
 			args.push("--system-prompt", this.systemPrompt);
 		}
 
+		let child: ManagedChild;
 		try {
 			assertGatePresent(gate);
-			this.process = spawn(piPath, args, {
+			child = this.children.spawn({
+				argv: [piPath, ...args],
 				cwd: this.cwd,
-				env: buildWorkerEnv(this.processEnv, this.config.env),
-				stdio: ["pipe", "pipe", "pipe"],
+				stdio: "jsonl",
+				sandbox: "none",
 			});
+			this.child = child;
+			// A missing or non-executable binary surfaces asynchronously: wait for
+			// the outcome so a failed spawn is reported instead of looking healthy.
+			await child.started;
 		} catch (e) {
 			this.status = "CRASHED";
-			this.removeGateDir();
-			this.log(
-				`Failed to spawn process: ${e instanceof Error ? e.message : String(e)}`,
-			);
-			throw e;
-		}
-
-		// spawn() only throws synchronously for invalid arguments; a missing or
-		// non-executable binary surfaces as an async 'error' event. Wait for the
-		// outcome so a failed spawn is reported to the caller instead of being
-		// mistaken for a healthy session.
-		const child = this.process;
-		try {
-			await new Promise<void>((resolve, reject) => {
-				const onSpawn = () => {
-					child.off("error", onError);
-					resolve();
-				};
-				const onError = (err: Error) => {
-					child.off("spawn", onSpawn);
-					reject(err);
-				};
-				child.once("spawn", onSpawn);
-				child.once("error", onError);
-			});
-		} catch (e) {
-			this.status = "CRASHED";
-			this.process = null;
+			this.child = null;
 			this.removeGateDir();
 			this.log(
 				`Failed to spawn process: ${e instanceof Error ? e.message : String(e)}`,
@@ -250,46 +233,22 @@ export class PiSession {
 
 		this.status = "IDLE";
 
-		// Set up stdout buffering and line splitting
-		this.process.stdout?.on("data", (chunk: Buffer) => {
-			this.stdoutBuffer += chunk.toString("utf8");
-			let boundary = this.stdoutBuffer.indexOf("\n");
-			while (boundary !== -1) {
-				const line = this.stdoutBuffer.substring(0, boundary).trim();
-				this.stdoutBuffer = this.stdoutBuffer.substring(boundary + 1);
-				if (line) {
-					this.handleStdoutLine(line);
-				}
-				boundary = this.stdoutBuffer.indexOf("\n");
+		// Framing, line caps and EPIPE-safe writes live in the child handle.
+		child.onLine((line) => this.handleStdoutLine(line.trim()));
+		child.onStderr((line) => this.log(`[stderr] ${line}`));
+		child.onProblem((p) => this.log(`pi ${p.kind}: ${p.detail}`));
+		void child.exited.then((exit) => {
+			if (exit.error) {
+				this.status = "CRASHED";
+				this.log(`Process error event: ${exit.error.message}`);
+				this.dropPending();
+				this.rejectCommand?.(exit.error);
+				this.resolveCommand = null;
+				this.rejectCommand = null;
+				return;
 			}
-		});
-
-		// Set up stderr parsing
-		this.process.stderr?.on("data", (chunk: Buffer) => {
-			const text = chunk.toString("utf8").trim();
-			if (text) {
-				this.log(`[stderr] ${text}`);
-			}
-		});
-
-		// A write after pi has exited emits EPIPE here; unhandled, it would
-		// throw and take the whole server down.
-		this.process.stdin?.on("error", (err) => {
-			this.log(`pi stdin error: ${err.message}`);
-		});
-
-		// Handle process exits
-		this.process.on("close", (code) => this.handleClose(code));
-
-		this.process.on("error", (err) => {
-			this.status = "CRASHED";
-			this.log(`Process error event: ${err.message}`);
-			this.dropPending();
-			if (this.rejectCommand) {
-				this.rejectCommand(err);
-			}
-			this.resolveCommand = null;
-			this.rejectCommand = null;
+			// A replaced or terminated child's late exit must not touch its successor.
+			if (this.child === child || this.terminating) this.handleClose(exit.code);
 		});
 
 		// Apply model override if specified
@@ -325,7 +284,7 @@ export class PiSession {
 			this.log(`Process completed and exited successfully.`);
 		}
 
-		this.process = null;
+		this.child = null;
 		this.removeGateDir();
 		this.dropPending();
 		if (this.resolveCommand) {
@@ -495,13 +454,9 @@ export class PiSession {
 
 	private writeRaw(obj: object): Promise<void> {
 		return new Promise((resolve, reject) => {
-			const stdin = this.process?.stdin;
-			if (!stdin || stdin.destroyed || !stdin.writable) {
-				return reject(new Error("Process not running"));
-			}
-
-			const payload = `${JSON.stringify(obj)}\n`;
-			stdin.write(payload, "utf8", (err) => {
+			const child = this.child;
+			if (!child) return reject(new Error("Process not running"));
+			child.send(obj, (err) => {
 				if (err) {
 					reject(err);
 				} else {
@@ -691,7 +646,7 @@ export class PiSession {
 
 	/** Whether a pi subprocess is actually attached to this session. */
 	public isAlive(): boolean {
-		return this.process !== null;
+		return this.child !== null;
 	}
 
 	public setActiveTaskId(taskId: string | null): void {
@@ -849,22 +804,30 @@ export class PiSession {
 		});
 	}
 
-	public terminate() {
+	/**
+	 * Stop the worker: SIGTERM, then SIGKILL for it and everything it started
+	 * once the grace period is over. Resolves when the process is gone.
+	 * Idempotent.
+	 */
+	public terminate(): Promise<void> {
 		this.log("Terminating subprocess...");
 		this.terminating = true;
 		if (this.abortTimeout) {
 			clearTimeout(this.abortTimeout);
 			this.abortTimeout = null;
 		}
-		if (this.process) {
-			this.process.kill("SIGTERM");
+		const child = this.child;
+		let gone: Promise<void> = Promise.resolve();
+		if (child) {
+			gone = child.terminate();
 			this.status = "FINISHED";
-			this.process = null;
+			this.child = null;
 		}
 		this.removeGateDir();
 		this.dropPending();
 		this.onStatusChange?.(this.sessionId, "CRASHED", "Process terminated");
 		this.activeTaskId = null;
+		return gone;
 	}
 
 	private detectLoop(text: string): boolean {
