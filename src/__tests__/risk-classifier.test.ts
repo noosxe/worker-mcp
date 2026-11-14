@@ -618,7 +618,12 @@ describe("allow overrides", () => {
 	});
 
 	test("an allow does not approve CRITICAL without an explicit maxRiskLevel", () => {
-		assert.strictEqual(decide("rm -rf ~", allow("rm *")).approved, true); // HIGH
+		assert.strictEqual(decide("rm -rf ~", allow("rm *")).approved, false);
+		assert.strictEqual(decide("rm build.log", allow("rm *")).approved, true);
+		assert.strictEqual(
+			decide("rm -rf ~", allow("rm *", RiskLevel.CRITICAL)).approved,
+			true,
+		);
 		assert.strictEqual(decide("sudo ls", allow("sudo *")).approved, false);
 		assert.strictEqual(
 			decide("sudo ls", allow("sudo *", RiskLevel.HIGH)).approved,

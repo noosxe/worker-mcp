@@ -197,7 +197,6 @@
 		"command": "run.sh",
 		"min": "HIGH"
 	},
-
 	{
 		"name": "env wrapper with sh -c",
 		"toolName": "bash",
@@ -228,7 +227,12 @@
 		"command": "zsh -c 'rm -rf ~'",
 		"min": "HIGH"
 	},
-	{ "name": "xargs", "toolName": "bash", "command": "xargs rm", "min": "HIGH" },
+	{
+		"name": "xargs",
+		"toolName": "bash",
+		"command": "xargs rm",
+		"min": "HIGH"
+	},
 	{
 		"name": "nohup",
 		"toolName": "bash",
@@ -313,7 +317,6 @@
 		"command": "find . -fprintf out.txt x",
 		"min": "HIGH"
 	},
-
 	{
 		"name": "python -c",
 		"toolName": "bash",
@@ -446,7 +449,12 @@
 		"command": "cargo build",
 		"min": "HIGH"
 	},
-	{ "name": "make", "toolName": "bash", "command": "make", "min": "HIGH" },
+	{
+		"name": "make",
+		"toolName": "bash",
+		"command": "make",
+		"min": "HIGH"
+	},
 	{
 		"name": "just",
 		"toolName": "bash",
@@ -471,7 +479,6 @@
 		"command": "nix shell nixpkgs#hello",
 		"min": "HIGH"
 	},
-
 	{
 		"name": "printenv",
 		"toolName": "bash",
@@ -484,7 +491,12 @@
 		"command": "printenv API_TOKEN",
 		"min": "HIGH"
 	},
-	{ "name": "set", "toolName": "bash", "command": "set", "min": "HIGH" },
+	{
+		"name": "set",
+		"toolName": "bash",
+		"command": "set",
+		"min": "HIGH"
+	},
 	{
 		"name": "export -p",
 		"toolName": "bash",
@@ -593,7 +605,6 @@
 		"path": "/work/.env",
 		"min": "HIGH"
 	},
-
 	{
 		"name": "git push",
 		"toolName": "bash",
@@ -762,7 +773,6 @@
 		"command": "git \"-c\" core.hooksPath=/tmp/h status",
 		"min": "HIGH"
 	},
-
 	{
 		"name": "plain ls",
 		"toolName": "bash",
@@ -917,7 +927,6 @@
 		"min": "LOW",
 		"max": "LOW"
 	},
-
 	{
 		"name": "mkdir stays below HIGH",
 		"toolName": "bash",
@@ -931,5 +940,189 @@
 		"command": "git add .",
 		"min": "MEDIUM",
 		"max": "MEDIUM"
+	},
+	{
+		"name": "critical: rm -rf /",
+		"toolName": "bash",
+		"command": "rm -rf /",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -rf ~",
+		"toolName": "bash",
+		"command": "rm -rf ~",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -rf ~/projects",
+		"toolName": "bash",
+		"command": "rm -rf ~/projects",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -rf $HOME",
+		"toolName": "bash",
+		"command": "rm -rf $HOME",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -fr ..",
+		"toolName": "bash",
+		"command": "rm -fr ..",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -rf ../sibling",
+		"toolName": "bash",
+		"command": "rm -rf ../sibling",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -rf .",
+		"toolName": "bash",
+		"command": "rm -rf .",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -rf *",
+		"toolName": "bash",
+		"command": "rm -rf *",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -rf /*",
+		"toolName": "bash",
+		"command": "rm -rf /*",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -rf an absolute path outside the workspace",
+		"toolName": "bash",
+		"command": "rm -rf /var/lib/data",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -r outside",
+		"toolName": "bash",
+		"command": "rm -r /tmp/other",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -R outside",
+		"toolName": "bash",
+		"command": "rm -R /tmp/other",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm --recursive --force outside",
+		"toolName": "bash",
+		"command": "rm --recursive --force /tmp/other",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm -f an absolute path outside the workspace",
+		"toolName": "bash",
+		"command": "rm -f /etc/hosts",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm --no-preserve-root",
+		"toolName": "bash",
+		"command": "rm --no-preserve-root -rf /",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm with the workspace's own path via ..",
+		"toolName": "bash",
+		"command": "rm -rf /work/../etc",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm sibling directory with a shared prefix",
+		"toolName": "bash",
+		"command": "rm -rf /work-evil",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm with -- before the target",
+		"toolName": "bash",
+		"command": "rm -rf -- ~",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm after chaining",
+		"toolName": "bash",
+		"command": "ls ; rm -rf ~",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: rm through env",
+		"toolName": "bash",
+		"command": "env rm -rf ~",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: find / -delete",
+		"toolName": "bash",
+		"command": "find / -delete",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: find ~ -delete",
+		"toolName": "bash",
+		"command": "find ~ -delete",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: find . -delete",
+		"toolName": "bash",
+		"command": "find . -name '*.o' -delete",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: find .. -delete",
+		"toolName": "bash",
+		"command": "find .. -type f -delete",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: chmod -R on home",
+		"toolName": "bash",
+		"command": "chmod -R 777 ~",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "critical: chown -R on root",
+		"toolName": "bash",
+		"command": "chown -R user /",
+		"min": "CRITICAL"
+	},
+	{
+		"name": "rm of a file inside the workspace stays HIGH",
+		"toolName": "bash",
+		"command": "rm build.log",
+		"min": "HIGH",
+		"max": "HIGH"
+	},
+	{
+		"name": "rm -rf of a subdirectory inside the workspace stays HIGH",
+		"toolName": "bash",
+		"command": "rm -rf build/cache",
+		"min": "HIGH",
+		"max": "HIGH"
+	},
+	{
+		"name": "rm -rf of an absolute path inside the workspace stays HIGH",
+		"toolName": "bash",
+		"command": "rm -rf /work/build",
+		"min": "HIGH",
+		"max": "HIGH"
+	},
+	{
+		"name": "find -delete inside a subdirectory stays HIGH",
+		"toolName": "bash",
+		"command": "find build -name '*.o' -delete",
+		"min": "HIGH",
+		"max": "HIGH"
 	}
 ]
