@@ -77,8 +77,9 @@ comma-separated list of names, or `PREFIX_*` patterns:
 claude mcp add -e WORKER_MCP_ENV_PASSTHROUGH=ANTHROPIC_API_KEY,HTTPS_PROXY worker-mcp -- worker-mcp
 ```
 
-Listing a name is a deliberate decision to give the worker, and anything it
-reads, that value.
+You can also list names under `env.allow` in the JSON config file. Listing a
+name is a deliberate decision to give the worker, and anything it reads, that
+value.
 
 ### Never passed
 
@@ -87,6 +88,11 @@ These are dropped even if listed in `WORKER_MCP_ENV_PASSTHROUGH`:
 `GOOGLE_APPLICATION_CREDENTIALS`, `KUBECONFIG`, `DOCKER_HOST` and
 `WORKER_MCP_*`. A variable named `*_KEY` is not on this list, so an LLM key
 such as `ANTHROPIC_API_KEY` can be passed through by name.
+
+The one exception: a name written exactly, with no `*`, in the config file's
+`env.allow` list is passed even if it matches a pattern above (for example a
+`*_TOKEN` variable a worker really needs). Names from the environment variable
+or a flag, and patterns from any source, never override the list.
 
 ### LLM credentials
 

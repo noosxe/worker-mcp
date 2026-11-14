@@ -11,18 +11,24 @@ import {
 	removeGate,
 	writeGate,
 } from "../session/launch.js";
+import { RuntimeDir } from "../session/runtime-dir.js";
+
+const NONE = { allow: [], forceDropExempt: [] };
 
 describe("buildWorkerEnv", () => {
 	test("starts from empty and keeps only allowlisted names", () => {
-		const env = buildWorkerEnv({
-			PATH: "/bin",
-			HOME: "/h",
-			LC_ALL: "C",
-			PI_CODING_AGENT_DIR: "/pi",
-			SSL_CERT_FILE: "/c",
-			RANDOM_VAR: "x",
-			GITHUB_TOKEN: "t",
-		});
+		const env = buildWorkerEnv(
+			{
+				PATH: "/bin",
+				HOME: "/h",
+				LC_ALL: "C",
+				PI_CODING_AGENT_DIR: "/pi",
+				SSL_CERT_FILE: "/c",
+				RANDOM_VAR: "x",
+				GITHUB_TOKEN: "t",
+			},
+			NONE,
+		);
 		assert.deepStrictEqual(env, {
 			PATH: "/bin",
 			HOME: "/h",
@@ -33,12 +39,10 @@ describe("buildWorkerEnv", () => {
 	});
 
 	test("passthrough adds names and prefixes", () => {
-		const env = buildWorkerEnv({
-			WORKER_MCP_ENV_PASSTHROUGH: " ANTHROPIC_API_KEY , CORP_*",
-			ANTHROPIC_API_KEY: "k",
-			CORP_PROXY: "p",
-			OTHER: "o",
-		});
+		const env = buildWorkerEnv(
+			{ ANTHROPIC_API_KEY: "k", CORP_PROXY: "p", OTHER: "o" },
+			{ allow: ["ANTHROPIC_API_KEY", "CORP_*"], forceDropExempt: [] },
+		);
 		assert.deepStrictEqual(env, { ANTHROPIC_API_KEY: "k", CORP_PROXY: "p" });
 	});
 
@@ -57,11 +61,34 @@ describe("buildWorkerEnv", () => {
 			"WORKER_MCP_PI_PATH",
 			"PI_API_TOKEN",
 		];
-		const source: Record<string, string> = {
-			WORKER_MCP_ENV_PASSTHROUGH: `${names.join(",")},AWS_*`,
-		};
+		const source: Record<string, string> = {};
 		for (const name of names) source[name] = "v";
-		assert.deepStrictEqual(buildWorkerEnv(source), {});
+		assert.deepStrictEqual(
+			buildWorkerEnv(source, {
+				allow: [...names, "AWS_*"],
+				forceDropExempt: [],
+			}),
+			{},
+		);
+	});
+
+	test("a name exempted from the config file passes despite a force-drop pattern", () => {
+		const source = { MY_API_TOKEN: "t", OTHER_TOKEN: "o", AWS_PROFILE: "p" };
+		// Exempt only when it is also allowed, and only that exact name.
+		assert.deepStrictEqual(
+			buildWorkerEnv(source, {
+				allow: ["MY_API_TOKEN", "OTHER_TOKEN", "AWS_*"],
+				forceDropExempt: ["MY_API_TOKEN"],
+			}),
+			{ MY_API_TOKEN: "t" },
+		);
+		assert.deepStrictEqual(
+			buildWorkerEnv(source, {
+				allow: ["MY_API_TOKEN"],
+				forceDropExempt: [],
+			}),
+			{},
+		);
 	});
 });
 
@@ -69,7 +96,7 @@ describe("writeGate", () => {
 	test("writes a private gate and removes it", () => {
 		const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-gate-"));
 		try {
-			const gate = writeGate({ XDG_RUNTIME_DIR: runtime });
+			const gate = writeGate(new RuntimeDir(runtime));
 			assert.strictEqual(fs.statSync(gate.dir).mode & 0o777, 0o700);
 			assert.strictEqual(fs.statSync(gate.file).mode & 0o777, 0o600);
 			assertGatePresent(gate);
@@ -85,9 +112,10 @@ describe("writeGate", () => {
 	test("throws GateError when the runtime dir is unusable", () => {
 		const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-gate-"));
 		try {
-			fs.writeFileSync(path.join(runtime, "worker-mcp"), "x");
+			// The base is a file, so the runtime dir cannot be created.
+			fs.writeFileSync(path.join(runtime, "base"), "x");
 			assert.throws(
-				() => writeGate({ XDG_RUNTIME_DIR: runtime }),
+				() => writeGate(new RuntimeDir(path.join(runtime, "base"))),
 				/without the approval gate/,
 			);
 		} finally {

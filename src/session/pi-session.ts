@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 
-import { readPositiveIntEnv } from "../validation.js";
+import { type Config, defaultConfig } from "../config.js";
 import {
 	assertGatePresent,
 	buildWorkerEnv,
@@ -20,6 +20,7 @@ import {
 	type RiskPolicy,
 	shouldAutoApprove,
 } from "./risk-policy.js";
+import type { RuntimeDir } from "./runtime-dir.js";
 
 export type SessionStatus =
 	| "IDLE"
@@ -62,6 +63,15 @@ function summariseAction(a: AutoApprovedAction): string {
 		: oneLine;
 }
 
+/** What a session needs from the server; all optional for unit tests. */
+export interface PiSessionDeps {
+	config?: Config;
+	/** Required to start pi: where the gate directory is created. */
+	runtime?: RuntimeDir;
+	/** The server's environment, the source of the worker's allowlisted env. */
+	env?: NodeJS.ProcessEnv;
+}
+
 export class PiSession {
 	private static readonly MAX_LOG_LINES = 2000;
 	private static readonly MAX_AUTO_APPROVED_SHOWN = 20;
@@ -97,13 +107,21 @@ export class PiSession {
 	private gate: Gate | null = null;
 	private historyStartIndex = 0;
 
+	private readonly config: Config;
+	private readonly runtime: RuntimeDir | undefined;
+	private readonly processEnv: NodeJS.ProcessEnv;
+
 	constructor(
 		sessionId: string,
 		cwd: string,
 		model?: string,
 		systemPrompt?: string,
 		riskPolicy?: RiskPolicy,
+		deps: PiSessionDeps = {},
 	) {
+		this.config = deps.config ?? defaultConfig();
+		this.runtime = deps.runtime;
+		this.processEnv = deps.env ?? {};
 		this.sessionId = sessionId;
 		this.cwd = cwd;
 		this.model = model;
@@ -124,7 +142,7 @@ export class PiSession {
 	}
 
 	public async start(): Promise<void> {
-		const piPath = process.env.WORKER_MCP_PI_PATH || "pi";
+		const piPath = this.config.providers.pi.path;
 
 		this.log(
 			`Spawning pi subprocess in: ${this.cwd} using executable: ${piPath}`,
@@ -137,7 +155,10 @@ export class PiSession {
 
 		// The gate is written fresh for this worker from a constant compiled into
 		// the server. Without it pi must not start: tool calls would run ungated.
-		const gate = writeGate();
+		if (!this.runtime) {
+			throw new Error("Cannot start pi: no runtime directory was provided.");
+		}
+		const gate = writeGate(this.runtime);
 		this.gate = gate;
 
 		const args = ["--mode", "rpc", ...PI_HARDENING_FLAGS, "-e", gate.file];
@@ -149,7 +170,7 @@ export class PiSession {
 			assertGatePresent(gate);
 			this.process = spawn(piPath, args, {
 				cwd: this.cwd,
-				env: buildWorkerEnv(),
+				env: buildWorkerEnv(this.processEnv, this.config.env),
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 		} catch (e) {
@@ -725,8 +746,7 @@ export class PiSession {
 
 	private detectLoop(text: string): boolean {
 		const len = text.length;
-		const maxOutputLimit =
-			readPositiveIntEnv("WORKER_MCP_MAX_OUTPUT_CHARS") ?? 64000;
+		const maxOutputLimit = this.config.limits.maxOutputChars;
 		if (len > maxOutputLimit) return true; // Safeguard limit
 		if (len < 5) return false;
 

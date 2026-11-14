@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- Configuration is one validated object (zod), built from an optional JSON
+  file (`--config <path>`, `WORKER_MCP_CONFIG`, or
+  `$XDG_CONFIG_HOME/worker-mcp/config.json`), then `WORKER_MCP_*` variables,
+  then flags. All existing variables keep their names; new ones are
+  `WORKER_MCP_STATE_DIR` and `WORKER_MCP_RUNTIME_DIR`. See the README
+  "Configuration" section and `config.example.json`.
+- `--print-config` prints the effective configuration (secret-looking values
+  redacted) and exits.
+- A name listed exactly in the config file's `env.allow` may pass to workers
+  even when it matches a force-dropped pattern such as `*_TOKEN`. The same name
+  from the environment or a flag, or a pattern, cannot.
+- `zod` is a direct dependency.
+
 ### Security
 
 - Workers no longer inherit the server's environment. It is built from an
@@ -51,6 +66,18 @@
 
 ### Changed
 
+- **Invalid configuration now fails startup**, with a message naming the source
+  and key: bad JSON, unknown keys, wrong types, non-positive or non-numeric
+  values, relative directories, unknown command-line flags, and a config file
+  that is group- or world-writable.
+- **Workers are no longer persisted.** `~/.config/worker-mcp/sessions.json` is
+  no longer read or written, so a restarted server starts with no sessions.
+  An existing file is left alone and ignored; it can be deleted. This also
+  fixes servers sharing one registry file.
+- The server creates nothing on disk until the first worker starts. Gate
+  directories now live under one private per-server directory,
+  `<runtimeDir>/worker-mcp-<pid>` (0700), removed on clean shutdown. At the
+  next start, such directories of pids that are no longer running are removed.
 - `send_pi_command` results list the actions that were auto-approved during the
   run (tool, risk level, truncated command or path).
 - Users will see more approval prompts: simple pipelines and package manager
