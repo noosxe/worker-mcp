@@ -24,7 +24,13 @@ import type {
  *   tool:<name>:<json>        ask the gate for one call; report the outcome
  *   parallel:<name>:<json>    ask for two calls at once, then report both
  *   hang                      stay busy until aborted
+ *   slow:<ms>                 reply after <ms>; an abort ends it early
  *   crash                     finish the run with an error
+ *   stubborn                  ignore an abort until the worker is closed
+ *   markdown-rules            stream horizontal rules and a table, then reply
+ *   repeat:<n>                stream the same line <n> times
+ *   flood:<chars>             stream one long message of <chars> characters
+ *   big:<chars>               reply with <chars> characters
  */
 
 export const FAKE_TOOL_MAP: ToolMap = {
@@ -47,6 +53,8 @@ export interface FakeProviderOptions {
 	capabilities?: Partial<ProviderCapabilities>;
 	/** `open()` rejects with this message. */
 	failOpen?: string;
+	/** `startRun` never resolves: a worker that does not acknowledge. */
+	neverAccept?: boolean;
 }
 
 export class FakeProvider implements WorkerProvider {
@@ -70,7 +78,11 @@ export class FakeProvider implements WorkerProvider {
 
 	async open(_spec: WorkerSpec, host: ProviderHost): Promise<WorkerHandle> {
 		if (this.opts.failOpen) throw new Error(this.opts.failOpen);
-		const handle = new FakeHandle(host, this.capabilities);
+		const handle = new FakeHandle(
+			host,
+			this.capabilities,
+			this.opts.neverAccept,
+		);
 		this.opened.push(handle);
 		return handle;
 	}
@@ -86,11 +98,15 @@ export class FakeHandle implements WorkerHandle {
 	constructor(
 		private readonly host: ProviderHost,
 		private readonly caps: ProviderCapabilities,
+		private readonly neverAccept = false,
 	) {}
+
+	private release: (() => void) | null = null;
 
 	async startRun(run: RunStart): Promise<void> {
 		if (this.closed) throw new Error("worker is closed");
 		if (this.active) throw new Error("a run is already active");
+		if (this.neverAccept) await new Promise<never>(() => {});
 		const abort = new AbortController();
 		run.signal.addEventListener("abort", () => abort.abort(), { once: true });
 		this.active = { runId: run.runId, abort };
@@ -138,6 +154,50 @@ export class FakeHandle implements WorkerHandle {
 			return "unreachable";
 		}
 		if (prompt === "crash") throw new Error("fake worker crashed");
+		if (prompt === "stubborn") {
+			await new Promise<void>((resolve) => {
+				this.release = resolve;
+			});
+			return "released";
+		}
+		if ((m = prompt.match(/^slow:(\d+)$/))) {
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, Number(m![1]));
+				signal.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						resolve();
+					},
+					{ once: true },
+				);
+			});
+			return "slow done";
+		}
+		if (prompt === "markdown-rules") {
+			const text = "Title\n----\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n----\n";
+			for (const line of text.split("\n")) {
+				this.host.emit({ type: "text_delta", runId, text: `${line}\n` });
+			}
+			return text;
+		}
+		if ((m = prompt.match(/^repeat:(\d+)$/))) {
+			for (let i = 0; i < Number(m[1]) && !signal.aborted; i++) {
+				this.host.emit({ type: "text_delta", runId, text: "same line\n" });
+				if (i % 20 === 0) await new Promise((r) => setTimeout(r, 0));
+			}
+			return signal.aborted ? "stopped" : "repeated";
+		}
+		if ((m = prompt.match(/^flood:(\d+)$/))) {
+			this.host.emit({
+				type: "text_delta",
+				runId,
+				text: "x".repeat(Number(m[1])),
+			});
+			await new Promise((r) => setTimeout(r, 20));
+			return signal.aborted ? "stopped" : "flooded";
+		}
+		if ((m = prompt.match(/^big:(\d+)$/))) return "y".repeat(Number(m[1]));
 		if ((m = prompt.match(/^tool:([^:]+):([\s\S]*)$/))) {
 			return await this.callTool(runId, m[1], JSON.parse(m[2]), signal);
 		}
@@ -213,6 +273,7 @@ export class FakeHandle implements WorkerHandle {
 
 	close(_opts: { graceMs: number; reason: string }): Promise<void> {
 		this.closed ??= (async () => {
+			this.release?.();
 			await this.abortRun("closing");
 			this.host.emit({
 				type: "exited",

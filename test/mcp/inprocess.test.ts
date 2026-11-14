@@ -4,10 +4,6 @@ import { describe, test } from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import {
-	CallToolResultSchema,
-	CreateTaskResultSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 
 import { loadConfig } from "../../src/config.js";
 import { createServer } from "../../src/server.js";
@@ -15,6 +11,8 @@ import { SessionManager } from "../../src/session/session-manager.js";
 import {
 	behaviourTests,
 	callOk,
+	callView,
+	gatedBash,
 	type Connection,
 	textOf,
 } from "../helpers/behaviour.js";
@@ -22,15 +20,14 @@ import {
 	applyEnv,
 	createIsolation,
 	type Isolation,
-	waitUntil,
 } from "../helpers/isolation.js";
 import { TOOLS } from "../helpers/tools.js";
 
-async function connect(): Promise<Connection & { manager: SessionManager }> {
-	const manager = new SessionManager(
-		loadConfig([], process.env).config,
-		process.env,
-	);
+async function connect(
+	extraEnv: Record<string, string> = {},
+): Promise<Connection & { manager: SessionManager }> {
+	const env = { ...process.env, ...extraEnv };
+	const manager = new SessionManager(loadConfig([], env).config, env);
 	const server = createServer(manager, "0.0.0-test");
 	const [clientTransport, serverTransport] =
 		InMemoryTransport.createLinkedPair();
@@ -55,41 +52,7 @@ behaviourTests("MCP in-process: behaviour", {
 	connect: () => connect(),
 });
 
-type TestClient = Client;
-
-async function startTask(
-	client: TestClient,
-	sessionId: string,
-	command: string,
-) {
-	const created = await client.request(
-		{
-			method: "tools/call",
-			params: {
-				name: TOOLS.send,
-				arguments: { sessionId, command },
-				task: { ttl: 5000 },
-			},
-		},
-		CreateTaskResultSchema,
-	);
-	return created.task.taskId;
-}
-
-async function waitForTaskStatus(
-	client: TestClient,
-	taskId: string,
-	status: string,
-) {
-	for (let i = 0; i < 100; i++) {
-		const task = await client.experimental.tasks.getTask(taskId);
-		if (task.status === status) return task;
-		await new Promise((resolve) => setTimeout(resolve, 20));
-	}
-	throw new Error(`task ${taskId} never reached ${status}`);
-}
-
-describe("MCP in-process: schemas, errors and task mode", () => {
+describe("MCP in-process: schemas and errors", () => {
 	let iso: Isolation;
 	let restore: () => void;
 
@@ -162,92 +125,74 @@ describe("MCP in-process: schemas, errors and task mode", () => {
 		}
 	});
 
-	test("a task-augmented send completes its task with the output", async () => {
+	test("MCP tasks are not advertised and a task request gets a plain result", async () => {
 		const { client, close } = await connect();
 		try {
-			await callOk(client, TOOLS.spawn, { sessionId: "task-ok", cwd: iso.cwd });
-			const taskId = await startTask(client, "task-ok", "hello");
-			await waitForTaskStatus(client, taskId, "completed");
-			const result = await client.experimental.tasks.getTaskResult(
-				taskId,
-				CallToolResultSchema,
-			);
-			assert.deepStrictEqual(result.content[0], {
-				type: "text",
-				text: "fake-pi reply: hello",
+			assert.strictEqual(client.getServerCapabilities()?.tasks, undefined);
+			await callOk(client, TOOLS.spawn, { sessionId: "no-task", cwd: iso.cwd });
+			const result = await client.callTool({
+				name: TOOLS.send,
+				arguments: { sessionId: "no-task", command: "hello" },
 			});
+			assert.strictEqual("task" in result, false);
+			assert.strictEqual(textOf(result), "fake-pi reply: hello");
 		} finally {
 			await close();
 		}
 	});
 
-	test("cancelling a task-mode run aborts the worker and keeps the server alive", async () => {
-		const { client, close, manager } = await connect();
+	test("a wait is clamped to limits.maxWaitMs, whatever is asked", async () => {
+		const { client, close } = await connect({
+			WORKER_MCP_MAX_WAIT_MS: "300",
+		});
 		try {
-			await callOk(client, TOOLS.spawn, {
-				sessionId: "task-cancel",
-				cwd: iso.cwd,
+			await callOk(client, TOOLS.spawn, { sessionId: "clamp", cwd: iso.cwd });
+			const started = await callView(client, TOOLS.startRun, {
+				workerId: "clamp",
+				prompt: "scenario:slow:60000",
 			});
-			const taskId = await startTask(
-				client,
-				"task-cancel",
-				"scenario:slow:60000",
-			);
-			await waitForTaskStatus(client, taskId, "working");
-
-			await client.callTool({
-				name: TOOLS.cancel,
-				arguments: { sessionId: "task-cancel" },
+			const t0 = Date.now();
+			const view = await callView(client, TOOLS.waitRun, {
+				runId: started.runId,
+				waitMs: 600_000,
 			});
-			await waitForTaskStatus(client, taskId, "cancelled");
-
-			// The worker settles after the abort; storing a result for the now
-			// cancelled task must not throw or crash the process.
-			await waitUntil(
-				() => manager.getSession("task-cancel").status === "IDLE",
-				5000,
-				"IDLE",
-			);
-			assert.strictEqual(
-				iso.received().filter((type) => type === "abort").length,
-				1,
-				"exactly one abort reaches the worker",
-			);
-			await callOk(client, TOOLS.list, {});
+			assert.ok(Date.now() - t0 < 5000, "returned near the 300 ms bound");
+			assert.strictEqual(view.state, "running");
+			await callView(client, TOOLS.cancelRun, { runId: started.runId });
 		} finally {
 			await close();
 		}
 	});
 
-	test("a run that hits an approval keeps its task input_required until approved", async () => {
-		const { client, close } = await connect();
+	test("an approval nobody answers is denied after the approval timeout", async () => {
+		const { client, close } = await connect({
+			WORKER_MCP_APPROVAL_TIMEOUT_MS: "300",
+		});
 		try {
-			await callOk(client, TOOLS.spawn, {
-				sessionId: "task-approve",
-				cwd: iso.cwd,
+			await callOk(client, TOOLS.spawn, { sessionId: "expire", cwd: iso.cwd });
+			const started = await callView(client, TOOLS.startRun, {
+				workerId: "expire",
+				prompt: gatedBash("rm -rf build"),
 			});
-			const taskId = await startTask(
-				client,
-				"task-approve",
-				`scenario:tool:bash:${JSON.stringify({ command: "rm -rf build" })}`,
-			);
-			await waitForTaskStatus(client, taskId, "input_required");
-			// Give the stopped run time to (wrongly) complete the task.
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			assert.strictEqual(
-				(await client.experimental.tasks.getTask(taskId)).status,
-				"input_required",
-			);
-
-			const pending = JSON.parse(
-				await callOk(client, TOOLS.pending, { sessionId: "task-approve" }),
-			);
-			const approved = await callOk(client, TOOLS.approve, {
-				sessionId: "task-approve",
-				actionId: pending.actionId,
+			const waiting = await callView(client, TOOLS.waitRun, {
+				runId: started.runId,
+				waitMs: 10_000,
 			});
-			assert.match(approved, /^tool bash ran with /);
-			await waitForTaskStatus(client, taskId, "completed");
+			assert.strictEqual(waiting.state, "awaiting_approval");
+			// The expiry wakes a caller that already saw the approval.
+			const done = await callView(client, TOOLS.waitRun, {
+				runId: started.runId,
+				waitMs: 10_000,
+				sinceSeq: waiting.seq,
+			});
+			assert.notStrictEqual(done.state, "awaiting_approval");
+			const final = await callView(client, TOOLS.waitRun, {
+				runId: started.runId,
+				waitMs: 10_000,
+				sinceSeq: done.seq,
+			});
+			assert.strictEqual(final.state, "completed");
+			assert.match(final.output.text, /^tool bash blocked: approval timed out/);
 		} finally {
 			await close();
 		}

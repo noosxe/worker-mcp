@@ -10,4 +10,8 @@ export const TOOLS = {
 	approve: "approve_action",
 	reject: "reject_action",
 	setPolicy: "set_risk_policy",
+	startRun: "start_run",
+	waitRun: "wait_run",
+	getRun: "get_run",
+	cancelRun: "cancel_run",
 } as const;

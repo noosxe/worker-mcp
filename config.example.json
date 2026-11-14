@@ -2,8 +2,14 @@
 	"providers": { "pi": { "path": "pi" } },
 	"limits": {
 		"commandTimeoutMs": 600000,
-		"maxOutputChars": 64000
+		"maxOutputChars": 64000,
+		"maxRunMs": 1800000,
+		"maxWaitMs": 50000
 	},
 	"env": { "allow": ["ANTHROPIC_API_KEY", "HTTPS_PROXY"] },
-	"gate": { "maxAutoApprove": "MEDIUM", "protectedPaths": ["~/keep"] }
+	"gate": {
+		"maxAutoApprove": "MEDIUM",
+		"approvalTimeoutMs": 600000,
+		"protectedPaths": ["~/keep"]
+	}
 }

@@ -44,7 +44,7 @@ Initializes a new `pi` session by starting a child process or SDK session.
 
 #### B. `send_pi_command`
 
-Sends a prompt or slash command to a running session. Supports MCP task tracking (returns `_meta.task` if requested).
+Legacy. Sends a prompt or slash command to a running session and blocks until the run ends (or `timeout`). Prefer `start_run` and `wait_run` (below). It is a wrapper over a run.
 
 - **Request Schema**:
   ```json
@@ -70,9 +70,18 @@ Sends a prompt or slash command to a running session. Supports MCP task tracking
   }
   ```
 
+#### B2. `start_run`, `wait_run`, `get_run`, `cancel_run`
+
+- `start_run {workerId, prompt, intent?, waitMs?}`: starts a run; returns its view at once (or after up to `waitMs`, max 50 000). Fails with `WORKER_BUSY` (naming the run in flight) when the worker has a run.
+- `wait_run {runId, waitMs?, sinceSeq?, outputOffset?}`: waits up to `waitMs` (default 25 000, at most 50 000) and returns early only on a terminal state or a new approval. A cancelled request detaches the wait; the run goes on.
+- `get_run {runId, part?, offset?, maxChars?}`: reads state and result without waiting; `part: "transcript"` lists tool calls.
+- `cancel_run {runId}`: aborts a run and returns its view once it settled.
+
+The view is text (one summary line, then JSON): `runId`, `workerId`, `state`, `seq`, `elapsedMs`, `pendingApprovals[]`, `activity[]`, `output {text, offset, nextOffset, totalChars, truncated, more}`, `error`, `usage`, `gate {autoAllowed, autoDenied, escalated, notable[]}` and `next`. When the request has a `progressToken`, waiting calls send `notifications/progress`.
+
 #### C. `cancel_pi_command`
 
-Aborts the currently running command in a session and cancels its background task.
+Aborts the currently running command in a session.
 
 - **Request Schema**:
   ```json
@@ -137,7 +146,7 @@ Retrieves details of a tool call or action currently awaiting approval.
 
 #### G. `approve_action`
 
-Approves an intercepted tool execution.
+Approves an intercepted tool execution. Returns at once; call `wait_run` with the run's id to follow the run.
 
 - **Request Schema**:
   ```json
@@ -153,7 +162,12 @@ Approves an intercepted tool execution.
 - **Response Schema**:
   ```json
   {
-  	"content": [{ "type": "text", "text": "Action approved." }]
+  	"content": [
+  		{
+  			"type": "text",
+  			"text": "Approved action <id>. This returns at once: call wait_run with runId <runId> to follow the run."
+  		}
+  	]
   }
   ```
 

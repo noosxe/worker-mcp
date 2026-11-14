@@ -53,7 +53,11 @@ Options:
       --config <path>         JSON config file (default: $XDG_CONFIG_HOME/worker-mcp/config.json)
       --pi-path <path>        Path to the pi binary
       --pi-startup-timeout-ms <n>  How long a spawn waits for pi's gate (default 60000)
-      --command-timeout-ms <n>  Default blocking-call timeout
+      --command-timeout-ms <n>  Default blocking-call timeout of the legacy send_pi_command
+      --run-timeout-ms <n>    Wall-clock limit for one run (default 1800000)
+      --max-wait-ms <n>       Longest a wait_run call blocks (default 50000)
+      --run-start-timeout-ms <n>  How long a worker may take to accept a prompt (default 15000)
+      --approval-timeout-ms <n>  How long an approval waits before it is denied (default 600000)
       --max-output-chars <n>  Output size cap
       --env-passthrough <names>  Extra worker env names, comma-separated
       --state-dir <path>      State directory
@@ -99,7 +103,7 @@ function shutdown(code: number, reason: string, isSignal = false) {
 async function main() {
 	const transport = new StdioServerTransport();
 	// oxlint-disable-next-line unicorn/prefer-add-event-listener -- MCP Server callback, not an EventTarget
-	server.onclose = () => shutdown(0, "MCP connection closed.");
+	server.server.onclose = () => shutdown(0, "MCP connection closed.");
 	// The client going away closes stdin; without this the workers' pipes keep
 	// the process alive.
 	process.stdin.on("end", () => shutdown(0, "Standard input closed."));

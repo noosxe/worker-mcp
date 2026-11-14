@@ -1,9 +1,10 @@
 import { type Config } from "../config.js";
 import { ChildRegistry } from "../core/child.js";
+import { type RunStore } from "../core/run.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import { assertValidSessionId } from "../validation.js";
 import { RuntimeDir } from "./runtime-dir.js";
-import { Session, type PolicyReport, type SessionStatus } from "./session.js";
+import { type PolicyReport, Session, runStoreFor } from "./session.js";
 
 export class SessionManager {
 	private sessions: Map<string, Session> = new Map();
@@ -11,11 +12,8 @@ export class SessionManager {
 	/** Every worker process of this server starts and ends here. */
 	readonly children: ChildRegistry;
 	private readonly providers: ProviderRegistry;
-	public onSessionStatusChange?: (
-		sessionId: string,
-		status: SessionStatus,
-		message?: string,
-	) => void;
+	/** Every run of every worker, kept after the worker is gone. */
+	readonly runs: RunStore;
 
 	/**
 	 * Does no I/O: workers live only as long as this server, and the runtime
@@ -28,6 +26,7 @@ export class SessionManager {
 	) {
 		this.runtime = runtime ?? new RuntimeDir(config.runtimeDir);
 		this.children = new ChildRegistry({ env, envConfig: config.env });
+		this.runs = runStoreFor(config);
 		this.providers = new ProviderRegistry({
 			enabled: ["pi"],
 			context: { config },
@@ -68,11 +67,9 @@ export class SessionManager {
 				env: this.env,
 				children: this.children,
 				provider,
+				runs: this.runs,
 			},
 		);
-		session.onStatusChange = (sid, status, message) => {
-			this.onSessionStatusChange?.(sid, status, message);
-		};
 		this.sessions.set(sessionId, session);
 
 		try {
@@ -98,13 +95,9 @@ export class SessionManager {
 		return session;
 	}
 
-	public findSessionByTaskId(taskId: string): Session | null {
-		for (const session of this.sessions.values()) {
-			if (session.getActiveTaskId() === taskId) {
-				return session;
-			}
-		}
-		return null;
+	/** The session a run belongs to, or null once it is gone. */
+	public findSessionByRun(workerId: string): Session | null {
+		return this.sessions.get(workerId) ?? null;
 	}
 
 	/** Replace a worker's policy, limited to the ceiling. Reports what changed. */
@@ -118,6 +111,7 @@ export class SessionManager {
 			cwd: s.cwd,
 			status: s.status,
 			pendingAction: s.pendingAction,
+			currentRunId: s.activeRun?.id ?? null,
 		}));
 	}
 
@@ -132,7 +126,7 @@ export class SessionManager {
 	 * be gone, and remove the runtime directory. Never rejects.
 	 */
 	public async terminateAll(): Promise<void> {
-		const all = [...this.sessions.values()].map((s) => s.terminate());
+		const all = [...this.sessions.values()].map((s) => s.terminate("shutdown"));
 		this.sessions.clear();
 		await Promise.all([...all, this.children.terminateAll()]);
 		this.runtime.dispose();
