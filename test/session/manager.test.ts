@@ -149,14 +149,16 @@ describe("SessionManager", () => {
 		const manager = managerFor();
 		try {
 			const session = await manager.createSession("keeps", iso.cwd);
-			const run = await session.startRun("hello");
+			// A long run stays in flight until cancelled, so the checks cannot race.
+			const run = await session.startRun("scenario:slow:60000");
 			assert.strictEqual(manager.listSessions()[0].currentRunId, run.id);
-			assert.strictEqual(manager.findSessionByRun("keeps"), session);
+			assert.strictEqual(manager.findSessionByWorker("keeps"), session);
+			session.cancelRun();
 			await session.waitText(run);
-			assert.strictEqual(manager.runs.get(run.id)?.state, "completed");
+			assert.strictEqual(manager.runs.get(run.id)?.state, "cancelled");
 			await manager.terminateSession("keeps");
-			assert.strictEqual(manager.findSessionByRun("keeps"), null);
-			assert.strictEqual(manager.runs.get(run.id)?.state, "completed");
+			assert.strictEqual(manager.findSessionByWorker("keeps"), null);
+			assert.strictEqual(manager.runs.get(run.id)?.state, "cancelled");
 		} finally {
 			await manager.terminateAll();
 		}

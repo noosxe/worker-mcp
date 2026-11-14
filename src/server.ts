@@ -341,7 +341,7 @@ export function createServer(
 		guarded(async ({ runId }, extra) => {
 			const run = findRun(runId);
 			if (!run.terminal) {
-				const session = sessionManager.findSessionByRun(run.workerId);
+				const session = sessionManager.findSessionByWorker(run.workerId);
 				if (session?.activeRun?.id === run.id) session.cancelRun();
 				await store.waitForChange(run, {
 					maxWaitMs: 5000,

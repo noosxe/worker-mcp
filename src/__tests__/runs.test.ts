@@ -305,7 +305,7 @@ describe("Runs on a Session over the fake provider", () => {
 	describe("waiting from a caller", () => {
 		test("a client that gives up detaches; the run carries on", async () => {
 			const s = await start();
-			const run = await s.startRun("slow:300");
+			const run = await s.startRun("slow:1000");
 			const controller = new AbortController();
 			const waiting = s.waitText(run, { signal: controller.signal });
 			setTimeout(() => controller.abort(), 20);
@@ -319,7 +319,7 @@ describe("Runs on a Session over the fake provider", () => {
 
 		test("a blocking wait with a timeout returns null and the run goes on", async () => {
 			const s = await start();
-			const run = await s.startRun("slow:300");
+			const run = await s.startRun("slow:1000");
 			assert.strictEqual(await s.waitText(run, { timeoutMs: 30 }), null);
 			assert.strictEqual(run.state, "running");
 			assert.strictEqual(await s.waitText(run), "slow done");
