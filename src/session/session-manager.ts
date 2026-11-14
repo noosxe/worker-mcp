@@ -96,7 +96,7 @@ export class SessionManager {
 	}
 
 	/** The session a run belongs to, or null once it is gone. */
-	public findSessionByRun(workerId: string): Session | null {
+	public findSessionByWorker(workerId: string): Session | null {
 		return this.sessions.get(workerId) ?? null;
 	}
 
