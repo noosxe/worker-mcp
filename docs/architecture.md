@@ -47,14 +47,16 @@ Because the local `pi` agent is less intelligent, we must gate high-risk actions
 
 ### 2.1. Risk Levels
 
-| Level        | Value | Examples                                                      | Default Behavior                   |
-| ------------ | ----- | ------------------------------------------------------------- | ---------------------------------- |
-| **LOW**      | `0`   | `ls`, `cat`, `grep`, `git status`, `pwd`                      | Auto-approve silently              |
-| **MEDIUM**   | `1`   | `pnpm install`, file writes in `src/`, `git add`              | Auto-approve with notification     |
-| **HIGH**     | `2`   | `rm`, `curl`, config file writes, `git commit`                | Require explicit approval          |
-| **CRITICAL** | `3`   | `sudo`, `chmod`, writes outside workspace, `git push --force` | Block by default, require approval |
+| Level        | Value | Examples                                                        | Default Behavior            |
+| ------------ | ----- | --------------------------------------------------------------- | --------------------------- |
+| **LOW**      | `0`   | `ls`, `cat f \| grep x`, `git status`, reads in the workspace   | Auto-approve                |
+| **MEDIUM**   | `1`   | file writes in the workspace, `git add`, reads outside it       | Require approval by default |
+| **HIGH**     | `2`   | `rm`, `curl`, `pnpm install`, config file writes, unknown tools | Require explicit approval   |
+| **CRITICAL** | `3`   | `sudo`, writes outside workspace, `git push --force`            | Require explicit approval   |
 
-Risk policy is configurable per session via `spawn_pi_session` (at creation) or `set_risk_policy` (at runtime). The default policy auto-approves LOW silently, auto-approves MEDIUM with notification, and requires approval for HIGH and CRITICAL.
+Tool calls are first mapped to canonical kinds (`src/gate/canonical.ts`) and rated by the rule classifier (`src/gate/rules.ts`, `src/gate/shell-rules.ts`). Writes to protected paths are hard limits that no policy can auto-approve. `src/gate/gate.ts` runs the classifier chain, applies the server's `gate.maxAutoApprove` ceiling to the worker's policy and records each decision in a bounded in-memory log. See [security.md](security.md).
+
+Risk policy is configurable per session via `spawn_pi_session` (at creation) or `set_risk_policy` (at runtime). The default policy auto-approves LOW and requires approval for everything else. A policy is lowered to the ceiling (default MEDIUM) and the result says so.
 
 ### 2.2. Approval Flow
 
@@ -111,14 +113,13 @@ Creates and initializes a new `pi` agent session.
   - `cwd` (string, required): The directory path where the `pi` agent will execute.
   - `model` (string, optional): LLM model name to override the default (e.g., `ollama/qwen2.5-coder:7b`, `anthropic/claude-3-5-sonnet`).
   - `systemPrompt` (string, optional): Custom system instructions to append or override.
-  - `riskPolicy` (object, optional): Risk-based auto-approval policy. Controls which tool calls are auto-approved based on risk level.
-    - `autoApproveUpTo` (number): Actions at or below this risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) are auto-approved silently. Default: `0` (LOW).
-    - `notifyUpTo` (number): Actions at or below this level (but above `autoApproveUpTo`) are auto-approved with a logged notification. Default: `1` (MEDIUM).
-    - `overrides` (array, optional): Custom overrides for specific command patterns. Each entry has:
-      - `pattern` (glob string, required): Matches against command string or tool name.
-      - `pathPattern` (glob string, optional): Matches against the target file path. When set, both `pattern` and `pathPattern` must match.
-      - `action` (`"allow"` or `"block"`, required): Force allow or require approval.
-      - `maxRiskLevel` (number, optional): Only apply this override if the classified risk is at or below this level (0–3).
+  - `riskPolicy` (object, optional): Auto-approval policy; lowered to the server's `gate.maxAutoApprove` ceiling, and the result says what was lowered.
+    - `autoApproveUpTo` (number): Calls at or below this risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) are auto-approved. Default: `0` (LOW).
+    - `overrides` (array, optional): Checked in order, the first match decides. Each entry has:
+      - `match` (object, required): `kind`, `tool`, `command` and `path`; every field given must match. `tool`, `command` and `path` are globs where `*` matches any run of characters (in `command` it stops at shell metacharacters).
+      - `action` (`"allow"`, `"escalate"` or `"deny"`, required): auto-approve, always ask, or refuse without asking.
+      - `maxRiskLevel` (number, optional): For `allow`, the highest level it covers. Default `1` (MEDIUM).
+    - The earlier shape (`notifyUpTo`, and overrides with `pattern`, `pathPattern` and `action: "allow" | "block"`) is still accepted and converted: `notifyUpTo` merges into `autoApproveUpTo`, `block` becomes `escalate`.
 - **Returns**: `{ success: boolean, status: string }`
 
 #### `send_pi_command`

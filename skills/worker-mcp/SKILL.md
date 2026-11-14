@@ -54,110 +54,78 @@ The worker-mcp server classifies every tool call into a **risk level** and handl
 
 ### 3.2. Choosing a Risk Policy
 
-When spawning a session, select a risk policy that matches the trust level and task type:
+When spawning a session, select a risk policy that matches the trust level and task type. The server lowers every policy to its own ceiling (`gate.maxAutoApprove`, default MEDIUM) and says so in the result, so you can let the worker through up to MEDIUM but never above it. Calls that touch protected paths (`.mcp.json`, `.claude/`, `.git/hooks/`, `.envrc`, shell startup files, credentials and similar) always come to you, whatever the policy says.
 
 #### Conservative (default) — Best for unfamiliar projects or untrusted tasks
 
 ```json
-{ "autoApproveUpTo": 0, "notifyUpTo": 0, "overrides": [] }
+{ "autoApproveUpTo": 0, "overrides": [] }
 ```
 
-- Auto-approves only plain read-only commands (`ls`, `cat`, `grep`)
-- Everything that runs code, chains commands or installs packages needs your approval
+- Auto-approves only read-only work in the workspace (`ls`, `cat f | grep x`, `git status`, the `read`, `grep`, `find` and `ls` tools)
+- Everything that writes, runs code, chains risky commands or installs packages needs your approval
 - The result of each `send_pi_command` lists what was auto-approved during the run
 
 #### Moderate — Best for active development in trusted projects
 
 ```json
-{ "autoApproveUpTo": 1, "notifyUpTo": 1, "overrides": [] }
+{ "autoApproveUpTo": 1, "overrides": [] }
 ```
 
-- Auto-approves reads AND builds/installs/test runs/source file writes silently
-- You only see HIGH and CRITICAL actions
-- Good when the worker is doing iterative development (edit → build → test loops)
-
-#### Permissive — Best for isolated scratch workspaces or disposable environments
-
-```json
-{ "autoApproveUpTo": 2, "notifyUpTo": 2, "overrides": [] }
-```
-
-- Auto-approves almost everything including `rm`, `curl`, `git commit`
-- Only blocks CRITICAL actions (`sudo`, out-of-workspace writes, force-push)
-- Use only in disposable/sandboxed environments where mistakes are cheap
+- Also auto-approves file edits and writes inside the workspace, `git add`, `mkdir` and the like
+- You still see HIGH and CRITICAL actions: running builds and tests (`pnpm test`), `rm`, `curl`, `git commit`, config file edits, anything outside the workspace
+- Good for edit loops where you approve the occasional build or test run
 
 #### Locked Down — Best for production-adjacent or sensitive environments
 
 ```json
-{ "autoApproveUpTo": 0, "notifyUpTo": 0, "overrides": [] }
+{
+	"autoApproveUpTo": 0,
+	"overrides": [{ "match": { "kind": "read" }, "action": "escalate" }]
+}
 ```
 
-- Every single action requires your explicit approval
+- Every action, reads included, needs your approval
 - Maximum control, but highest token cost
-- Use when operating near production configs or secrets
 
 ### 3.3. Using Overrides for Fine-Grained Control
 
-Overrides let you allow or block specific commands regardless of their classified risk level. Each override has:
+Overrides are checked in order and the first match decides. Each has:
 
-- `pattern` (glob, required): Matches against the command string or tool name.
-- `pathPattern` (glob, optional): Matches against the target file path. When set, **both** `pattern` and `pathPattern` must match for the override to apply. Useful for scoping file write permissions to specific directories.
-- `action` (`"allow"` or `"block"`, required): Force allow (auto-approve) or block (require approval).
-- `maxRiskLevel` (number, optional): Only apply this override if the classified risk is at or below this level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL). This prevents blanket allows from bypassing safety for unexpectedly dangerous operations.
+- `match` (object, required): `kind` (`shell`, `read`, `list`, `search`, `write`, `edit`), `tool` (pi's tool name: `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`), `command` (a shell command) and `path` (a path). Every field you give must match. `tool`, `command` and `path` are globs: `*` matches any run of characters, but in `command` it never matches `; & | < > ` $ ( )`or a newline, so`git *`does not cover`git status; rm -rf ~`.
+- `action`: `allow` (auto-approve), `escalate` (always ask you) or `deny` (refuse without asking).
+- `maxRiskLevel` (number, for `allow`): the highest level the override covers (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL). Default 1. The server's ceiling lowers it further.
 
-**Example: Allow `pnpm` commands but block all network access:**
+An `allow` never covers a protected path, and never covers a path outside the workspace unless its `path` pattern names it.
 
-```json
-{
-	"autoApproveUpTo": 0,
-	"notifyUpTo": 0,
-	"overrides": [
-		{ "pattern": "pnpm *", "action": "allow" },
-		{ "pattern": "curl *", "action": "block" },
-		{ "pattern": "wget *", "action": "block" }
-	]
-}
-```
-
-**Example: Allow everything but block git publishing:**
-
-```json
-{
-	"autoApproveUpTo": 2,
-	"notifyUpTo": 2,
-	"overrides": [
-		{ "pattern": "git push*", "action": "block" },
-		{ "pattern": "git commit*", "action": "block" }
-	]
-}
-```
-
-**Example: Allow file writes to `src/` and `tests/` but gate everything else:**
+**Example: Allow edits under `src/` and `tests/` but ask for everything else that writes:**
 
 ```json
 {
 	"autoApproveUpTo": 0,
-	"notifyUpTo": 0,
 	"overrides": [
-		{ "pattern": "write_file", "pathPattern": "*/src/*", "action": "allow" },
-		{ "pattern": "write_file", "pathPattern": "*/tests/*", "action": "allow" },
-		{ "pattern": "edit_file", "pathPattern": "*/src/*", "action": "allow" },
-		{ "pattern": "edit_file", "pathPattern": "*/tests/*", "action": "allow" }
+		{ "match": { "kind": "edit", "path": "src/*" }, "action": "allow" },
+		{ "match": { "kind": "write", "path": "src/*" }, "action": "allow" },
+		{ "match": { "kind": "edit", "path": "tests/*" }, "action": "allow" },
+		{ "match": { "kind": "write", "path": "tests/*" }, "action": "allow" }
 	]
 }
 ```
 
-**Example: Allow `pnpm` commands but only up to MEDIUM risk (blocks risky scripts):**
+**Example: Refuse network tools outright, always ask before `git push`:**
 
 ```json
 {
-	"autoApproveUpTo": 0,
-	"notifyUpTo": 0,
-	"overrides": [{ "pattern": "pnpm*", "action": "allow", "maxRiskLevel": 1 }]
+	"autoApproveUpTo": 1,
+	"overrides": [
+		{ "match": { "command": "curl *" }, "action": "deny" },
+		{ "match": { "command": "wget *" }, "action": "deny" },
+		{ "match": { "command": "git push*" }, "action": "escalate" }
+	]
 }
 ```
 
-This allows `pnpm install` and `pnpm build` (MEDIUM risk) but still requires approval if `pnpm` somehow triggers a HIGH-risk classification.
+The earlier policy shape (`notifyUpTo`, and overrides with `pattern`, `pathPattern` and `action: "block"`) is still accepted and converted; the result tells you so.
 
 ### 3.4. Adjusting Policy at Runtime
 
@@ -186,9 +154,9 @@ Always follow this step-by-step flow when managing a worker agent:
 
 Determine the target workspace directory (`cwd`) for the task, choose an appropriate risk policy, and spawn a gated session.
 
-- **Tool Call**: `spawn_pi_session(sessionId: "sess_debug_1", cwd: "/path/to/target/project", model: "ollama/qwen2.5-coder:7b", riskPolicy: { "autoApproveUpTo": 1, "notifyUpTo": 1, "overrides": [] })`
+- **Tool Call**: `spawn_pi_session(sessionId: "sess_debug_1", cwd: "/path/to/target/project", model: "ollama/qwen2.5-coder:7b", riskPolicy: { "autoApproveUpTo": 1, "overrides": [] })`
 - _Tip_: If you want the worker to focus on a specific role, provide a tailored system prompt (e.g. `"You are a junior unit testing assistant, write Jest tests for..."`).
-- _Tip_: For iterative dev tasks (edit-build-test loops), use `autoApproveUpTo: 1` so builds and test runs don't block on approval. For sensitive tasks near config/deploy, use `autoApproveUpTo: 0`.
+- _Tip_: For iterative dev tasks (edit-build-test loops), use `autoApproveUpTo: 1` so edits and writes in the workspace don't block on approval. Build and test runs (`pnpm test`) are HIGH and still need you, unless the server's `gate.maxAutoApprove` is raised to HIGH. For sensitive tasks near config/deploy, use `autoApproveUpTo: 0`.
 
 ### Step 2: Dispatch the Task Command
 

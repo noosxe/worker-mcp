@@ -9,4 +9,5 @@ export const TOOLS = {
 	pending: "get_pending_actions",
 	approve: "approve_action",
 	reject: "reject_action",
+	setPolicy: "set_risk_policy",
 } as const;

@@ -2,6 +2,19 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 
 import { type Config, defaultConfig } from "../config.js";
+import type { GateOutcome } from "../gate/classifier.js";
+import {
+	DEFAULT_MAX_AUTO_APPROVE,
+	Gate as ApprovalGate,
+} from "../gate/gate.js";
+import {
+	DEFAULT_RISK_POLICY,
+	normalizePolicy,
+	type NormalizedPolicy,
+	type RiskPolicy,
+} from "../gate/policy.js";
+import { parseToolFromMessage } from "../gate/request.js";
+import { RISK_LABELS, RiskLevel } from "../gate/risk.js";
 import {
 	assertGatePresent,
 	buildWorkerEnv,
@@ -10,16 +23,6 @@ import {
 	removeGate,
 	writeGate,
 } from "./launch.js";
-import {
-	classifyAction,
-	parseToolFromMessage,
-	type RiskLevel,
-} from "./risk-classifier.js";
-import {
-	DEFAULT_RISK_POLICY,
-	type RiskPolicy,
-	shouldAutoApprove,
-} from "./risk-policy.js";
 import type { RuntimeDir } from "./runtime-dir.js";
 
 export type SessionStatus =
@@ -41,6 +44,16 @@ export interface AutoApprovedAction {
 	matchedOverride?: string;
 }
 
+export interface PolicyReport extends Pick<
+	NormalizedPolicy,
+	"converted" | "notes"
+> {
+	/** The policy now in force. */
+	policy: RiskPolicy;
+	/** What the server's ceiling lowered, one line each. */
+	clamped: string[];
+}
+
 export interface PendingAction {
 	actionId: string;
 	tool: string;
@@ -48,6 +61,10 @@ export interface PendingAction {
 	context: string;
 	riskLevel?: RiskLevel;
 	riskLabel?: string;
+	/** Why the gate sent this to the coordinator. */
+	reason?: string;
+	/** A hard limit (a protected path): only the coordinator can allow it. */
+	hardLimit?: boolean;
 }
 
 const SUMMARY_MAX_CHARS = 120;
@@ -84,11 +101,15 @@ export class PiSession {
 	public pendingAction: PendingAction | null = null;
 	public logs: string[] = [];
 	public history: unknown[] = [];
-	public riskPolicy: RiskPolicy;
 	public autoApprovedActions: AutoApprovedAction[] = [];
 	/** Total auto-approved so far, and how many of those a result has reported. */
 	private autoApprovedTotal = 0;
 	private autoApprovedReported = 0;
+	/** Calls the policy denied outright, reported once like auto-approvals. */
+	private autoDenied: string[] = [];
+	private readonly approvalGate: ApprovalGate;
+	/** What happened to the policy given at spawn: clamped, converted. */
+	public readonly policyReport: PolicyReport | null;
 	public onStatusChange:
 		| ((sessionId: string, status: SessionStatus, message?: string) => void)
 		| null = null;
@@ -116,7 +137,7 @@ export class PiSession {
 		cwd: string,
 		model?: string,
 		systemPrompt?: string,
-		riskPolicy?: RiskPolicy,
+		riskPolicy?: unknown,
 		deps: PiSessionDeps = {},
 	) {
 		this.config = deps.config ?? defaultConfig();
@@ -126,7 +147,21 @@ export class PiSession {
 		this.cwd = cwd;
 		this.model = model;
 		this.systemPrompt = systemPrompt;
-		this.riskPolicy = riskPolicy ?? DEFAULT_RISK_POLICY;
+		this.approvalGate = new ApprovalGate({
+			cwd,
+			workerId: sessionId,
+			home: this.processEnv.HOME || undefined,
+			maxAutoApprove:
+				RiskLevel[this.config.gate.maxAutoApprove] ?? DEFAULT_MAX_AUTO_APPROVE,
+			policy: DEFAULT_RISK_POLICY,
+			protected: {
+				stateDir: this.config.stateDir,
+				runtimeDir: this.config.runtimeDir,
+				extra: this.config.gate.protectedPaths,
+			},
+		});
+		this.policyReport =
+			riskPolicy === undefined ? null : this.applyRiskPolicy(riskPolicy);
 		this.log(`Session initialized for directory: ${cwd}`);
 	}
 
@@ -249,7 +284,7 @@ export class PiSession {
 		this.process.on("error", (err) => {
 			this.status = "CRASHED";
 			this.log(`Process error event: ${err.message}`);
-			this.pendingAction = null;
+			this.dropPending();
 			if (this.rejectCommand) {
 				this.rejectCommand(err);
 			}
@@ -292,7 +327,7 @@ export class PiSession {
 
 		this.process = null;
 		this.removeGateDir();
-		this.pendingAction = null;
+		this.dropPending();
 		if (this.resolveCommand) {
 			this.resolveCommand("Process terminated");
 		}
@@ -340,89 +375,24 @@ export class PiSession {
 			if (obj.type === "extension_ui_request") {
 				if (obj.method === "confirm") {
 					const toolCall = parseToolFromMessage(obj.title, obj.message);
-
 					if (toolCall) {
-						const classified = classifyAction(toolCall, this.cwd);
-						const decision = shouldAutoApprove(
-							classified,
-							this.riskPolicy,
-							toolCall,
-						);
-
-						if (decision.approved) {
-							// Auto-approve: respond immediately without coordinator intervention
-							const logPrefix = decision.notify
-								? "[AUTO-APPROVED+NOTIFY]"
-								: "[AUTO-APPROVED]";
-							this.log(
-								`${logPrefix} [${classified.riskLabel}] Action ${obj.id}: ${obj.message} (${classified.reason})`,
-							);
-
-							this.autoApprovedTotal++;
-							this.autoApprovedActions.push({
-								actionId: obj.id,
+						const decided = this.approvalGate.decide(
+							{
+								provider: "pi",
 								toolName: toolCall.toolName,
 								input: toolCall.input,
-								riskLevel: classified.riskLevel,
-								riskLabel: classified.riskLabel,
-								reason: classified.reason,
-								timestamp: new Date().toISOString(),
-								matchedOverride: decision.matchedOverride,
-							});
-							if (
-								this.autoApprovedActions.length >
-								PiSession.MAX_AUTO_APPROVED_LOG
-							) {
-								this.autoApprovedActions.splice(
-									0,
-									this.autoApprovedActions.length -
-										PiSession.MAX_AUTO_APPROVED_LOG,
-								);
-							}
-
-							this.writeRaw({
-								type: "extension_ui_response",
-								id: obj.id,
-								confirmed: true,
-							}).catch((err) => {
-								this.log(
-									`Failed to auto-approve action ${obj.id}: ${err.message}`,
-								);
-							});
-							return;
-						}
-					}
-
-					// Requires coordinator approval (existing flow, enhanced with risk info)
-					const riskInfo = toolCall ? classifyAction(toolCall, this.cwd) : null;
-
-					this.status = "AWAITING_APPROVAL";
-					this.onStatusChange?.(
-						this.sessionId,
-						"AWAITING_APPROVAL",
-						`Intercepted tool call: ${obj.message}`,
-					);
-					this.pendingAction = {
-						actionId: obj.id,
-						tool: "confirm",
-						arguments: {
-							title: obj.title,
-							message: obj.message,
-						},
-						context:
-							"A tool execution or high-risk operation requires supervisor consent.",
-						riskLevel: riskInfo?.riskLevel,
-						riskLabel: riskInfo?.riskLabel,
-					};
-					this.log(
-						`[INTERCEPTED] [${riskInfo?.riskLabel ?? "UNKNOWN"}] Action ${obj.id} awaiting coordinator approval: ${obj.message}`,
-					);
-					if (this.resolveCommand) {
-						this.resolveCommand(
-							`AWAITING_APPROVAL: [${riskInfo?.riskLabel ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${obj.id}. Message: ${obj.message}${this.takeAutoApprovedNotes()}`,
+							},
+							obj.id,
 						);
-						this.resolveCommand = null;
-						this.rejectCommand = null;
+						// Synchronous with the rules alone; a later classifier may not be.
+						if (decided instanceof Promise) {
+							decided.then((outcome) => this.applyOutcome(obj, outcome));
+						} else {
+							this.applyOutcome(obj, decided);
+						}
+					} else {
+						// A request the gate cannot read always goes to the coordinator.
+						this.escalate(obj, null);
 					}
 				}
 				return;
@@ -542,14 +512,123 @@ export class PiSession {
 		});
 	}
 
+	/** Act on the gate's decision for a confirmation request from pi. */
+	private applyOutcome(
+		obj: { id: string; message: string },
+		outcome: GateOutcome,
+	) {
+		const label = RISK_LABELS[outcome.level];
+		if (outcome.decision === "allow") {
+			this.log(
+				`[AUTO-APPROVED] [${label}] Action ${obj.id}: ${obj.message} (${outcome.reason})`,
+			);
+			this.autoApprovedTotal++;
+			this.autoApprovedActions.push({
+				actionId: obj.id,
+				toolName: outcome.call.rawName,
+				input: outcome.call.input,
+				riskLevel: outcome.level,
+				riskLabel: label,
+				reason: outcome.reason,
+				timestamp: new Date().toISOString(),
+				matchedOverride: outcome.matchedOverride,
+			});
+			if (this.autoApprovedActions.length > PiSession.MAX_AUTO_APPROVED_LOG) {
+				this.autoApprovedActions.splice(
+					0,
+					this.autoApprovedActions.length - PiSession.MAX_AUTO_APPROVED_LOG,
+				);
+			}
+			this.writeRaw({
+				type: "extension_ui_response",
+				id: obj.id,
+				confirmed: true,
+			}).catch((err) => {
+				this.log(`Failed to auto-approve action ${obj.id}: ${err.message}`);
+			});
+			return;
+		}
+		if (outcome.decision === "deny") {
+			this.log(
+				`[AUTO-DENIED] [${label}] Action ${obj.id}: ${obj.message} (${outcome.reason})`,
+			);
+			if (this.autoDenied.length < PiSession.MAX_AUTO_APPROVED_SHOWN) {
+				this.autoDenied.push(`${outcome.call.rawName}: ${outcome.reason}`);
+			}
+			this.writeRaw({
+				type: "extension_ui_response",
+				id: obj.id,
+				confirmed: false,
+				value: outcome.reason,
+			}).catch((err) => {
+				this.log(`Failed to deny action ${obj.id}: ${err.message}`);
+			});
+			return;
+		}
+		this.escalate(obj, outcome);
+	}
+
+	/** Hold a tool call for the coordinator. `outcome` is null if unclassified. */
+	private escalate(
+		obj: { id: string; title?: string; message: string },
+		outcome: GateOutcome | null,
+	) {
+		const label = outcome ? RISK_LABELS[outcome.level] : undefined;
+		this.status = "AWAITING_APPROVAL";
+		this.onStatusChange?.(
+			this.sessionId,
+			"AWAITING_APPROVAL",
+			`Intercepted tool call: ${obj.message}`,
+		);
+		this.pendingAction = {
+			actionId: obj.id,
+			tool: "confirm",
+			arguments: { title: obj.title, message: obj.message },
+			context:
+				"A tool execution or high-risk operation requires supervisor consent.",
+			riskLevel: outcome?.level,
+			riskLabel: label,
+			reason: outcome?.reason,
+			hardLimit: outcome ? !outcome.autoAllowable : undefined,
+		};
+		this.log(
+			`[INTERCEPTED] [${label ?? "UNKNOWN"}] Action ${obj.id} awaiting coordinator approval: ${obj.message}`,
+		);
+		if (this.resolveCommand) {
+			const hard =
+				outcome && !outcome.autoAllowable
+					? " Hard limit: only you can allow this."
+					: "";
+			this.resolveCommand(
+				`AWAITING_APPROVAL: [${label ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${obj.id}. Message: ${obj.message}${hard}${this.takeAutoApprovedNotes()}`,
+			);
+			this.resolveCommand = null;
+			this.rejectCommand = null;
+		}
+	}
+
+	/** The pending action is gone without an answer: record it as cancelled. */
+	private dropPending() {
+		if (this.pendingAction) {
+			this.approvalGate.recordResolution(
+				this.pendingAction.actionId,
+				"deny",
+				"cancel",
+				"the worker ended before the call was answered",
+			);
+		}
+		this.pendingAction = null;
+	}
+
 	/**
 	 * Append the actions auto-approved since the last result, so the caller sees
 	 * what ran without asking. Each action is reported once.
 	 */
 	private takeAutoApprovedNotes(): string {
+		const denied = this.takeAutoDeniedNotes();
 		const unreported = this.autoApprovedTotal - this.autoApprovedReported;
 		this.autoApprovedReported = this.autoApprovedTotal;
-		if (unreported <= 0) return "";
+		if (unreported <= 0) return denied;
 		const entries = this.autoApprovedActions.slice(-unreported);
 		const shown = entries.slice(0, PiSession.MAX_AUTO_APPROVED_SHOWN);
 		const lines = shown.map(
@@ -558,7 +637,14 @@ export class PiSession {
 		if (unreported > shown.length) {
 			lines.push(`- ... and ${unreported - shown.length} more`);
 		}
-		return `\n\nAuto-approved without asking (${unreported}):\n${lines.join("\n")}`;
+		return `${denied}\n\nAuto-approved without asking (${unreported}):\n${lines.join("\n")}`;
+	}
+
+	private takeAutoDeniedNotes(): string {
+		if (this.autoDenied.length === 0) return "";
+		const lines = this.autoDenied.map((d) => `- ${d}`);
+		this.autoDenied = [];
+		return `\n\nDenied by the risk policy without asking (${lines.length}):\n${lines.join("\n")}`;
 	}
 
 	private takeSummarizeNote(): string {
@@ -576,6 +662,31 @@ export class PiSession {
 
 	public getAutoApprovedLog(): AutoApprovedAction[] {
 		return [...this.autoApprovedActions];
+	}
+
+	/** Every gate decision for this worker, newest last (a bounded ring). */
+	public getGateLog() {
+		return this.approvalGate.log.entries();
+	}
+
+	/** The policy in force, after any ceiling clamp. */
+	public get riskPolicy(): RiskPolicy {
+		return this.approvalGate.policy;
+	}
+
+	/**
+	 * Replace the policy (v1 or v2 shape). It is lowered to the server's
+	 * ceiling; the result says what was lowered. Throws on an invalid policy.
+	 */
+	public applyRiskPolicy(input: unknown): PolicyReport {
+		const normalized = normalizePolicy(input);
+		const { policy, clamped } = this.approvalGate.setPolicy(normalized.policy);
+		return {
+			policy,
+			clamped,
+			converted: normalized.converted,
+			notes: normalized.notes,
+		};
 	}
 
 	/** Whether a pi subprocess is actually attached to this session. */
@@ -667,6 +778,12 @@ export class PiSession {
 		}
 
 		this.log(`Approving action ${actionId}`);
+		this.approvalGate.recordResolution(
+			actionId,
+			"allow",
+			"coordinator",
+			"approved by the coordinator",
+		);
 		this.status = "RUNNING";
 		this.pendingAction = null;
 		if (summarize === true) {
@@ -704,6 +821,12 @@ export class PiSession {
 		}
 
 		this.log(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
+		this.approvalGate.recordResolution(
+			actionId,
+			"deny",
+			"coordinator",
+			"rejected by the coordinator",
+		);
 		this.status = "RUNNING";
 		this.pendingAction = null;
 		if (summarize === true) {
@@ -739,7 +862,7 @@ export class PiSession {
 			this.process = null;
 		}
 		this.removeGateDir();
-		this.pendingAction = null;
+		this.dropPending();
 		this.onStatusChange?.(this.sessionId, "CRASHED", "Process terminated");
 		this.activeTaskId = null;
 	}

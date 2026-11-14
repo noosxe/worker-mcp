@@ -4,5 +4,6 @@
 		"commandTimeoutMs": 600000,
 		"maxOutputChars": 64000
 	},
-	"env": { "allow": ["ANTHROPIC_API_KEY", "HTTPS_PROXY"] }
+	"env": { "allow": ["ANTHROPIC_API_KEY", "HTTPS_PROXY"] },
+	"gate": { "maxAutoApprove": "MEDIUM", "protectedPaths": ["~/keep"] }
 }

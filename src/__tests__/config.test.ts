@@ -63,6 +63,10 @@ describe("defaults", () => {
 		assert.strictEqual(config.limits.commandTimeoutMs, null);
 		assert.strictEqual(config.limits.maxOutputChars, 64000);
 		assert.deepStrictEqual(config.env, { allow: [], forceDropExempt: [] });
+		assert.deepStrictEqual(config.gate, {
+			maxAutoApprove: "MEDIUM",
+			protectedPaths: [],
+		});
 		assert.strictEqual(config.stateDir, path.join(root, "state", "worker-mcp"));
 		assert.strictEqual(config.runtimeDir, env.XDG_RUNTIME_DIR);
 	});
@@ -311,6 +315,63 @@ describe("force-drop exception", () => {
 		const config = load(["--config", file]);
 		assert.deepStrictEqual(config.env.forceDropExempt, []);
 		assert.deepStrictEqual(effective(config), {});
+	});
+});
+
+describe("gate settings", () => {
+	test("maxAutoApprove comes from the file, the variable and the flag", () => {
+		const file = writeFile({ gate: { maxAutoApprove: "LOW" } });
+		assert.strictEqual(load(["--config", file]).gate.maxAutoApprove, "LOW");
+		assert.strictEqual(
+			load(["--config", file], { ...env, WORKER_MCP_MAX_AUTO_APPROVE: "high" })
+				.gate.maxAutoApprove,
+			"HIGH",
+		);
+		assert.strictEqual(
+			load(["--config", file, "--max-auto-approve", "medium"], {
+				...env,
+				WORKER_MCP_MAX_AUTO_APPROVE: "HIGH",
+			}).gate.maxAutoApprove,
+			"MEDIUM",
+		);
+	});
+
+	test("the ceiling can never be CRITICAL, or anything but a level", () => {
+		for (const bad of ["CRITICAL", "critical", "3", "none"]) {
+			assert.match(
+				failure(() => load([], { ...env, WORKER_MCP_MAX_AUTO_APPROVE: bad })),
+				/gate\.maxAutoApprove/,
+			);
+			assert.match(
+				failure(() => load(["--max-auto-approve", bad])),
+				/gate\.maxAutoApprove/,
+			);
+		}
+		const file = writeFile({ gate: { maxAutoApprove: "CRITICAL" } });
+		assert.match(
+			failure(() => load(["--config", file])),
+			/maxAutoApprove/,
+		);
+	});
+
+	test("protectedPaths come from the file, accumulate, and must be absolute or ~/", () => {
+		const file = writeFile({
+			gate: { protectedPaths: ["/srv/keep", "~/precious", "/srv/keep"] },
+		});
+		assert.deepStrictEqual(load(["--config", file]).gate.protectedPaths, [
+			"/srv/keep",
+			"~/precious",
+		]);
+		const bad = writeFile({ gate: { protectedPaths: ["relative/x"] } });
+		assert.match(
+			failure(() => load(["--config", bad])),
+			/absolute path or start with ~\//,
+		);
+		const unknown = writeFile({ gate: { other: 1 } });
+		assert.match(
+			failure(() => load(["--config", unknown])),
+			/unknown key gate\.other/,
+		);
 	});
 });
 

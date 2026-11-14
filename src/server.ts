@@ -7,14 +7,75 @@ import {
 	ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { RiskLevel } from "./session/risk-classifier.js";
-import type { RiskPolicy } from "./session/risk-policy.js";
+import { RiskLevel } from "./gate/risk.js";
+import type { PolicyReport } from "./session/pi-session.js";
 import type { SessionManager } from "./session/session-manager.js";
 import { TaskSettler } from "./task-settle.js";
 
 const DEFAULT_TASK_TTL_MS = 60 * 60 * 1000;
 
 /** Build the MCP server for a session manager. Does not connect a transport. */
+
+const RISK_POLICY_SCHEMA = {
+	type: "object",
+	description:
+		"Auto-approval policy. Calls at or below autoApproveUpTo are allowed without asking; everything else waits for the coordinator. The server lowers the policy to its own ceiling (default MEDIUM) and says so in the result. Calls that touch protected paths are never auto-approved, whatever the policy says. The earlier shape (notifyUpTo; overrides with pattern, pathPattern and allow|block) is still accepted and converted.",
+	properties: {
+		autoApproveUpTo: {
+			type: "number",
+			description:
+				"Risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) up to which calls are auto-approved. Default 0 (LOW).",
+		},
+		overrides: {
+			type: "array",
+			description:
+				"Checked in order; the first match decides. Glob patterns: `*` matches any run of characters (in `command` it stops at shell metacharacters).",
+			items: {
+				type: "object",
+				properties: {
+					match: {
+						type: "object",
+						description:
+							"Every field given must match. `tool` is pi's tool name (bash, read, write, edit, grep, find, ls), `kind` the canonical kind (shell, read, list, search, write, edit), `command` a shell command, `path` an absolute or workspace-relative path.",
+						properties: {
+							kind: { type: "string" },
+							tool: { type: "string" },
+							command: { type: "string" },
+							path: { type: "string" },
+						},
+					},
+					action: {
+						type: "string",
+						enum: ["allow", "escalate", "deny"],
+						description:
+							"allow: auto-approve (up to maxRiskLevel; never a protected path, and outside the workspace only with a matching path). escalate: always ask. deny: refuse without asking.",
+					},
+					maxRiskLevel: {
+						type: "number",
+						description:
+							"For allow: only up to this level. Default 1 (MEDIUM); limited by the server's ceiling.",
+					},
+				},
+				required: ["match", "action"],
+			},
+		},
+	},
+} as const;
+
+/** One line for the tool result: the policy in force and what was changed. */
+function describePolicy(report: PolicyReport): string {
+	const p = report.policy;
+	const lines = [
+		`Auto-approve up to: ${RiskLevel[p.autoApproveUpTo]}, overrides: ${p.overrides.length}.`,
+	];
+	if (report.clamped.length > 0) {
+		lines.push(
+			`Lowered to the server's ceiling: ${report.clamped.join("; ")}.`,
+		);
+	}
+	lines.push(...report.notes.map((n) => `Note: ${n}.`));
+	return lines.join(" ");
+}
 
 export function createServer(
 	sessionManager: SessionManager,
@@ -148,55 +209,7 @@ export function createServer(
 								type: "string",
 								description: "Custom system instructions to append/override.",
 							},
-							riskPolicy: {
-								type: "object",
-								description:
-									"Risk-based auto-approval policy. Controls which tool calls are auto-approved based on risk level. If not specified, defaults to auto-approve LOW risk and notify on MEDIUM risk.",
-								properties: {
-									autoApproveUpTo: {
-										type: "number",
-										description:
-											"Actions at or below this risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) are auto-approved silently. Default: 0 (LOW).",
-									},
-									notifyUpTo: {
-										type: "number",
-										description:
-											"Actions at or below this level (but above autoApproveUpTo) are auto-approved with a logged notification. Default: 1 (MEDIUM).",
-									},
-									overrides: {
-										type: "array",
-										description:
-											"Custom overrides for specific command patterns.",
-										items: {
-											type: "object",
-											properties: {
-												pattern: {
-													type: "string",
-													description:
-														"Glob pattern to match against command string or tool name.",
-												},
-												pathPattern: {
-													type: "string",
-													description:
-														"Optional glob pattern to match against the target file path. When set, both pattern and pathPattern must match for the override to apply.",
-												},
-												action: {
-													type: "string",
-													enum: ["allow", "block"],
-													description:
-														"Force allow (auto-approve) or block (require approval).",
-												},
-												maxRiskLevel: {
-													type: "number",
-													description:
-														"Only apply this override if the classified risk is at or below this level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL). Omit to apply at any risk level.",
-												},
-											},
-											required: ["pattern", "action"],
-										},
-									},
-								},
-							},
+							riskPolicy: RISK_POLICY_SCHEMA,
 						},
 						required: ["sessionId", "cwd"],
 					},
@@ -349,52 +362,7 @@ export function createServer(
 								type: "string",
 								description: "The target session ID.",
 							},
-							riskPolicy: {
-								type: "object",
-								description: "The new risk policy to apply.",
-								properties: {
-									autoApproveUpTo: {
-										type: "number",
-										description:
-											"Risk level threshold for silent auto-approval (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL).",
-									},
-									notifyUpTo: {
-										type: "number",
-										description:
-											"Risk level threshold for auto-approval with notification.",
-									},
-									overrides: {
-										type: "array",
-										description: "Custom overrides.",
-										items: {
-											type: "object",
-											properties: {
-												pattern: {
-													type: "string",
-													description:
-														"Glob pattern to match against command string or tool name.",
-												},
-												pathPattern: {
-													type: "string",
-													description:
-														"Optional glob pattern to match against the target file path.",
-												},
-												action: {
-													type: "string",
-													enum: ["allow", "block"],
-												},
-												maxRiskLevel: {
-													type: "number",
-													description:
-														"Only apply this override if the classified risk is at or below this level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL).",
-												},
-											},
-											required: ["pattern", "action"],
-										},
-									},
-								},
-								required: ["autoApproveUpTo", "notifyUpTo"],
-							},
+							riskPolicy: RISK_POLICY_SCHEMA,
 						},
 						required: ["sessionId", "riskPolicy"],
 					},
@@ -435,7 +403,7 @@ export function createServer(
 						cwd: string;
 						model?: string;
 						systemPrompt?: string;
-						riskPolicy?: RiskPolicy;
+						riskPolicy?: unknown;
 					};
 					const session = await sessionManager.createSession(
 						sessionId,
@@ -448,7 +416,7 @@ export function createServer(
 						content: [
 							{
 								type: "text",
-								text: `Successfully initialized and started session ${sessionId} in ${cwd} (Status: ${session.status})`,
+								text: `Successfully initialized and started session ${sessionId} in ${cwd} (Status: ${session.status})${session.policyReport ? `\n${describePolicy(session.policyReport)}` : ""}`,
 							},
 						],
 					};
@@ -686,14 +654,14 @@ export function createServer(
 				case "set_risk_policy": {
 					const { sessionId, riskPolicy } = args as {
 						sessionId: string;
-						riskPolicy: RiskPolicy;
+						riskPolicy: unknown;
 					};
-					sessionManager.setRiskPolicy(sessionId, riskPolicy);
+					const report = sessionManager.setRiskPolicy(sessionId, riskPolicy);
 					return {
 						content: [
 							{
 								type: "text",
-								text: `Risk policy updated for session ${sessionId}. Auto-approve up to: ${RiskLevel[riskPolicy.autoApproveUpTo] ?? riskPolicy.autoApproveUpTo}, Notify up to: ${RiskLevel[riskPolicy.notifyUpTo] ?? riskPolicy.notifyUpTo}, Overrides: ${riskPolicy.overrides?.length ?? 0}`,
+								text: `Risk policy updated for session ${sessionId}. ${describePolicy(report)}`,
 							},
 						],
 					};

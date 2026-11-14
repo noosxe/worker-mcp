@@ -289,6 +289,8 @@ Lowest to highest:
 | `env.allow`               | `WORKER_MCP_ENV_PASSTHROUGH`  | `--env-passthrough`    | none                                      |
 | `stateDir`                | `WORKER_MCP_STATE_DIR`        | `--state-dir`          | `$XDG_STATE_HOME/worker-mcp`              |
 | `runtimeDir`              | `WORKER_MCP_RUNTIME_DIR`      | `--runtime-dir`        | `$XDG_RUNTIME_DIR`, else `<stateDir>/run` |
+| `gate.maxAutoApprove`     | `WORKER_MCP_MAX_AUTO_APPROVE` | `--max-auto-approve`   | `MEDIUM`                                  |
+| `gate.protectedPaths`     | (file only)                   |                        | none                                      |
 
 - Numbers are positive integers; directories are absolute paths.
 - `env.allow` / `WORKER_MCP_ENV_PASSTHROUGH`: names, or `PREFIX_*` patterns, of
@@ -305,6 +307,12 @@ Lowest to highest:
   Directories left by a killed server are removed at the next start only when
   their pid is no longer running.
 - `stateDir` is reserved; nothing is written there yet.
+- `gate.maxAutoApprove` (`LOW`, `MEDIUM` or `HIGH`, never `CRITICAL`) is the
+  highest risk level a coordinator's policy may auto-approve. Policies given to
+  `spawn_pi_session` and `set_risk_policy` are lowered to it, and the result
+  says so. `gate.protectedPaths` adds paths (absolute, or starting with `~/`)
+  that workers may never write without the coordinator's approval, on top of
+  the built-in list in [docs/security.md](docs/security.md).
 
 Workers are not persisted. A `sessions.json` left in `~/.config/worker-mcp/` by
 an earlier version is ignored and can be deleted.
