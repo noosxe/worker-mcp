@@ -22,6 +22,12 @@
   CRITICAL action unless it sets `maxRiskLevel` to CRITICAL. `pathPattern`
   matching is unchanged.
 
+- Recursive or forced `rm` (and `find -delete`, `rm --no-preserve-root`) aimed
+  at `/`, `~`, `$HOME`, the workspace itself, anything above it or any path
+  outside it is CRITICAL. Targets are resolved against the session's working
+  directory. Plain deletes inside the workspace stay HIGH. `chmod` and `chown`
+  were already CRITICAL.
+
 ### Changed
 
 - `send_pi_command` results list the actions that were auto-approved during the

@@ -1,3 +1,6 @@
+import * as os from "node:os";
+import * as path from "node:path";
+
 export enum RiskLevel {
 	LOW = 0,
 	MEDIUM = 1,
@@ -69,7 +72,7 @@ export function classifyAction(
 		else if (typeof input.cmd === "string") cmdStr = input.cmd;
 		else if (typeof input.script === "string") cmdStr = input.script;
 
-		return classifyShellCommandFull(cmdStr);
+		return classifyShellCommandFull(cmdStr, workspaceCwd);
 	}
 
 	if (
@@ -222,7 +225,8 @@ const result = (level: RiskLevel, reason: string, rule: string) => ({
  * needs a real shell lexer.
  */
 const SHELL_METACHARACTERS = /[;&|<>`$()\\\n\r]/;
-const SEGMENT_SPLIT = /[;&|<>`$()\n\r]+/;
+// `$` alone is kept so `$HOME` stays a token; `$(` starts a new segment.
+const SEGMENT_SPLIT = /[;&|<>`)\n\r]+|\$?\(/;
 
 /** Paths and names that hold credentials or environment contents. */
 const SECRET_PATH_PATTERNS: RegExp[] = [
@@ -241,7 +245,7 @@ export function referencesSecretPath(text: string): boolean {
 	return SECRET_PATH_PATTERNS.some((re) => re.test(text));
 }
 
-function classifyShellCommandFull(cmd: string): ClassifiedAction {
+function classifyShellCommandFull(cmd: string, cwd: string): ClassifiedAction {
 	if (
 		/\|\s*(sh|bash|zsh|dash|ksh)(\s|$)/.test(cmd) ||
 		/(^|[\s;&|(`])(eval|exec)(\s|$)/.test(cmd)
@@ -254,7 +258,7 @@ function classifyShellCommandFull(cmd: string): ClassifiedAction {
 	}
 
 	if (!SHELL_METACHARACTERS.test(cmd)) {
-		return classifySingleCommand(cmd);
+		return classifySingleCommand(cmd, cwd);
 	}
 
 	// Chaining, substitution, redirection or an escape: at least HIGH, and as
@@ -266,7 +270,7 @@ function classifyShellCommandFull(cmd: string): ClassifiedAction {
 	);
 	for (const part of cmd.split(SEGMENT_SPLIT)) {
 		if (!part.trim()) continue;
-		const res = classifySingleCommand(part);
+		const res = classifySingleCommand(part, cwd);
 		if (res.riskLevel > worst.riskLevel) worst = res;
 	}
 	return worst;
@@ -494,7 +498,7 @@ const LOW_BASE = new Set([
 const FIND_EXEC =
 	/^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
 
-function classifySingleCommand(rawCmd: string): ClassifiedAction {
+function classifySingleCommand(rawCmd: string, cwd: string): ClassifiedAction {
 	let cmd = rawCmd.trim();
 
 	// Leading `NAME=value` assignments change how the command behaves
@@ -504,7 +508,7 @@ function classifySingleCommand(rawCmd: string): ClassifiedAction {
 		cmd = cmd.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s*/, "");
 		assigned = true;
 	}
-	const inner = classifyCommandWords(cmd);
+	const inner = classifyCommandWords(cmd, cwd);
 	if (assigned && inner.riskLevel < RiskLevel.HIGH) {
 		return result(
 			RiskLevel.HIGH,
@@ -515,7 +519,7 @@ function classifySingleCommand(rawCmd: string): ClassifiedAction {
 	return inner;
 }
 
-function classifyCommandWords(cmd: string): ClassifiedAction {
+function classifyCommandWords(cmd: string, cwd: string): ClassifiedAction {
 	const parts = cmd.split(/\s+/).filter(Boolean);
 	const first = parts[0] ?? "";
 	const args = parts.slice(1);
@@ -534,9 +538,18 @@ function classifyCommandWords(cmd: string): ClassifiedAction {
 		);
 	}
 
+	const destructive = classifyDestructive(base, args, cwd);
+	if (destructive) return destructive;
+
 	if (WRAPPERS.has(base)) {
 		// The wrapped command is not parsed. Anything critical named in the
 		// arguments keeps its level; otherwise HIGH.
+		for (let i = 0; i < args.length; i++) {
+			if (args[i] === "rm" || args[i] === "find") {
+				const found = classifyDestructive(args[i], args.slice(i + 1), cwd);
+				if (found) return found;
+			}
+		}
 		const innerCritical = args.some((a) => CRITICAL_BASE.has(a));
 		return innerCritical
 			? result(RiskLevel.CRITICAL, "Critical command", "critical_command")
@@ -736,4 +749,59 @@ function classifyGit(args: string[]): ClassifiedAction {
 	// push, commit (runs hooks), fetch, pull, clone, config, remote, submodule,
 	// worktree, merge, tag, aliases and anything else unknown.
 	return high(`git ${sub} mutates the repository or uses the network`);
+}
+
+/** A deletion target is dangerous unless it resolves strictly inside `cwd`. */
+function isDangerousTarget(target: string, cwd: string): boolean {
+	const t = target.replace(/^["']|["']$/g, "");
+	if (t === "" || /[$`]/.test(t) || /^~[^/]/.test(t)) return true;
+	const expanded =
+		t === "~" || t.startsWith("~/") ? path.join(os.homedir(), t.slice(1)) : t;
+	// A glob in the last component stands for everything in its directory.
+	const dir = /[*?[]/.test(path.basename(expanded))
+		? path.dirname(expanded)
+		: expanded;
+	const rel = path.relative(path.resolve(cwd), path.resolve(cwd, dir));
+	return rel === "" || rel.startsWith("..") || path.isAbsolute(rel);
+}
+
+/**
+ * Recursive or forced `rm`, and `find -delete`, aimed at the filesystem root,
+ * the home directory, the workspace itself or anything outside it: CRITICAL.
+ * Returns null when this is not such a command.
+ */
+function classifyDestructive(
+	base: string,
+	args: string[],
+	cwd: string,
+): ClassifiedAction | null {
+	if (base === "rm") {
+		if (args.includes("--no-preserve-root")) {
+			return critical("rm --no-preserve-root");
+		}
+		const dashDash = args.indexOf("--");
+		const flags = (dashDash < 0 ? args : args.slice(0, dashDash)).filter((a) =>
+			a.startsWith("-"),
+		);
+		const targets = args.filter(
+			(a, i) => (dashDash >= 0 && i > dashDash) || !a.startsWith("-"),
+		);
+		const sweeping = flags.some(
+			(f) =>
+				f === "--recursive" ||
+				f === "--force" ||
+				(!f.startsWith("--") && /[rRf]/.test(f)),
+		);
+		if (sweeping && targets.some((t) => isDangerousTarget(t, cwd))) {
+			return critical("Recursive or forced delete outside the workspace");
+		}
+	}
+	if (base === "find" && args.includes("-delete")) {
+		const end = args.findIndex((a) => /^(-|\(|!)/.test(a));
+		const roots = end < 0 ? args : args.slice(0, end);
+		if ((roots.length ? roots : ["."]).some((r) => isDangerousTarget(r, cwd))) {
+			return critical("find -delete from a root outside the workspace");
+		}
+	}
+	return null;
 }
