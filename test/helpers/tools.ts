@@ -1,3 +1,4 @@
+// Type-checked by `tsc -p tsconfig.test.json` (part of `pnpm run lint`).
 // The only place that knows tool names. A later rename changes this map.
 export const TOOLS = {
 	spawn: "spawn_pi_session",
