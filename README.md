@@ -232,11 +232,33 @@ Once you have added the server configuration to `mcp_config.json`, you can manag
 
 ---
 
+## Use with Claude Code
+
+Register the server over stdio with the `claude mcp add` command (the
+`worker-mcp` binary must be on `PATH`, or use `npx`):
+
+```bash
+claude mcp add worker-mcp -- worker-mcp
+# or, without a global install:
+claude mcp add worker-mcp -- npx -y @noosxe/worker-mcp
+```
+
+Set environment variables with `-e`, for example
+`claude mcp add -e WORKER_MCP_PI_PATH=<path-to-pi> worker-mcp -- worker-mcp`.
+
+`send_pi_command` blocks until the worker finishes and returns its output. If
+the run is longer than your client's tool-call timeout, raise that timeout (for
+Claude Code, the `MCP_TOOL_TIMEOUT` environment variable); long runs are not
+yet resumable.
+
+---
+
 ## Operational Configuration
 
 ### Environment Variables
 
 - **`WORKER_MCP_PI_PATH`**: Absolute path to the `pi` coding-agent binary (defaults to searching `PATH` for `pi`).
+- **`WORKER_MCP_COMMAND_TIMEOUT`**, **`WORKER_MCP_MAX_OUTPUT_CHARS`**, **`WORKER_MCP_SUMMARIZE_TIMEOUT`**: Positive integers (milliseconds, characters, milliseconds). The server refuses to start if one is set to anything else.
 
 ### Pre-requisites
 

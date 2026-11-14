@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { readPositiveIntEnv } from "../validation.js";
 import {
 	classifyAction,
 	parseToolFromMessage,
@@ -191,6 +192,12 @@ export class PiSession {
 			if (text) {
 				this.log(`[stderr] ${text}`);
 			}
+		});
+
+		// A write after pi has exited emits EPIPE here; unhandled, it would
+		// throw and take the whole server down.
+		this.process.stdin?.on("error", (err) => {
+			this.log(`pi stdin error: ${err.message}`);
 		});
 
 		// Handle process exits
@@ -484,12 +491,13 @@ export class PiSession {
 
 	private writeRaw(obj: object): Promise<void> {
 		return new Promise((resolve, reject) => {
-			if (!this.process?.stdin) {
+			const stdin = this.process?.stdin;
+			if (!stdin || stdin.destroyed || !stdin.writable) {
 				return reject(new Error("Process not running"));
 			}
 
 			const payload = `${JSON.stringify(obj)}\n`;
-			this.process.stdin.write(payload, "utf8", (err) => {
+			stdin.write(payload, "utf8", (err) => {
 				if (err) {
 					reject(err);
 				} else {
@@ -519,7 +527,8 @@ export class PiSession {
 
 	/** Abort the currently running command without terminating the session. */
 	public abortCommand(): void {
-		if (this.status !== "RUNNING") return;
+		// Idempotent: a second request while one is pending changes nothing.
+		if (this.status !== "RUNNING" || this.abortTimeout) return;
 
 		const cmdId = `abort_${Date.now()}`;
 		this.writeRaw({ id: cmdId, type: "abort" }).catch((err) => {
@@ -670,9 +679,8 @@ export class PiSession {
 
 	private detectLoop(text: string): boolean {
 		const len = text.length;
-		const maxOutputLimit = process.env.WORKER_MCP_MAX_OUTPUT_CHARS
-			? Number.parseInt(process.env.WORKER_MCP_MAX_OUTPUT_CHARS, 10)
-			: 64000;
+		const maxOutputLimit =
+			readPositiveIntEnv("WORKER_MCP_MAX_OUTPUT_CHARS") ?? 64000;
 		if (len > maxOutputLimit) return true; // Safeguard limit
 		if (len < 5) return false;
 
@@ -760,9 +768,8 @@ Your summary should be concise, focusing only on the final results, key decision
 			let output = "";
 			let errorOutput = "";
 
-			const timeoutMs = process.env.WORKER_MCP_SUMMARIZE_TIMEOUT
-				? Number.parseInt(process.env.WORKER_MCP_SUMMARIZE_TIMEOUT, 10)
-				: 60000;
+			const timeoutMs =
+				readPositiveIntEnv("WORKER_MCP_SUMMARIZE_TIMEOUT") ?? 60000;
 
 			const timeout = setTimeout(() => {
 				this.log("Summarization process timed out. Killing process.");
