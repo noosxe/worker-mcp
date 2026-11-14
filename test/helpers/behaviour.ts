@@ -332,6 +332,30 @@ export function behaviourTests(name: string, layer: Layer) {
 			},
 		);
 
+		test(
+			"a trailing agent_settled does not end the next run early",
+			{
+				todo: "the server settles on agent_end or agent_settled, so the late event ends the second run with no output; fixed when runs settle on a single event",
+			},
+			async () => {
+				await withServer(async (client) => {
+					await spawnSession(client, "late");
+					const first = await callOk(client, TOOLS.send, {
+						sessionId: "late",
+						command: "scenario:late-settled:300 first",
+					});
+					assert.strictEqual(first, "fake-pi reply: first");
+					// Sent as soon as the first returns; its run is still going when
+					// the first run's agent_settled arrives.
+					const second = await callOk(client, TOOLS.send, {
+						sessionId: "late",
+						command: "scenario:slow:800 second",
+					});
+					assert.strictEqual(second, "fake-pi reply: second");
+				});
+			},
+		);
+
 		test("large worker output arrives intact", async () => {
 			await withServer(async (client) => {
 				await spawnSession(client, "big");
