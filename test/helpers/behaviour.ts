@@ -248,6 +248,30 @@ export function behaviourTests(name: string, layer: Layer) {
 			});
 		}
 
+		test("a `git *` allow override does not cover a chained command", async () => {
+			await withServer(async (client) => {
+				await callOk(client, TOOLS.spawn, {
+					sessionId: "override",
+					cwd: iso.cwd,
+					riskPolicy: {
+						autoApproveUpTo: 0,
+						notifyUpTo: 0,
+						overrides: [{ pattern: "git *", action: "allow" }],
+					},
+				});
+				const allowed = await callOk(client, TOOLS.send, {
+					sessionId: "override",
+					command: gatedBash("git log --oneline"),
+				});
+				assert.match(allowed, /^tool bash ran with /);
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "override",
+					command: gatedBash("git status; rm -rf ~"),
+				});
+				assert.match(waiting, /^AWAITING_APPROVAL: /);
+			});
+		});
+
 		test("an explicit policy can still auto-approve higher risk", async () => {
 			await withServer(async (client) => {
 				await callOk(client, TOOLS.spawn, {
