@@ -705,6 +705,22 @@ function assessSimple(cmd: SimpleCommand, ctx: ShellContext, acc: Accumulator) {
 				acc,
 				lowOrMedium,
 			);
+			// git reads a file out of its objects as `<rev>:<path>`, `:<path>` or
+			// `:<stage>:<path>`; the path is relative to the repository root.
+			if (base === "git") {
+				const objectPath = /^(?:[^:\s]*:(?:\d:)?|:(?:\d:)?)(.+)$/.exec(
+					text,
+				)?.[1];
+				if (objectPath) {
+					checkPath(
+						{ ...arg, text: objectPath, tilde: false, glob: false },
+						"read",
+						ctx,
+						acc,
+						lowOrMedium,
+					);
+				}
+			}
 		}
 	}
 }

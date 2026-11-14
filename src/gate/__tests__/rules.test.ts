@@ -553,6 +553,35 @@ describe("protected paths are hard limits", () => {
 		}
 	});
 
+	test("reading a secret out of git's objects is a hard limit", async () => {
+		const gate = fx.gate({ policy: permissive(RiskLevel.HIGH) });
+		for (const command of [
+			"git show HEAD:.env",
+			"git show HEAD:./.env",
+			"git show :.env",
+			"git show :0:.env",
+			"git cat-file -p HEAD:app/.env.local",
+			"git -C . show main:.env",
+			"git log -p -- .env",
+			"git diff HEAD~1 .env",
+		]) {
+			const out = await decide(gate, "bash", { command });
+			assert.strictEqual(out.autoAllowable, false, command);
+			assert.strictEqual(out.decision, "escalate", command);
+		}
+		for (const command of [
+			"git show HEAD:src/a.ts",
+			"git log -p -- src/",
+			"git archive HEAD",
+		]) {
+			assert.strictEqual(
+				(await decide(gate, "bash", { command })).autoAllowable,
+				true,
+				command,
+			);
+		}
+	});
+
 	test("shell reads of a write-only protected file stay LOW", async () => {
 		const gate = fx.gate();
 		for (const command of [

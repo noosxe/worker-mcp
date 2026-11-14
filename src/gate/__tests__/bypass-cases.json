@@ -1521,5 +1521,131 @@
 		"command": "cat <<< hi",
 		"min": "LOW",
 		"max": "LOW"
+	},
+	{
+		"name": "secrets via git: git show of a committed .env",
+		"toolName": "bash",
+		"command": "git show HEAD:.env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git show with ./ path",
+		"toolName": "bash",
+		"command": "git show HEAD:./.env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git show of the index copy",
+		"toolName": "bash",
+		"command": "git show :.env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git show of a staged copy",
+		"toolName": "bash",
+		"command": "git show :0:.env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git show of a nested .env.local",
+		"toolName": "bash",
+		"command": "git show main:app/.env.local",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git cat-file -p of .env",
+		"toolName": "bash",
+		"command": "git cat-file -p HEAD:.env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git cat-file blob of .env",
+		"toolName": "bash",
+		"command": "git cat-file blob HEAD:.env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git show with -C and .env",
+		"toolName": "bash",
+		"command": "git -C . show HEAD:.env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git show of an ssh key by path",
+		"toolName": "bash",
+		"command": "git show HEAD:.ssh/id_rsa",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git log -p with a .env pathspec",
+		"toolName": "bash",
+		"command": "git log -p -- .env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git diff naming .env",
+		"toolName": "bash",
+		"command": "git diff HEAD~1 -- .env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git show with a bare .env argument",
+		"toolName": "bash",
+		"command": "git show HEAD .env",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git archive",
+		"toolName": "bash",
+		"command": "git archive HEAD",
+		"min": "HIGH"
+	},
+	{
+		"name": "secrets via git: git bundle",
+		"toolName": "bash",
+		"command": "git bundle create x.bundle --all",
+		"min": "HIGH"
+	},
+	{
+		"name": "git show of a source file stays LOW",
+		"toolName": "bash",
+		"command": "git show HEAD:src/a.ts",
+		"min": "LOW",
+		"max": "LOW"
+	},
+	{
+		"name": "git show of a ./ source file stays LOW",
+		"toolName": "bash",
+		"command": "git show HEAD:./src/a.ts",
+		"min": "LOW",
+		"max": "LOW"
+	},
+	{
+		"name": "git log -p on a directory stays LOW",
+		"toolName": "bash",
+		"command": "git log -p -- src/",
+		"min": "LOW",
+		"max": "LOW"
+	},
+	{
+		"name": "git diff on a file stays LOW",
+		"toolName": "bash",
+		"command": "git diff HEAD~1 -- src/a.ts",
+		"min": "LOW",
+		"max": "LOW"
+	},
+	{
+		"name": "git cat-file on a source file stays LOW",
+		"toolName": "bash",
+		"command": "git cat-file -p HEAD:README.md",
+		"min": "LOW",
+		"max": "LOW"
+	},
+	{
+		"name": "git log with a colon in a format stays LOW",
+		"toolName": "bash",
+		"command": "git log --format=%H:%s",
+		"min": "LOW",
+		"max": "LOW"
 	}
 ]
