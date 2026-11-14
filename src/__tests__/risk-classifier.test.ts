@@ -56,17 +56,17 @@ describe("risk-classifier", () => {
 		});
 
 		test("classifies MEDIUM risk commands", () => {
-			assert.strictEqual(
-				checkShell("pnpm install").riskLevel,
-				RiskLevel.MEDIUM,
-			);
-			assert.strictEqual(checkShell("npm test").riskLevel, RiskLevel.MEDIUM);
 			assert.strictEqual(checkShell("git add .").riskLevel, RiskLevel.MEDIUM);
 			assert.strictEqual(
 				checkShell("mkdir -p dir").riskLevel,
 				RiskLevel.MEDIUM,
 			);
 			assert.strictEqual(checkShell("cp a b").riskLevel, RiskLevel.MEDIUM);
+		});
+
+		test("classifies package managers and runners as HIGH", () => {
+			assert.strictEqual(checkShell("pnpm install").riskLevel, RiskLevel.HIGH);
+			assert.strictEqual(checkShell("npm test").riskLevel, RiskLevel.HIGH);
 		});
 
 		test("classifies HIGH risk commands", () => {
@@ -105,10 +105,12 @@ describe("risk-classifier", () => {
 			);
 		});
 
-		test("classifies pipes to highest risk", () => {
+		test("classifies pipes to highest risk, at least HIGH", () => {
+			// Any metacharacter is at least HIGH until a quote-aware lexer can
+			// prove a pipeline simple.
 			assert.strictEqual(
 				checkShell("cat file | grep foo").riskLevel,
-				RiskLevel.LOW,
+				RiskLevel.HIGH,
 			);
 			assert.strictEqual(
 				checkShell("cat file | grep foo | rm").riskLevel,
@@ -215,8 +217,8 @@ describe("risk-policy", () => {
 			assert.strictEqual(resLow.notify, false);
 
 			const resMed = shouldAutoApprove(medAction, DEFAULT_RISK_POLICY, tool);
-			assert.strictEqual(resMed.approved, true);
-			assert.strictEqual(resMed.notify, true);
+			// MEDIUM needs approval under the default policy.
+			assert.strictEqual(resMed.approved, false);
 
 			const resHigh = shouldAutoApprove(highAction, DEFAULT_RISK_POLICY, tool);
 			assert.strictEqual(resHigh.approved, false);
@@ -558,5 +560,23 @@ describe("risk-policy", () => {
 			assert.strictEqual(res.approved, true);
 			assert.strictEqual(res.matchedOverride, undefined);
 		});
+	});
+});
+
+describe("default policy", () => {
+	test("auto-approves only LOW, with nothing silently notified", () => {
+		assert.strictEqual(DEFAULT_RISK_POLICY.autoApproveUpTo, RiskLevel.LOW);
+		assert.strictEqual(DEFAULT_RISK_POLICY.notifyUpTo, RiskLevel.LOW);
+	});
+
+	test("an explicit policy can still raise both thresholds", () => {
+		const policy = {
+			autoApproveUpTo: RiskLevel.HIGH,
+			notifyUpTo: RiskLevel.HIGH,
+			overrides: [],
+		};
+		const call = { toolName: "bash", input: { command: "ls ; rm -rf x" } };
+		const res = shouldAutoApprove(classifyAction(call, "/work"), policy, call);
+		assert.strictEqual(res.approved, true);
 	});
 });
