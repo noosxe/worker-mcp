@@ -60,6 +60,7 @@ describe("defaults", () => {
 	test("need no file and no environment", () => {
 		const config = load();
 		assert.strictEqual(config.providers.pi.path, "pi");
+		assert.strictEqual(config.providers.pi.startupTimeoutMs, 60000);
 		assert.strictEqual(config.limits.commandTimeoutMs, null);
 		assert.strictEqual(config.limits.maxOutputChars, 64000);
 		assert.deepStrictEqual(config.env, { allow: [], forceDropExempt: [] });
@@ -91,6 +92,47 @@ describe("defaults", () => {
 		assert.strictEqual(loaded.config.providers.pi.path, "from-default-file");
 		assert.strictEqual(loaded.configFile, path.join(dir, "config.json"));
 		assert.ok(!fs.existsSync(env.XDG_STATE_HOME));
+	});
+});
+
+describe("providers.pi.startupTimeoutMs", () => {
+	test("file < env < flag, and the path next to it is kept", () => {
+		const file = writeFile({
+			providers: { pi: { path: "file-pi", startupTimeoutMs: 1000 } },
+		});
+		let config = load(["--config", file]);
+		assert.strictEqual(config.providers.pi.startupTimeoutMs, 1000);
+		assert.strictEqual(config.providers.pi.path, "file-pi");
+		const withEnv = {
+			...env,
+			WORKER_MCP_PI_STARTUP_TIMEOUT_MS: "2000",
+			WORKER_MCP_PI_PATH: "env-pi",
+		};
+		config = load(["--config", file], withEnv);
+		assert.strictEqual(config.providers.pi.startupTimeoutMs, 2000);
+		assert.strictEqual(config.providers.pi.path, "env-pi");
+		config = load(["--config", file, "--pi-startup-timeout-ms=3000"], withEnv);
+		assert.strictEqual(config.providers.pi.startupTimeoutMs, 3000);
+		assert.strictEqual(config.providers.pi.path, "env-pi");
+	});
+
+	test("must be a positive integer, from every source", () => {
+		for (const bad of ["0", "-5", "1.5", "abc"]) {
+			assert.throws(
+				() => load([], { ...env, WORKER_MCP_PI_STARTUP_TIMEOUT_MS: bad }),
+				/WORKER_MCP_PI_STARTUP_TIMEOUT_MS|startupTimeoutMs/,
+				`env ${bad}`,
+			);
+			assert.throws(
+				() => load([`--pi-startup-timeout-ms=${bad}`]),
+				/--pi-startup-timeout-ms|startupTimeoutMs/,
+				`flag ${bad}`,
+			);
+		}
+		for (const bad of [0, -1, 1.5, "60", null]) {
+			const file = writeFile({ providers: { pi: { startupTimeoutMs: bad } } });
+			assert.throws(() => load(["--config", file]), /startupTimeoutMs/);
+		}
 	});
 });
 

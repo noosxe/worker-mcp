@@ -74,6 +74,9 @@ describe("pi provider against fake-pi", () => {
 	) {
 		const config = defaultConfig();
 		config.providers.pi.path = opts.piPath ?? FAKE_PI;
+		if (opts.startupTimeoutMs !== undefined) {
+			config.providers.pi.startupTimeoutMs = opts.startupTimeoutMs;
+		}
 		const children = new ChildRegistry({
 			env: {
 				...iso.env,
@@ -85,7 +88,6 @@ describe("pi provider against fake-pi", () => {
 		const calls: RawToolCall[] = [];
 		const approve = opts.approve ?? allow;
 		const provider = createPiProvider(config, {
-			startupTimeoutMs: opts.startupTimeoutMs ?? 5000,
 			abortGraceMs: opts.abortGraceMs,
 		});
 		const worker = await openWorker({
@@ -152,10 +154,13 @@ describe("pi provider against fake-pi", () => {
 
 		test("without the gate's ready status open() rejects and pi is killed", async () => {
 			const known = iso.starts().length;
+			const began = Date.now();
 			await assert.rejects(
 				open({ scenario: "no-gate-handshake", startupTimeoutMs: 400 }),
-				/did not confirm the approval gate/,
+				/did not confirm the approval gate within 400 ms.*providers\.pi\.startupTimeoutMs/,
 			);
+			const waited = Date.now() - began;
+			assert.ok(waited >= 350 && waited < 3000, `waited ${waited} ms`);
 			const pid = (await iso.workerAfter(known)).pid;
 			await waitUntil(() => pidGone(pid), 3000, "the half-open pi to die");
 		});

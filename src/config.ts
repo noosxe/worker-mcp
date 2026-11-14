@@ -31,7 +31,11 @@ export interface Config {
 		forceDropExempt: string[];
 	};
 	providers: {
-		pi: { path: string };
+		pi: {
+			path: string;
+			/** How long a spawn waits for pi to confirm its approval gate. */
+			startupTimeoutMs: number;
+		};
 	};
 	gate: {
 		/**
@@ -45,6 +49,9 @@ export interface Config {
 }
 
 export const DEFAULT_MAX_OUTPUT_CHARS = 64000;
+
+/** An npx-wrapped pi can take most of a minute to start the first time. */
+export const DEFAULT_PI_STARTUP_TIMEOUT_MS = 60_000;
 
 /** Raised for every invalid setting; the message names the source and key. */
 export class ConfigError extends Error {
@@ -87,7 +94,12 @@ export const configFileSchema = z.strictObject({
 	env: z.strictObject({ allow: z.array(envName).optional() }).optional(),
 	providers: z
 		.strictObject({
-			pi: z.strictObject({ path: z.string().min(1).optional() }).optional(),
+			pi: z
+				.strictObject({
+					path: z.string().min(1).optional(),
+					startupTimeoutMs: positiveInt.optional(),
+				})
+				.optional(),
 		})
 		.optional(),
 	gate: z
@@ -124,6 +136,10 @@ interface EnvVar {
 export const ENV_VARS = {
 	config: { name: "WORKER_MCP_CONFIG", key: "config file path" },
 	piPath: { name: "WORKER_MCP_PI_PATH", key: "providers.pi.path" },
+	piStartupTimeout: {
+		name: "WORKER_MCP_PI_STARTUP_TIMEOUT_MS",
+		key: "providers.pi.startupTimeoutMs",
+	},
 	commandTimeout: {
 		name: "WORKER_MCP_COMMAND_TIMEOUT",
 		key: "limits.commandTimeoutMs",
@@ -150,6 +166,11 @@ interface FlagDef {
 const VALUE_FLAGS = {
 	config: { flag: "--config", key: "config file path", kind: "string" },
 	piPath: { flag: "--pi-path", key: "providers.pi.path", kind: "string" },
+	piStartupTimeout: {
+		flag: "--pi-startup-timeout-ms",
+		key: "providers.pi.startupTimeoutMs",
+		kind: "int",
+	},
 	commandTimeout: {
 		flag: "--command-timeout-ms",
 		key: "limits.commandTimeoutMs",
@@ -231,6 +252,7 @@ function stringLayer(
 	source: string,
 	values: {
 		piPath?: string;
+		piStartupTimeout?: { key: string; raw: string };
 		commandTimeout?: { key: string; raw: string };
 		maxOutputChars?: { key: string; raw: string };
 		passthrough?: { key: string; raw: string };
@@ -258,6 +280,18 @@ function stringLayer(
 	}
 	if (values.piPath !== undefined) {
 		layer.providers = { pi: { path: values.piPath } };
+	}
+	if (values.piStartupTimeout) {
+		layer.providers = {
+			pi: {
+				...layer.providers?.pi,
+				startupTimeoutMs: parseInteger(
+					source,
+					values.piStartupTimeout.key,
+					values.piStartupTimeout.raw,
+				),
+			},
+		};
 	}
 	if (values.maxAutoApprove !== undefined) {
 		layer.gate = {
@@ -313,6 +347,11 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 		stringLayer(
 			label(ENV_VARS.piPath),
 			{ piPath: get(ENV_VARS.piPath) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.piStartupTimeout),
+			{ piStartupTimeout: num(ENV_VARS.piStartupTimeout) },
 			keysOf(),
 		),
 		stringLayer(
@@ -372,6 +411,9 @@ function flagLayer(flags: CliFlags): FileLayer {
 			case "piPath":
 				parts.push(stringLayer(source, { piPath: raw }, keys));
 				break;
+			case "piStartupTimeout":
+				parts.push(stringLayer(source, { piStartupTimeout: entry }, keys));
+				break;
 			case "commandTimeout":
 				parts.push(stringLayer(source, { commandTimeout: entry }, keys));
 				break;
@@ -406,7 +448,12 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		limits: { ...base.limits, ...over.limits },
 		env: { allow },
 		providers: {
-			pi: { path: over.providers?.pi?.path ?? base.providers?.pi?.path },
+			pi: {
+				path: over.providers?.pi?.path ?? base.providers?.pi?.path,
+				startupTimeoutMs:
+					over.providers?.pi?.startupTimeoutMs ??
+					base.providers?.pi?.startupTimeoutMs,
+			},
 		},
 		gate: {
 			maxAutoApprove: over.gate?.maxAutoApprove ?? base.gate?.maxAutoApprove,
@@ -532,7 +579,14 @@ function applyDefaults(
 			allow: [...new Set(layer.env?.allow ?? [])],
 			forceDropExempt: exempt,
 		},
-		providers: { pi: { path: layer.providers?.pi?.path || "pi" } },
+		providers: {
+			pi: {
+				path: layer.providers?.pi?.path || "pi",
+				startupTimeoutMs:
+					layer.providers?.pi?.startupTimeoutMs ??
+					DEFAULT_PI_STARTUP_TIMEOUT_MS,
+			},
+		},
 		gate: {
 			maxAutoApprove: layer.gate?.maxAutoApprove ?? "MEDIUM",
 			protectedPaths: [...new Set(layer.gate?.protectedPaths ?? [])],
