@@ -527,7 +527,8 @@ export class PiSession {
 
 	/** Abort the currently running command without terminating the session. */
 	public abortCommand(): void {
-		if (this.status !== "RUNNING") return;
+		// Idempotent: a second request while one is pending changes nothing.
+		if (this.status !== "RUNNING" || this.abortTimeout) return;
 
 		const cmdId = `abort_${Date.now()}`;
 		this.writeRaw({ id: cmdId, type: "abort" }).catch((err) => {

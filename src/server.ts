@@ -13,8 +13,9 @@ import type { SessionManager } from "./session/session-manager.js";
 import { TaskSettler } from "./task-settle.js";
 import { readPositiveIntEnv } from "./validation.js";
 
-/** Build the MCP server for a session manager. Does not connect a transport. */
 const DEFAULT_TASK_TTL_MS = 60 * 60 * 1000;
+
+/** Build the MCP server for a session manager. Does not connect a transport. */
 
 export function createServer(
 	sessionManager: SessionManager,
@@ -469,33 +470,47 @@ export function createServer(
 						// Start the command first: it throws when the session is busy, and
 						// a task created beforehand would be orphaned and would replace
 						// the live task's id.
-						const commandPromise = session.sendCommand(command, summarize);
-						const task = await extra.taskStore!.createTask({
-							ttl: extra.taskRequestedTtl ?? DEFAULT_TASK_TTL_MS,
-							pollInterval: 5000,
-						});
-						session.setActiveTaskId(task.taskId);
+						// Observe the outcome right away: it must never be an unhandled
+						// rejection, even if the task isn't created yet when it settles.
+						const outcome = session.sendCommand(command, summarize).then(
+							(result) => ({ ok: true as const, result }),
+							(err: unknown) => ({ ok: false as const, err }),
+						);
+						let task;
+						try {
+							task = await extra.taskStore!.createTask({
+								ttl: extra.taskRequestedTtl ?? DEFAULT_TASK_TTL_MS,
+								pollInterval: 5000,
+							});
+						} catch (err) {
+							// Don't leave a run going that no task tracks.
+							session.abortCommand();
+							throw err;
+						}
+						const taskId = task.taskId;
+						session.setActiveTaskId(taskId);
 
-						commandPromise
-							.then(async (result) => {
+						void outcome.then(async (o) => {
+							if (o.ok) {
 								// A run that stops at an approval prompt is not finished: the
 								// task stays input_required until it is approved or rejected.
 								if (session.status === "AWAITING_APPROVAL") return;
-								await taskSettler.settle(task.taskId, "completed", {
-									content: [{ type: "text" as const, text: result }],
+								await taskSettler.settle(taskId, "completed", {
+									content: [{ type: "text" as const, text: o.result }],
 								});
-							})
-							.catch(async (err) => {
-								await taskSettler.settle(task.taskId, "failed", {
+							} else {
+								await taskSettler.settle(taskId, "failed", {
 									content: [
 										{
 											type: "text" as const,
-											text: err instanceof Error ? err.message : String(err),
+											text:
+												o.err instanceof Error ? o.err.message : String(o.err),
 										},
 									],
 									isError: true,
 								});
-							});
+							}
+						});
 
 						return { task };
 					}
@@ -562,11 +577,18 @@ export function createServer(
 
 					const activeTaskId = session.getActiveTaskId();
 					if (activeTaskId) {
-						await taskStore.updateTaskStatus(
-							activeTaskId,
-							"cancelled",
-							"Cancelled by coordinator",
-						);
+						try {
+							await taskStore.updateTaskStatus(
+								activeTaskId,
+								"cancelled",
+								"Cancelled by coordinator",
+							);
+						} catch (err) {
+							// The task may already be terminal or expired; still abort.
+							console.error(
+								`Could not cancel task ${activeTaskId}: ${err instanceof Error ? err.message : String(err)}`,
+							);
+						}
 					}
 
 					session.abortCommand();
