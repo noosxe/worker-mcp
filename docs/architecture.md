@@ -14,7 +14,7 @@ graph TD
         C[MCP Client / Coordinator Agent] <-->|MCP JSON-RPC over stdio| S[worker-mcp Server]
 
         subgraph Session Manager
-            S <-->|Spawn & Manage| P[PiSession Instance]
+            S <-->|Spawn & Manage| P[Session]
         end
 
         subgraph Worker Runtime
@@ -34,7 +34,7 @@ graph TD
 
 1. **MCP Client (Coordinator Agent)**: The orchestrator (e.g., Antigravity, Claude Desktop) that wants to delegate work but supervise the local execution.
 2. **`worker-mcp` Server**: The MCP server that registers tools and resources, monitors child processes, and manages the interactive supervision loop.
-3. **PiSession Instance**: A state wrapper in `worker-mcp` managing a single active worker session. It handles the stdin/stdout JSON Line parser, keeps track of command history, logs, and pending approval states.
+3. **Session** (`src/session/session.ts`): A state wrapper in `worker-mcp` managing a single active worker session. It keeps track of command history, logs and pending approval states. It holds no protocol: the agent sits behind the provider interface (`src/providers/`), and its process is started and killed by `src/core/child.ts`. See [providers.md](providers.md).
 4. **`pi` CLI Subprocess**: The globally/locally installed `@earendil-works/pi-coding-agent` executing in RPC mode (`pi --mode rpc`).
 5. **LLM Provider**: The model runtime (e.g. Ollama for local LLMs, or cloud models via API) that the `pi` agent connects to.
 6. **Workspace**: The specific local directory where the `pi` agent is executing commands and modifying files.
@@ -67,7 +67,7 @@ sequenceDiagram
     autonumber
     actor Coordinator as Coordinator (MCP Client)
     participant Server as worker-mcp Server
-    participant Session as PiSession
+    participant Session as Session
     participant Pi as pi CLI (Subprocess)
 
     Coordinator->>Server: Call tool `send_pi_command(sessionId, "Build the project")`

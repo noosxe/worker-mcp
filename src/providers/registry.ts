@@ -1,23 +1,33 @@
+import type { Config } from "../config.js";
+import { createPiProvider } from "./pi/provider.js";
 import type { WorkerProvider } from "./types.js";
 
 /** Raised when a provider is unknown, disabled or may not be opened. */
 export class ProviderError extends Error {}
 
-export type ProviderFactory = () => Promise<WorkerProvider>;
+/** What a provider is built from: the server's validated configuration. */
+export interface ProviderContext {
+	config: Config;
+}
+
+export type ProviderFactory = (ctx: ProviderContext) => Promise<WorkerProvider>;
 
 /**
  * Providers shipped in this package, keyed by id. Loaded lazily through a
  * static import of a module in this package: never a path from config, which
- * would be code execution from settings. pi joins when it moves behind the
- * interface.
+ * would be code execution from settings.
  */
-export const BUILTIN_PROVIDERS: Readonly<Record<string, ProviderFactory>> = {};
+export const BUILTIN_PROVIDERS: Readonly<Record<string, ProviderFactory>> = {
+	pi: async ({ config }) => createPiProvider(config),
+};
 
 export interface RegistryOptions {
 	/** Ids a worker may use; defaults to every known one. */
 	enabled?: readonly string[];
 	/** Used when a spawn names no provider. */
 	defaultId?: string;
+	/** Handed to every factory; the server's configuration. */
+	context?: ProviderContext;
 	/** Replaces the built-in set (tests). */
 	factories?: Readonly<Record<string, ProviderFactory>>;
 }
@@ -27,9 +37,11 @@ export class ProviderRegistry {
 	private readonly enabled: readonly string[];
 	private readonly cache = new Map<string, Promise<WorkerProvider>>();
 	readonly defaultId: string | undefined;
+	private readonly context: ProviderContext | undefined;
 
 	constructor(opts: RegistryOptions = {}) {
 		this.factories = opts.factories ?? BUILTIN_PROVIDERS;
+		this.context = opts.context;
 		const known = Object.keys(this.factories);
 		this.enabled = opts.enabled ?? known;
 		for (const id of this.enabled) {
@@ -66,7 +78,12 @@ export class ProviderRegistry {
 		}
 		let loaded = this.cache.get(wanted);
 		if (!loaded) {
-			loaded = this.factories[wanted]();
+			if (!this.context) {
+				return Promise.reject(
+					new ProviderError("The registry has no configuration."),
+				);
+			}
+			loaded = this.factories[wanted](this.context);
 			this.cache.set(wanted, loaded);
 		}
 		return loaded;

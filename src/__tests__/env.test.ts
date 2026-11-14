@@ -1,17 +1,7 @@
 import assert from "node:assert";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { describe, test } from "node:test";
 
-import {
-	assertGatePresent,
-	buildWorkerEnv,
-	GateError,
-	removeGate,
-	writeGate,
-} from "../session/launch.js";
-import { RuntimeDir } from "../session/runtime-dir.js";
+import { buildWorkerEnv } from "../core/env.js";
 
 const NONE = { allow: [], forceDropExempt: [] };
 
@@ -89,37 +79,5 @@ describe("buildWorkerEnv", () => {
 			}),
 			{},
 		);
-	});
-});
-
-describe("writeGate", () => {
-	test("writes a private gate and removes it", () => {
-		const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-gate-"));
-		try {
-			const gate = writeGate(new RuntimeDir(runtime));
-			assert.strictEqual(fs.statSync(gate.dir).mode & 0o777, 0o700);
-			assert.strictEqual(fs.statSync(gate.file).mode & 0o777, 0o600);
-			assertGatePresent(gate);
-			removeGate(gate);
-			removeGate(gate);
-			assert.ok(!fs.existsSync(gate.dir));
-			assert.throws(() => assertGatePresent(gate), GateError);
-		} finally {
-			fs.rmSync(runtime, { recursive: true, force: true });
-		}
-	});
-
-	test("throws GateError when the runtime dir is unusable", () => {
-		const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-gate-"));
-		try {
-			// The base is a file, so the runtime dir cannot be created.
-			fs.writeFileSync(path.join(runtime, "base"), "x");
-			assert.throws(
-				() => writeGate(new RuntimeDir(path.join(runtime, "base"))),
-				/without the approval gate/,
-			);
-		} finally {
-			fs.rmSync(runtime, { recursive: true, force: true });
-		}
 	});
 });

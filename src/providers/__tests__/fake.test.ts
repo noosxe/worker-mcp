@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { describe, test } from "node:test";
 
+import { defaultConfig } from "../../config.js";
 import { noopLogger } from "../../core/log.js";
 import { FakeHandle, FakeProvider } from "../fake/provider.js";
 import {
@@ -293,10 +294,11 @@ describe("FakeProvider: interface contract", () => {
 });
 
 describe("provider registry", () => {
+	const context = { config: defaultConfig() };
 	const factories = { fake: async () => new FakeProvider() };
 
 	test("returns the default provider and caches the load", async () => {
-		const registry = new ProviderRegistry({ factories });
+		const registry = new ProviderRegistry({ factories, context });
 		assert.deepStrictEqual(registry.ids(), ["fake"]);
 		const a = await registry.get();
 		assert.strictEqual(a, await registry.get("fake"));
@@ -307,6 +309,7 @@ describe("provider registry", () => {
 		const registry = new ProviderRegistry({
 			factories: { ...factories, other: async () => new FakeProvider() },
 			enabled: ["fake"],
+			context,
 		});
 		await assert.rejects(registry.get("other"), ProviderError);
 		await assert.rejects(registry.get("../../evil"), /not available/);
@@ -320,10 +323,11 @@ describe("provider registry", () => {
 		);
 	});
 
-	test("the built-in set is static: no id can come from outside", async () => {
-		const registry = new ProviderRegistry();
-		assert.deepStrictEqual(registry.ids(), []);
-		await assert.rejects(registry.get("pi"), /not available|No provider/);
+	test("the built-in set is static: only pi, and no id can come from outside", async () => {
+		const registry = new ProviderRegistry({ context });
+		assert.deepStrictEqual(registry.ids(), ["pi"]);
+		assert.strictEqual((await registry.get("pi")).id, "pi");
+		await assert.rejects(registry.get("../../evil"), /not available/);
 	});
 
 	test("a provider that cannot gate is refused outside the sandbox", () => {

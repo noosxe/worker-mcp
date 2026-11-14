@@ -8,8 +8,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { RiskLevel } from "./gate/risk.js";
-import type { PolicyReport } from "./session/pi-session.js";
 import type { SessionManager } from "./session/session-manager.js";
+import type { PolicyReport } from "./session/session.js";
 import { TaskSettler } from "./task-settle.js";
 
 const DEFAULT_TASK_TTL_MS = 60 * 60 * 1000;

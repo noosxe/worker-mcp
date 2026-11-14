@@ -112,11 +112,13 @@ export class TreeTracker {
 
 	private merge(table: readonly ProcEntry[]): void {
 		const byPid = new Map(table.map((e) => [e.pid, e]));
-		// Roots: the worker itself plus remembered processes that still exist.
-		const roots = [this.rootPid];
+		// Forget processes that exited or whose pid was recycled, so the set
+		// stays as small as the live tree however many commands a worker runs.
 		for (const [pid, token] of this.known) {
-			if (byPid.get(pid)?.token === token) roots.push(pid);
+			if (byPid.get(pid)?.token !== token) this.known.delete(pid);
 		}
+		// Roots: the worker itself plus remembered processes that still exist.
+		const roots = [this.rootPid, ...this.known.keys()];
 		for (const d of descendantsOf(table, roots)) this.known.set(d.pid, d.token);
 	}
 

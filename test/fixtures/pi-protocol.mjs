@@ -8,6 +8,10 @@
 //   - events on stdout: agent_start, agent_end, agent_settled, turn_start,
 //     turn_end, message_update (with `assistantMessageEvent.delta`),
 //     message_end, tool_execution_start, tool_execution_end
+//   - extension_ui_request methods: confirm, select, input, editor (dialogs,
+//     answered by extension_ui_response with `value`, `confirmed` or
+//     `cancelled: true`) and notify, setStatus (fire-and-forget; setStatus
+//     carries `statusKey` and `statusText`, checked with a real pi)
 //   - dialogs (`confirm` here) are `extension_ui_request` records with a
 //     unique `id`, answered by `extension_ui_response` with `confirmed`
 //     (or `cancelled: true`)
@@ -66,6 +70,54 @@ export const confirmRequest = (id, title, message) => ({
 	method: "confirm",
 	title,
 	message,
+});
+
+export const inputRequest = (id, title, placeholder) => ({
+	type: "extension_ui_request",
+	id,
+	method: "input",
+	title,
+	placeholder,
+});
+
+export const selectRequest = (id, title, options) => ({
+	type: "extension_ui_request",
+	id,
+	method: "select",
+	title,
+	options,
+});
+
+export const editorRequest = (id, title, prefill) => ({
+	type: "extension_ui_request",
+	id,
+	method: "editor",
+	title,
+	prefill,
+});
+
+/** Fire-and-forget; measured against pi 1.4.0: statusKey and statusText. */
+export const setStatusRequest = (id, statusKey, statusText) => ({
+	type: "extension_ui_request",
+	id,
+	method: "setStatus",
+	statusKey,
+	statusText,
+});
+
+export const notifyRequest = (id, message, notifyType = "info") => ({
+	type: "extension_ui_request",
+	id,
+	method: "notify",
+	message,
+	notifyType,
+});
+
+export const extensionError = (extensionPath, event, error) => ({
+	type: "extension_error",
+	extensionPath,
+	event,
+	error,
 });
 
 /** Split a stream chunk on LF only (readline also splits on U+2028/2029). */
