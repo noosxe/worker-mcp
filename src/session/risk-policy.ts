@@ -18,7 +18,7 @@ export interface RiskOverride {
 export interface RiskPolicy {
 	/** Actions at or below this level are auto-approved silently. Default: LOW */
 	autoApproveUpTo: RiskLevel;
-	/** Actions at or below this level (but above autoApproveUpTo) are auto-approved with notification. Default: MEDIUM */
+	/** Actions at or below this level (but above autoApproveUpTo) are auto-approved with notification. Default: LOW */
 	notifyUpTo: RiskLevel;
 	/** Custom overrides for specific patterns */
 	overrides: RiskOverride[];
@@ -26,7 +26,7 @@ export interface RiskPolicy {
 
 export const DEFAULT_RISK_POLICY: RiskPolicy = {
 	autoApproveUpTo: RiskLevel.LOW,
-	notifyUpTo: RiskLevel.MEDIUM,
+	notifyUpTo: RiskLevel.LOW,
 	overrides: [],
 };
 

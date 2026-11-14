@@ -376,14 +376,18 @@ describe("PiSession - Unit Tests", () => {
 		assert.strictEqual(session.pendingAction, null);
 	});
 
-	test("auto-approves MEDIUM risk action with notification", async () => {
-		const session = new PiSession("test", "./scratch");
+	test("auto-approves MEDIUM risk action with notification when the policy allows it", async () => {
+		const session = new PiSession("test", "./scratch", undefined, undefined, {
+			autoApproveUpTo: RiskLevel.LOW,
+			notifyUpTo: RiskLevel.MEDIUM,
+			overrides: [],
+		});
 		let writeRawCalled = false;
 		(session as any).writeRaw = async (_obj: any) => {
 			writeRawCalled = true;
 		};
 
-		// extension_ui_request for `pnpm install`
+		// extension_ui_request for `mkdir -p build`
 		const obj = {
 			type: "extension_ui_request",
 			method: "confirm",
@@ -391,7 +395,7 @@ describe("PiSession - Unit Tests", () => {
 			title: "worker-mcp-gate",
 			message: JSON.stringify({
 				toolName: "bash",
-				input: { command: "pnpm install" },
+				input: { command: "mkdir -p build" },
 			}),
 		};
 
@@ -456,7 +460,7 @@ describe("PiSession - Unit Tests", () => {
 			title: "worker-mcp-gate",
 			message: JSON.stringify({
 				toolName: "bash",
-				input: { command: "pnpm install" },
+				input: { command: "mkdir -p build" },
 			}), // MEDIUM risk
 		};
 

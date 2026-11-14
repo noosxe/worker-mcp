@@ -45,12 +45,12 @@ The worker-mcp server classifies every tool call into a **risk level** and handl
 
 ### 3.1. Risk Levels
 
-| Level        | Value | Examples                                                                                                 | Default Behavior               |
-| ------------ | ----- | -------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| **LOW**      | `0`   | `ls`, `cat`, `grep`, `git status`, `pwd`, `echo`, `find`                                                 | Auto-approve silently          |
-| **MEDIUM**   | `1`   | `pnpm install`, `npm test`, `node`, `tsc`, file writes in `src/`, `git add`                              | Auto-approve with notification |
-| **HIGH**     | `2`   | `rm`, `mv`, `curl`, `wget`, config file writes (`.env`, `package.json`), `git commit`, `git push`        | Require explicit approval      |
-| **CRITICAL** | `3`   | `sudo`, `chmod`, writes outside workspace, `git reset --hard`, `git push --force`, piping to `sh`/`bash` | Require explicit approval      |
+| Level        | Value | Examples                                                                                                                                                                                                                                  | Default Behavior          |
+| ------------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| **LOW**      | `0`   | `ls`, `cat`, `grep`, `git status`, `pwd`, `echo`, `find`                                                                                                                                                                                  | Auto-approve              |
+| **MEDIUM**   | `1`   | `mkdir`, `touch`, `cp`, file writes in `src/`, `git add`                                                                                                                                                                                  | Require explicit approval |
+| **HIGH**     | `2`   | `rm`, `mv`, `curl`, any command with `;`, `&&`, `\|`, `$(`, backticks or redirects, `python -c`, `node`, `npm`/`pnpm` installs and scripts, `make`, `env`/`printenv`, reads of `.env` or `~/.ssh`, `git commit`, `git push`, `git config` | Require explicit approval |
+| **CRITICAL** | `3`   | `sudo`, `chmod`, writes outside workspace, `git reset --hard`, `git push --force`, piping to `sh`/`bash`                                                                                                                                  | Require explicit approval |
 
 ### 3.2. Choosing a Risk Policy
 
@@ -59,12 +59,12 @@ When spawning a session, select a risk policy that matches the trust level and t
 #### Conservative (default) — Best for unfamiliar projects or untrusted tasks
 
 ```json
-{ "autoApproveUpTo": 0, "notifyUpTo": 1, "overrides": [] }
+{ "autoApproveUpTo": 0, "notifyUpTo": 0, "overrides": [] }
 ```
 
-- Auto-approves only read-only commands (`ls`, `cat`, `grep`)
-- Notifies you about builds/installs but lets them through
-- You approve all destructive operations, network access, and git publishing
+- Auto-approves only plain read-only commands (`ls`, `cat`, `grep`)
+- Everything that runs code, chains commands or installs packages needs your approval
+- The result of each `send_pi_command` lists what was auto-approved during the run
 
 #### Moderate — Best for active development in trusted projects
 
@@ -205,7 +205,7 @@ While the worker is running, it will output logs. You should inspect the logs re
 
 ### Step 4: Audit & Gating Loop
 
-With smart gating, **LOW and MEDIUM risk actions are auto-approved** by default — the worker proceeds without waiting. You only need to intervene for HIGH and CRITICAL risk actions.
+With smart gating, **LOW risk actions are auto-approved** by default — the worker proceeds without waiting, and the result lists what it ran unasked. Anything else (MEDIUM and above) needs your approval. Command chaining, substitution, redirection, wrappers, interpreters and package managers are classified HIGH.
 
 Whenever the worker attempts a high-risk operation (e.g., `rm`, `curl`, config file writes, `git commit`), the server will intercept the action, pause the worker, transition the session to `AWAITING_APPROVAL`, and yield control to you.
 

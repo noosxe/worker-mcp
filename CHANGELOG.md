@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- The shell risk classifier is no longer bypassed by command chaining. Any
+  command with `;`, `&&`, `||`, `|`, `&`, backticks, `$`, parentheses,
+  redirections, backslashes or newlines is at least HIGH, as are wrappers
+  (`sh -c`, `env`, `xargs`, `timeout`, `find -exec`, ...), interpreters
+  (`python`, `node`, ...), package installers and build runners, reads of
+  secrets and the environment, and leading `NAME=value` assignments.
+- `git` is classified by subcommand and arguments: read-only subcommands stay
+  LOW; `-c`, `--upload-pack`, `push`, `config`, `remote` and similar are HIGH.
+- The default policy is now `autoApproveUpTo: LOW, notifyUpTo: LOW`. To restore
+  the old behaviour pass `riskPolicy: { autoApproveUpTo: 0, notifyUpTo: 1,
+  overrides: [] }` to `spawn_pi_session` or `set_risk_policy`.
+
+### Changed
+
+- `send_pi_command` results list the actions that were auto-approved during the
+  run (tool, risk level, truncated command or path).
+- Users will see more approval prompts: simple pipelines and package manager
+  commands that used to pass now wait for approval.
+
 ## 0.4.2
 
 Hotfix that makes the server usable from clients that don't use MCP tasks.

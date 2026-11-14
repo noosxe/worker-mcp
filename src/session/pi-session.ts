@@ -43,8 +43,22 @@ export interface PendingAction {
 	riskLabel?: string;
 }
 
+const SUMMARY_MAX_CHARS = 120;
+
+/** One line describing an action: its command or target path, truncated. */
+function summariseAction(a: AutoApprovedAction): string {
+	const raw = [a.input.command, a.input.cmd, a.input.script, a.input.path]
+		.concat([a.input.filePath, a.input.file, a.input.targetFile])
+		.find((v): v is string => typeof v === "string");
+	const oneLine = (raw ?? "").replace(/\s+/g, " ").trim();
+	return oneLine.length > SUMMARY_MAX_CHARS
+		? `${oneLine.slice(0, SUMMARY_MAX_CHARS)}…`
+		: oneLine;
+}
+
 export class PiSession {
 	private static readonly MAX_LOG_LINES = 2000;
+	private static readonly MAX_AUTO_APPROVED_SHOWN = 20;
 
 	public sessionId: string;
 	public cwd: string;
@@ -56,6 +70,9 @@ export class PiSession {
 	public history: unknown[] = [];
 	public riskPolicy: RiskPolicy;
 	public autoApprovedActions: AutoApprovedAction[] = [];
+	/** Total auto-approved so far, and how many of those a result has reported. */
+	private autoApprovedTotal = 0;
+	private autoApprovedReported = 0;
 	public onStatusChange:
 		| ((sessionId: string, status: SessionStatus, message?: string) => void)
 		| null = null;
@@ -314,6 +331,7 @@ export class PiSession {
 								`${logPrefix} [${classified.riskLabel}] Action ${obj.id}: ${obj.message} (${classified.reason})`,
 							);
 
+							this.autoApprovedTotal++;
 							this.autoApprovedActions.push({
 								actionId: obj.id,
 								toolName: toolCall.toolName,
@@ -374,7 +392,7 @@ export class PiSession {
 					);
 					if (this.resolveCommand) {
 						this.resolveCommand(
-							`AWAITING_APPROVAL: [${riskInfo?.riskLabel ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${obj.id}. Message: ${obj.message}`,
+							`AWAITING_APPROVAL: [${riskInfo?.riskLabel ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${obj.id}. Message: ${obj.message}${this.takeAutoApprovedNotes()}`,
 						);
 						this.resolveCommand = null;
 						this.rejectCommand = null;
@@ -466,12 +484,12 @@ export class PiSession {
 						}
 
 						const fullOutput = assistantTextParts.join("\n\n");
-						const fallbackResult =
-							fullOutput || "Agent finished task run successfully.";
+						const notes = this.takeAutoApprovedNotes();
+						const fallbackResult = `${fullOutput || "Agent finished task run successfully."}${notes}`;
 
 						if (this.summarize && fullOutput) {
 							this.summarizeText(fullOutput)
-								.then((summary) => resolve(summary))
+								.then((summary) => resolve(`${summary}${notes}`))
 								.catch((err) => {
 									this.log(
 										`Summarization error, falling back to full output: ${err}`,
@@ -506,6 +524,25 @@ export class PiSession {
 				}
 			});
 		});
+	}
+
+	/**
+	 * Append the actions auto-approved since the last result, so the caller sees
+	 * what ran without asking. Each action is reported once.
+	 */
+	private takeAutoApprovedNotes(): string {
+		const unreported = this.autoApprovedTotal - this.autoApprovedReported;
+		this.autoApprovedReported = this.autoApprovedTotal;
+		if (unreported <= 0) return "";
+		const entries = this.autoApprovedActions.slice(-unreported);
+		const shown = entries.slice(0, PiSession.MAX_AUTO_APPROVED_SHOWN);
+		const lines = shown.map(
+			(a) => `- ${a.toolName} [${a.riskLabel}] ${summariseAction(a)}`,
+		);
+		if (unreported > shown.length) {
+			lines.push(`- ... and ${unreported - shown.length} more`);
+		}
+		return `\n\nAuto-approved without asking (${unreported}):\n${lines.join("\n")}`;
 	}
 
 	public getAutoApprovedLog(): AutoApprovedAction[] {
