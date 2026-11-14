@@ -280,17 +280,18 @@ Lowest to highest:
 
 ### Settings
 
-| Config key                | Environment variable          | Flag                   | Default                                   |
-| ------------------------- | ----------------------------- | ---------------------- | ----------------------------------------- |
-| (file location)           | `WORKER_MCP_CONFIG`           | `--config <path>`      | `$XDG_CONFIG_HOME/worker-mcp/config.json` |
-| `providers.pi.path`       | `WORKER_MCP_PI_PATH`          | `--pi-path`            | `pi` (found on `PATH`)                    |
-| `limits.commandTimeoutMs` | `WORKER_MCP_COMMAND_TIMEOUT`  | `--command-timeout-ms` | unset: blocking calls wait for the worker |
-| `limits.maxOutputChars`   | `WORKER_MCP_MAX_OUTPUT_CHARS` | `--max-output-chars`   | `64000`                                   |
-| `env.allow`               | `WORKER_MCP_ENV_PASSTHROUGH`  | `--env-passthrough`    | none                                      |
-| `stateDir`                | `WORKER_MCP_STATE_DIR`        | `--state-dir`          | `$XDG_STATE_HOME/worker-mcp`              |
-| `runtimeDir`              | `WORKER_MCP_RUNTIME_DIR`      | `--runtime-dir`        | `$XDG_RUNTIME_DIR`, else `<stateDir>/run` |
-| `gate.maxAutoApprove`     | `WORKER_MCP_MAX_AUTO_APPROVE` | `--max-auto-approve`   | `MEDIUM`                                  |
-| `gate.protectedPaths`     | (file only)                   |                        | none                                      |
+| Config key                      | Environment variable               | Flag                      | Default                                   |
+| ------------------------------- | ---------------------------------- | ------------------------- | ----------------------------------------- |
+| (file location)                 | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json` |
+| `providers.pi.path`             | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                    |
+| `providers.pi.startupTimeoutMs` | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                   |
+| `limits.commandTimeoutMs`       | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | unset: blocking calls wait for the worker |
+| `limits.maxOutputChars`         | `WORKER_MCP_MAX_OUTPUT_CHARS`      | `--max-output-chars`      | `64000`                                   |
+| `env.allow`                     | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                      |
+| `stateDir`                      | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`              |
+| `runtimeDir`                    | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run` |
+| `gate.maxAutoApprove`           | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                  |
+| `gate.protectedPaths`           | (file only)                        |                           | none                                      |
 
 - Numbers are positive integers; directories are absolute paths.
 - `env.allow` / `WORKER_MCP_ENV_PASSTHROUGH`: names, or `PREFIX_*` patterns, of

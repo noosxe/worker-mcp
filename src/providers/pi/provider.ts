@@ -35,7 +35,7 @@ import {
 import { piToolMap } from "./tool-map.js";
 
 export interface PiProviderOptions {
-	/** How long `open()` waits for the gate's ready status. */
+	/** Overrides `providers.pi.startupTimeoutMs` (tests). */
 	startupTimeoutMs?: number;
 	/** How long an abort may take before the worker is stopped. */
 	abortGraceMs?: number;
@@ -59,7 +59,8 @@ export function createPiProvider(
 	config: Config,
 	opts: PiProviderOptions = {},
 ): WorkerProvider {
-	const startupTimeoutMs = opts.startupTimeoutMs ?? 20_000;
+	const startupTimeoutMs =
+		opts.startupTimeoutMs ?? config.providers.pi.startupTimeoutMs;
 	const abortGraceMs = opts.abortGraceMs ?? 2000;
 	const piPath = config.providers.pi.path;
 	return {
@@ -187,7 +188,7 @@ class PiWorker implements WorkerHandle {
 				() =>
 					reject(
 						new Error(
-							`pi did not confirm the approval gate within ${timeoutMs} ms; refusing to use it.`,
+							`pi did not confirm the approval gate within ${timeoutMs} ms; refusing to use it. A slow start (for example an npx-based install on a cold cache) can need more: raise providers.pi.startupTimeoutMs (WORKER_MCP_PI_STARTUP_TIMEOUT_MS).`,
 						),
 					),
 				timeoutMs,

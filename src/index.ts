@@ -52,6 +52,7 @@ Options:
       --print-config          Print the effective configuration and exit
       --config <path>         JSON config file (default: $XDG_CONFIG_HOME/worker-mcp/config.json)
       --pi-path <path>        Path to the pi binary
+      --pi-startup-timeout-ms <n>  How long a spawn waits for pi's gate (default 60000)
       --command-timeout-ms <n>  Default blocking-call timeout
       --max-output-chars <n>  Output size cap
       --env-passthrough <names>  Extra worker env names, comma-separated

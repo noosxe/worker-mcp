@@ -29,12 +29,16 @@ tool calls, usage, `provider/id` models. No resume.
    --no-approve -e <gate>` (plus `--system-prompt` when given). The first removes
    discovered extensions, the second built-in MCP servers, the third
    trust-gated project files.
-5. `open()` waits (20 s) for `extension_ui_request {method: "setStatus",
+5. `open()` waits (`providers.pi.startupTimeoutMs`, default 60 s) for `extension_ui_request {method: "setStatus",
    statusKey: "worker-mcp-gate", statusText: "ready:<nonce>"}`. It rejects, and
    the core kills the process, when pi exits first (a missing or throwing `-e`
    file makes pi exit 1 before any output), when an `extension_error` names the
    gate, or on timeout. There is no way to get a running worker whose gate was not
    confirmed.
+   An `npx`-based install starts slowly the first time (it may download the
+   package), so the default is generous; raise it with the setting, the
+   `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` variable or `--pi-startup-timeout-ms` if
+   spawns time out. The timeout error names the setting.
 6. A model is set with the `set_model` command (`provider/id`; without a slash the
    provider is `ollama`).
 
