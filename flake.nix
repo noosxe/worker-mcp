@@ -172,6 +172,7 @@ EOF
           buildInputs = with pkgs; [
             nodejs_24
             pnpm
+            bun
             typescript
             typescript-language-server
             oxlint
