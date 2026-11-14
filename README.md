@@ -12,7 +12,8 @@ Instead of rolling a custom local LLM tool loop, `worker-mcp` delegates coding, 
 - **MCP Tool Integration**: Standardized tools to spawn worker sessions, dispatch prompts, list active runners, and approve/deny pending commands.
 - **Log and History Resources**: Message history and subprocess logs (including `stderr` feeds) are exposed as standard MCP resources.
 - **Session Registry Persistence**: Session configurations and directory bindings survive server restarts via state files in `~/.config/worker-mcp/sessions.json`.
-- **Automatic Extension Deployment**: Deploys its supervisor gate extension directly into `~/.config/worker-mcp/` and loads it explicitly when spawning the worker agent (leaving standalone `pi` agent runs unaffected).
+- **Per-spawn Gate**: Writes its supervisor gate extension to a fresh private directory for every worker and starts `pi` with `--no-extensions --no-mcp --no-approve`; a worker is never started without the gate, and nothing is written under `~/.pi`.
+- **Minimal Worker Environment**: Workers get an allowlisted environment, not the server's. See [docs/security.md](docs/security.md).
 
 ---
 
@@ -258,7 +259,12 @@ yet resumable.
 ### Environment Variables
 
 - **`WORKER_MCP_PI_PATH`**: Absolute path to the `pi` coding-agent binary (defaults to searching `PATH` for `pi`).
-- **`WORKER_MCP_COMMAND_TIMEOUT`**, **`WORKER_MCP_MAX_OUTPUT_CHARS`**, **`WORKER_MCP_SUMMARIZE_TIMEOUT`**: Positive integers (milliseconds, characters, milliseconds). The server refuses to start if one is set to anything else.
+- **`WORKER_MCP_COMMAND_TIMEOUT`**, **`WORKER_MCP_MAX_OUTPUT_CHARS`**: Positive integers (milliseconds, characters). The server refuses to start if one is set to anything else.
+- **`WORKER_MCP_ENV_PASSTHROUGH`**: Comma-separated names (or `PREFIX_*` patterns) of extra environment variables to pass to workers, for example `WORKER_MCP_ENV_PASSTHROUGH=ANTHROPIC_API_KEY`. Workers otherwise get only an allowlisted environment, and secrets such as `*_TOKEN` and `AWS_*` are never passed. See [docs/security.md](docs/security.md).
+
+`summarize` arguments are deprecated and ignored: the full output is always returned, with a note.
+
+See [docs/security.md](docs/security.md) for the trust model and what the gate does and does not protect.
 
 ### Pre-requisites
 

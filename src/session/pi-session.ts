@@ -1,9 +1,15 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 import { readPositiveIntEnv } from "../validation.js";
+import {
+	assertGatePresent,
+	buildWorkerEnv,
+	type Gate,
+	PI_HARDENING_FLAGS,
+	removeGate,
+	writeGate,
+} from "./launch.js";
 import {
 	classifyAction,
 	parseToolFromMessage,
@@ -86,7 +92,9 @@ export class PiSession {
 	private abortTimeout: ReturnType<typeof setTimeout> | null = null;
 	private activeTaskId: string | null = null;
 	private terminating = false;
-	private summarize = false;
+	/** Set when a call asked for `summarize`, which is deprecated and ignored. */
+	private summarizeIgnored = false;
+	private gate: Gate | null = null;
 	private historyStartIndex = 0;
 
 	constructor(
@@ -127,30 +135,26 @@ export class PiSession {
 			throw new Error(`Workspace directory does not exist: ${this.cwd}`);
 		}
 
-		const args = ["--mode", "rpc"];
+		// The gate is written fresh for this worker from a constant compiled into
+		// the server. Without it pi must not start: tool calls would run ungated.
+		const gate = writeGate();
+		this.gate = gate;
+
+		const args = ["--mode", "rpc", ...PI_HARDENING_FLAGS, "-e", gate.file];
 		if (this.systemPrompt) {
 			args.push("--system-prompt", this.systemPrompt);
 		}
 
-		// Load the gating extension from the worker-mcp configuration directory
-		const extensionPath = path.join(
-			os.homedir(),
-			".config",
-			"worker-mcp",
-			"worker-mcp-gate.ts",
-		);
-		if (fs.existsSync(extensionPath)) {
-			args.push("--extension", extensionPath);
-		}
-
 		try {
+			assertGatePresent(gate);
 			this.process = spawn(piPath, args, {
 				cwd: this.cwd,
-				env: { ...process.env },
+				env: buildWorkerEnv(),
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 		} catch (e) {
 			this.status = "CRASHED";
+			this.removeGateDir();
 			this.log(
 				`Failed to spawn process: ${e instanceof Error ? e.message : String(e)}`,
 			);
@@ -178,6 +182,7 @@ export class PiSession {
 		} catch (e) {
 			this.status = "CRASHED";
 			this.process = null;
+			this.removeGateDir();
 			this.log(
 				`Failed to spawn process: ${e instanceof Error ? e.message : String(e)}`,
 			);
@@ -265,6 +270,7 @@ export class PiSession {
 		}
 
 		this.process = null;
+		this.removeGateDir();
 		this.pendingAction = null;
 		if (this.resolveCommand) {
 			this.resolveCommand("Process terminated");
@@ -487,18 +493,7 @@ export class PiSession {
 						const notes = this.takeAutoApprovedNotes();
 						const fallbackResult = `${fullOutput || "Agent finished task run successfully."}${notes}`;
 
-						if (this.summarize && fullOutput) {
-							this.summarizeText(fullOutput)
-								.then((summary) => resolve(`${summary}${notes}`))
-								.catch((err) => {
-									this.log(
-										`Summarization error, falling back to full output: ${err}`,
-									);
-									resolve(fallbackResult);
-								});
-						} else {
-							resolve(fallbackResult);
-						}
+						resolve(`${fallbackResult}${this.takeSummarizeNote()}`);
 					}
 				}
 			}
@@ -543,6 +538,19 @@ export class PiSession {
 			lines.push(`- ... and ${unreported - shown.length} more`);
 		}
 		return `\n\nAuto-approved without asking (${unreported}):\n${lines.join("\n")}`;
+	}
+
+	private takeSummarizeNote(): string {
+		if (!this.summarizeIgnored) return "";
+		this.summarizeIgnored = false;
+		return "\n\nNote: `summarize` is deprecated and was ignored; the full output is returned.";
+	}
+
+	/** Remove this worker's private gate directory. Safe to call repeatedly. */
+	private removeGateDir() {
+		if (!this.gate) return;
+		removeGate(this.gate);
+		this.gate = null;
 	}
 
 	public getAutoApprovedLog(): AutoApprovedAction[] {
@@ -606,7 +614,7 @@ export class PiSession {
 			"RUNNING",
 			`Executing: ${commandText.substring(0, 100)}`,
 		);
-		this.summarize = summarize ?? false;
+		this.summarizeIgnored = summarize === true;
 		this.historyStartIndex = this.history.length;
 		const cmdId = `cmd_${Date.now()}`;
 
@@ -640,8 +648,8 @@ export class PiSession {
 		this.log(`Approving action ${actionId}`);
 		this.status = "RUNNING";
 		this.pendingAction = null;
-		if (summarize !== undefined) {
-			this.summarize = summarize;
+		if (summarize === true) {
+			this.summarizeIgnored = true;
 		}
 
 		return new Promise((resolve, reject) => {
@@ -677,8 +685,8 @@ export class PiSession {
 		this.log(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
 		this.status = "RUNNING";
 		this.pendingAction = null;
-		if (summarize !== undefined) {
-			this.summarize = summarize;
+		if (summarize === true) {
+			this.summarizeIgnored = true;
 		}
 
 		return new Promise((resolve, reject) => {
@@ -709,6 +717,7 @@ export class PiSession {
 			this.status = "FINISHED";
 			this.process = null;
 		}
+		this.removeGateDir();
 		this.pendingAction = null;
 		this.onStatusChange?.(this.sessionId, "CRASHED", "Process terminated");
 		this.activeTaskId = null;
@@ -750,103 +759,5 @@ export class PiSession {
 	private handleLoopDetected() {
 		this.log("[WARNING] Endless output loop detected! Aborting turn...");
 		this.abortCommand();
-	}
-
-	private async summarizeText(text: string): Promise<string> {
-		const piPath = process.env.WORKER_MCP_PI_PATH || "pi";
-		const promptText = `You are a supervisor summarizing the work done by a local agent.
-Please provide a concise summary of the outcome, decisions, and any changes made based on the following transcript:
-
---- TRANSCRIPT START ---
-${text}
---- TRANSCRIPT END ---
-
-Your summary should be concise, focusing only on the final results, key decisions, files changed, and errors encountered. Avoid duplicating the agent's step-by-step thinking process.`;
-
-		// Write prompt to a temporary file inside the session directory to avoid E2BIG / command length issues
-		const tempFilename = `.summarize-${this.sessionId}-${Date.now()}.md`;
-		const tempFilePath = path.join(this.cwd, tempFilename);
-
-		try {
-			fs.writeFileSync(tempFilePath, promptText, "utf8");
-		} catch (err) {
-			const errMsg = err instanceof Error ? err.message : String(err);
-			this.log(`Failed to write temp summarization file: ${errMsg}`);
-			throw err;
-		}
-
-		const args = ["--no-session"];
-		if (this.model) {
-			args.push("--model", this.model);
-		}
-		args.push("-p", `@${tempFilename}`);
-
-		this.log(
-			`Summarizing response using model: ${this.model || "default"} via temp file ${tempFilename}`,
-		);
-
-		const cleanUpTempFile = () => {
-			try {
-				if (fs.existsSync(tempFilePath)) {
-					fs.unlinkSync(tempFilePath);
-				}
-			} catch (err) {
-				const errMsg = err instanceof Error ? err.message : String(err);
-				this.log(`Failed to clean up temp file ${tempFilename}: ${errMsg}`);
-			}
-		};
-
-		return new Promise<string>((resolve, reject) => {
-			const child = spawn(piPath, args, {
-				cwd: this.cwd,
-				env: { ...process.env },
-			});
-
-			let output = "";
-			let errorOutput = "";
-
-			const timeoutMs =
-				readPositiveIntEnv("WORKER_MCP_SUMMARIZE_TIMEOUT") ?? 60000;
-
-			const timeout = setTimeout(() => {
-				this.log("Summarization process timed out. Killing process.");
-				child.kill("SIGKILL");
-				reject(new Error("Summarization timed out"));
-			}, timeoutMs);
-
-			child.stdout?.on("data", (chunk: Buffer) => {
-				output += chunk.toString("utf8");
-			});
-
-			child.stderr?.on("data", (chunk: Buffer) => {
-				errorOutput += chunk.toString("utf8");
-			});
-
-			child.on("close", (code) => {
-				clearTimeout(timeout);
-				cleanUpTempFile();
-				if (code === 0) {
-					resolve(output.trim());
-				} else {
-					this.log(
-						`Summarization failed with code ${code}. Stderr: ${errorOutput}`,
-					);
-					reject(
-						new Error(
-							`Summarization failed: ${errorOutput || `exit code ${code}`}`,
-						),
-					);
-				}
-			});
-
-			child.on("error", (err) => {
-				clearTimeout(timeout);
-				cleanUpTempFile();
-				reject(err);
-			});
-		}).catch((err) => {
-			cleanUpTempFile();
-			throw err;
-		});
 	}
 }

@@ -27,7 +27,7 @@ Delegate a task to a local worker if it is:
 You have access to the following MCP tools for worker management:
 
 1. `spawn_pi_session(sessionId, cwd, model?, systemPrompt?, riskPolicy?)`: Creates and initializes a supervisor-gated worker process in a target directory with an optional risk-based approval policy.
-2. `send_pi_command(sessionId, command, summarize?, timeout?)`: Dispatches a prompt or slash command to the worker. Runs as a background MCP task by default. Set `timeout` (in ms) to execute in blocking mode up to the timeout. Set `summarize: true` to get a concise summary instead of raw output.
+2. `send_pi_command(sessionId, command, summarize?, timeout?)`: Dispatches a prompt or slash command to the worker. Runs as a background MCP task by default. Set `timeout` (in ms) to execute in blocking mode up to the timeout. `summarize` is deprecated and ignored.
 3. `cancel_pi_command(sessionId)`: Aborts the currently running command in a session and cancels its background task.
 4. `terminate_pi_session(sessionId)`: Stops a session and removes it, freeing its id for reuse. Use this to clear sessions that have crashed, wedged, or are no longer needed.
 5. `list_pi_sessions()`: Lists all active session IDs, directories, and statuses.

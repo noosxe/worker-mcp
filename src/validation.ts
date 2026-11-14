@@ -37,7 +37,6 @@ export function readPositiveIntEnv(
 export const NUMERIC_ENV_VARS = [
 	"WORKER_MCP_COMMAND_TIMEOUT",
 	"WORKER_MCP_MAX_OUTPUT_CHARS",
-	"WORKER_MCP_SUMMARIZE_TIMEOUT",
 ] as const;
 
 /** Validate every numeric environment variable; throws on the first bad one. */

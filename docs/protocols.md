@@ -343,7 +343,7 @@ To restrict the `pi` agent from executing actions autonomously without consent, 
 
 ### 3.1. The Interception Mechanism
 
-1. We configure the `pi` process to load a custom TypeScript extension: `worker-mcp-gate.ts`.
+1. We configure the `pi` process to load a custom TypeScript extension, written fresh for each spawn from a constant in the server.
 2. The extension registers a listener for `tool_call` events:
    ```typescript
    pi.on("tool_call", async (event, ctx) => {

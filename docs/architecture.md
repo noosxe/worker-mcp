@@ -220,12 +220,13 @@ Retrieves the audit log of actions that were auto-approved by the risk policy.
 - By default, `worker-mcp` attempts to execute the `pi` binary from the system's `PATH`.
 - The binary path can be explicitly overridden by setting the `WORKER_MCP_PI_PATH` environment variable (e.g., `WORKER_MCP_PI_PATH=/usr/local/bin/pi`).
 
-### 5.2. Automatic Gating Extension Injection
+### 5.2. Per-spawn Gating Extension
 
-- Upon server startup, `worker-mcp` checks for the presence of the supervisor gating extension file at `~/.config/worker-mcp/worker-mcp-gate.ts` (creating directories as needed).
-- If missing **or outdated** (version mismatch), `worker-mcp` automatically writes the extension file.
-- When spawning a `pi` agent session, `worker-mcp` explicitly loads the extension file using the `--extension` flag. This ensures that standalone runs of `pi` (which auto-discover extensions from `~/.pi/agent/extensions/`) remain unpolluted and fully functional.
-- The extension is versioned (currently v2). v2 sends structured JSON payloads (`{ toolName, input }`) instead of human-readable text, enabling server-side risk classification.
+- The gate extension source is a constant compiled into the server. Before each worker spawn, `worker-mcp` writes it to a fresh private directory (`mkdtemp` under `$XDG_RUNTIME_DIR/worker-mcp`, or `$XDG_STATE_HOME/worker-mcp/run` when that is unset; directory mode 0700, file mode 0600) and loads it with `-e`.
+- pi is started with `--no-extensions --no-mcp --no-approve`, so it loads no discovered extensions, no MCP servers and no project-local files; only the gate runs.
+- If the gate cannot be written, or the file is missing right before the spawn, the spawn is refused. pi is never started without the gate.
+- The directory is removed when the worker exits or is terminated. Nothing is written under `~/.pi`.
+- The gate sends structured JSON payloads (`{ toolName, input }`), enabling server-side risk classification.
 
 ### 5.3. Session Registry Persistence
 
@@ -240,12 +241,12 @@ Retrieves the audit log of actions that were auto-approved by the risk policy.
 
 ### 5.5. Environment Variables
 
-| Variable                       | Default   | Description                                               |
-| ------------------------------ | --------- | --------------------------------------------------------- |
-| `WORKER_MCP_PI_PATH`           | `pi`      | Path to the pi executable                                 |
-| `WORKER_MCP_SUMMARIZE_TIMEOUT` | `60000`   | Timeout (ms) for summarization subprocess                 |
-| `WORKER_MCP_MAX_OUTPUT_CHARS`  | `64000`   | Maximum output characters before loop detection           |
-| `WORKER_MCP_COMMAND_TIMEOUT`   | unset (∞) | Default timeout (ms) for blocking `send_pi_command` calls |
+| Variable                      | Default   | Description                                                               |
+| ----------------------------- | --------- | ------------------------------------------------------------------------- |
+| `WORKER_MCP_PI_PATH`          | `pi`      | Path to the pi executable                                                 |
+| `WORKER_MCP_ENV_PASSTHROUGH`  | unset     | Extra environment variable names for workers, see [security](security.md) |
+| `WORKER_MCP_MAX_OUTPUT_CHARS` | `64000`   | Maximum output characters before loop detection                           |
+| `WORKER_MCP_COMMAND_TIMEOUT`  | unset (∞) | Default timeout (ms) for blocking `send_pi_command` calls                 |
 
 ---
 

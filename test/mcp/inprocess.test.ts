@@ -257,9 +257,10 @@ describe("MCP in-process: schemas, errors and task mode", () => {
 			const start = await iso.workerAfter(known);
 			assert.strictEqual(start.env.HOME, iso.home);
 			assert.ok(
-				fs.existsSync(`${iso.home}/.config/worker-mcp/worker-mcp-gate.ts`),
-				"the gate was deployed under the private HOME",
+				!fs.existsSync(`${iso.home}/.config/worker-mcp/worker-mcp-gate.ts`),
+				"no persistent gate copy is written",
 			);
+			assert.ok(!fs.existsSync(`${iso.home}/.pi`), "~/.pi is never touched");
 		} finally {
 			await close();
 		}

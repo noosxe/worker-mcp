@@ -220,7 +220,7 @@ export function createServer(
 							summarize: {
 								type: "boolean",
 								description:
-									"If true, returns a concise summary of the worker's response instead of the raw output/status.",
+									"Deprecated and ignored: the full output is always returned, with a note.",
 							},
 							timeout: {
 								type: "number",
@@ -304,7 +304,7 @@ export function createServer(
 							summarize: {
 								type: "boolean",
 								description:
-									"If true, returns a concise summary of the worker's response once it completes.",
+									"Deprecated and ignored: the full output is always returned, with a note.",
 							},
 						},
 						required: ["sessionId", "actionId"],
@@ -333,7 +333,7 @@ export function createServer(
 							summarize: {
 								type: "boolean",
 								description:
-									"If true, returns a concise summary of the worker's response once it completes.",
+									"Deprecated and ignored: the full output is always returned, with a note.",
 							},
 						},
 						required: ["sessionId", "actionId"],

@@ -519,14 +519,12 @@ describe("PiSession - Unit Tests", () => {
 		assert.strictEqual(session.pendingAction?.riskLevel, undefined);
 	});
 
-	test("summarizes assistant output when summarize is true", async () => {
+	test("notes that summarize was ignored and returns the full output", async () => {
 		const session = new PiSession("test", "./scratch");
 
 		let resolved: string | null = null;
 		session.status = "RUNNING";
-		(session as any).summarize = true;
-		(session as any).summarizeText = async (text: string) =>
-			`Summary of: ${text}`;
+		(session as any).summarizeIgnored = true;
 		(session as any).resolveCommand = (value: string) => {
 			resolved = value;
 		};
@@ -548,21 +546,18 @@ describe("PiSession - Unit Tests", () => {
 
 		(session as any).handleStdoutLine('{"type":"agent_end"}');
 
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
 		assert.strictEqual(session.status, "IDLE");
-		assert.strictEqual(
-			resolved,
-			"Summary of: This is a detailed response about the task.",
+		assert.match(
+			resolved ?? "",
+			/^This is a detailed response about the task\.\n\nNote: `summarize` is deprecated and was ignored/,
 		);
 	});
 
-	test("returns raw assistant output when summarize is false", () => {
+	test("returns raw assistant output without a note by default", () => {
 		const session = new PiSession("test", "./scratch");
 
 		let resolved: string | null = null;
 		session.status = "RUNNING";
-		(session as any).summarize = false;
 		(session as any).resolveCommand = (value: string) => {
 			resolved = value;
 		};
