@@ -20,6 +20,22 @@ export interface Config {
 		commandTimeoutMs: number | null;
 		/** Output size, in characters, past which a worker's output is cut off. */
 		maxOutputChars: number;
+		/** Wall-clock limit for one run; on expiry it is aborted and times out. */
+		maxRunMs: number;
+		/** Longest any single wait (`wait_run`, `start_run`'s `waitMs`) blocks. */
+		maxWaitMs: number;
+		/** The wait `wait_run` uses when the caller gives none. */
+		defaultWaitMs: number;
+		/** How long a finished run is kept after its worker is gone. */
+		resultRetentionMs: number;
+		/** Most finished runs kept at once, oldest dropped first. */
+		maxRetainedRuns: number;
+		/** Output kept per run, in characters; the oldest is dropped past it. */
+		outputBufferChars: number;
+		/** Default size of one page of output returned by `get_run`. */
+		pageChars: number;
+		/** How long a worker may take to accept a prompt before the run fails. */
+		runStartTimeoutMs: number;
 	};
 	env: {
 		/** Extra worker env names or `PREFIX_*` patterns, from every source. */
@@ -45,10 +61,22 @@ export interface Config {
 		maxAutoApprove: "LOW" | "MEDIUM" | "HIGH";
 		/** Extra paths (absolute, or `~/`) workers may never write unasked. */
 		protectedPaths: string[];
+		/** How long an approval waits for the coordinator before it is denied. */
+		approvalTimeoutMs: number;
 	};
 }
 
 export const DEFAULT_MAX_OUTPUT_CHARS = 64000;
+export const DEFAULT_MAX_RUN_MS = 30 * 60_000;
+/** Under the 60 s default request timeout of the TypeScript MCP client. */
+export const DEFAULT_MAX_WAIT_MS = 50_000;
+export const DEFAULT_WAIT_MS = 25_000;
+export const DEFAULT_RESULT_RETENTION_MS = 60 * 60_000;
+export const DEFAULT_MAX_RETAINED_RUNS = 100;
+export const DEFAULT_OUTPUT_BUFFER_CHARS = 1_048_576;
+export const DEFAULT_PAGE_CHARS = 16_000;
+export const DEFAULT_RUN_START_TIMEOUT_MS = 15_000;
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 10 * 60_000;
 
 /** An npx-wrapped pi can take most of a minute to start the first time. */
 export const DEFAULT_PI_STARTUP_TIMEOUT_MS = 60_000;
@@ -89,6 +117,14 @@ export const configFileSchema = z.strictObject({
 		.strictObject({
 			commandTimeoutMs: positiveInt.optional(),
 			maxOutputChars: positiveInt.optional(),
+			maxRunMs: positiveInt.optional(),
+			maxWaitMs: positiveInt.optional(),
+			defaultWaitMs: positiveInt.optional(),
+			resultRetentionMs: positiveInt.optional(),
+			maxRetainedRuns: positiveInt.optional(),
+			outputBufferChars: positiveInt.optional(),
+			pageChars: positiveInt.optional(),
+			runStartTimeoutMs: positiveInt.optional(),
 		})
 		.optional(),
 	env: z.strictObject({ allow: z.array(envName).optional() }).optional(),
@@ -106,6 +142,7 @@ export const configFileSchema = z.strictObject({
 		.strictObject({
 			maxAutoApprove: maxAutoApprove.optional(),
 			protectedPaths: z.array(protectedPath).optional(),
+			approvalTimeoutMs: positiveInt.optional(),
 		})
 		.optional(),
 });
@@ -148,6 +185,16 @@ export const ENV_VARS = {
 		name: "WORKER_MCP_MAX_OUTPUT_CHARS",
 		key: "limits.maxOutputChars",
 	},
+	runTimeout: { name: "WORKER_MCP_RUN_TIMEOUT_MS", key: "limits.maxRunMs" },
+	maxWait: { name: "WORKER_MCP_MAX_WAIT_MS", key: "limits.maxWaitMs" },
+	runStartTimeout: {
+		name: "WORKER_MCP_RUN_START_TIMEOUT_MS",
+		key: "limits.runStartTimeoutMs",
+	},
+	approvalTimeout: {
+		name: "WORKER_MCP_APPROVAL_TIMEOUT_MS",
+		key: "gate.approvalTimeoutMs",
+	},
 	envPassthrough: { name: "WORKER_MCP_ENV_PASSTHROUGH", key: "env.allow" },
 	stateDir: { name: "WORKER_MCP_STATE_DIR", key: "stateDir" },
 	runtimeDir: { name: "WORKER_MCP_RUNTIME_DIR", key: "runtimeDir" },
@@ -179,6 +226,22 @@ const VALUE_FLAGS = {
 	maxOutputChars: {
 		flag: "--max-output-chars",
 		key: "limits.maxOutputChars",
+		kind: "int",
+	},
+	runTimeout: {
+		flag: "--run-timeout-ms",
+		key: "limits.maxRunMs",
+		kind: "int",
+	},
+	maxWait: { flag: "--max-wait-ms", key: "limits.maxWaitMs", kind: "int" },
+	runStartTimeout: {
+		flag: "--run-start-timeout-ms",
+		key: "limits.runStartTimeoutMs",
+		kind: "int",
+	},
+	approvalTimeout: {
+		flag: "--approval-timeout-ms",
+		key: "gate.approvalTimeoutMs",
 		kind: "int",
 	},
 	envPassthrough: {
@@ -255,6 +318,10 @@ function stringLayer(
 		piStartupTimeout?: { key: string; raw: string };
 		commandTimeout?: { key: string; raw: string };
 		maxOutputChars?: { key: string; raw: string };
+		runTimeout?: { key: string; raw: string };
+		maxWait?: { key: string; raw: string };
+		runStartTimeout?: { key: string; raw: string };
+		approvalTimeout?: { key: string; raw: string };
 		passthrough?: { key: string; raw: string };
 		stateDir?: string;
 		runtimeDir?: string;
@@ -302,8 +369,30 @@ function stringLayer(
 			),
 		};
 	}
+	if (values.approvalTimeout) {
+		layer.gate = {
+			...layer.gate,
+			approvalTimeoutMs: parseInteger(
+				source,
+				values.approvalTimeout.key,
+				values.approvalTimeout.raw,
+			),
+		};
+	}
+	for (const [name, field] of [
+		["runTimeout", "maxRunMs"],
+		["maxWait", "maxWaitMs"],
+		["runStartTimeout", "runStartTimeoutMs"],
+	] as const) {
+		const entry = values[name];
+		if (!entry) continue;
+		layer.limits = {
+			...layer.limits,
+			[field]: parseInteger(source, entry.key, entry.raw),
+		};
+	}
 	if (values.commandTimeout || values.maxOutputChars) {
-		layer.limits = {};
+		layer.limits = { ...layer.limits };
 		if (values.commandTimeout) {
 			layer.limits.commandTimeoutMs = parseInteger(
 				source,
@@ -365,6 +454,26 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 			keysOf(),
 		),
 		stringLayer(
+			label(ENV_VARS.runTimeout),
+			{ runTimeout: num(ENV_VARS.runTimeout) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.maxWait),
+			{ maxWait: num(ENV_VARS.maxWait) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.runStartTimeout),
+			{ runStartTimeout: num(ENV_VARS.runStartTimeout) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.approvalTimeout),
+			{ approvalTimeout: num(ENV_VARS.approvalTimeout) },
+			keysOf(),
+		),
+		stringLayer(
 			label(ENV_VARS.envPassthrough),
 			{ passthrough: num(ENV_VARS.envPassthrough) },
 			keysOf(),
@@ -420,6 +529,12 @@ function flagLayer(flags: CliFlags): FileLayer {
 			case "maxOutputChars":
 				parts.push(stringLayer(source, { maxOutputChars: entry }, keys));
 				break;
+			case "runTimeout":
+			case "maxWait":
+			case "runStartTimeout":
+			case "approvalTimeout":
+				parts.push(stringLayer(source, { [name]: entry }, keys));
+				break;
 			case "envPassthrough":
 				parts.push(stringLayer(source, { passthrough: entry }, keys));
 				break;
@@ -457,6 +572,8 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		},
 		gate: {
 			maxAutoApprove: over.gate?.maxAutoApprove ?? base.gate?.maxAutoApprove,
+			approvalTimeoutMs:
+				over.gate?.approvalTimeoutMs ?? base.gate?.approvalTimeoutMs,
 			// Protected paths only ever accumulate.
 			protectedPaths: [
 				...(base.gate?.protectedPaths ?? []),
@@ -574,6 +691,21 @@ function applyDefaults(
 		limits: {
 			commandTimeoutMs: layer.limits?.commandTimeoutMs ?? null,
 			maxOutputChars: layer.limits?.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS,
+			maxRunMs: layer.limits?.maxRunMs ?? DEFAULT_MAX_RUN_MS,
+			maxWaitMs: layer.limits?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
+			defaultWaitMs: Math.min(
+				layer.limits?.defaultWaitMs ?? DEFAULT_WAIT_MS,
+				layer.limits?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
+			),
+			resultRetentionMs:
+				layer.limits?.resultRetentionMs ?? DEFAULT_RESULT_RETENTION_MS,
+			maxRetainedRuns:
+				layer.limits?.maxRetainedRuns ?? DEFAULT_MAX_RETAINED_RUNS,
+			outputBufferChars:
+				layer.limits?.outputBufferChars ?? DEFAULT_OUTPUT_BUFFER_CHARS,
+			pageChars: layer.limits?.pageChars ?? DEFAULT_PAGE_CHARS,
+			runStartTimeoutMs:
+				layer.limits?.runStartTimeoutMs ?? DEFAULT_RUN_START_TIMEOUT_MS,
 		},
 		env: {
 			allow: [...new Set(layer.env?.allow ?? [])],
@@ -590,6 +722,8 @@ function applyDefaults(
 		gate: {
 			maxAutoApprove: layer.gate?.maxAutoApprove ?? "MEDIUM",
 			protectedPaths: [...new Set(layer.gate?.protectedPaths ?? [])],
+			approvalTimeoutMs:
+				layer.gate?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS,
 		},
 	};
 }

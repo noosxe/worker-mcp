@@ -4,42 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, afterEach, before, describe, test } from "node:test";
 
-import { defaultConfig } from "../config.js";
 import { RiskLevel } from "../gate/risk.js";
 import { FakeProvider } from "../providers/fake/provider.js";
 import { BoundedLog } from "../session/bounded-log.js";
-import { detectLoop } from "../session/loop-detector.js";
 import { RuntimeDir } from "../session/runtime-dir.js";
 import { Session } from "../session/session.js";
-
-describe("detectLoop", () => {
-	const LIMIT = defaultConfig().limits.maxOutputChars;
-
-	test("normal text is not a loop", () => {
-		assert.strictEqual(
-			detectLoop("Hello world! How are you today?", LIMIT),
-			false,
-		);
-		assert.strictEqual(
-			detectLoop(
-				"This is a long line of code that explains the requirements and has no repetitive sequences.",
-				LIMIT,
-			),
-			false,
-		);
-	});
-
-	test("repeated short patterns are a loop", () => {
-		assert.strictEqual(detectLoop("a".repeat(25), LIMIT), true);
-		assert.strictEqual(detectLoop("ab".repeat(12), LIMIT), true);
-		assert.strictEqual(detectLoop("abc".repeat(9), LIMIT), true);
-		assert.strictEqual(detectLoop("a".repeat(10), LIMIT), false);
-	});
-
-	test("output past the size cap is a loop", () => {
-		assert.strictEqual(detectLoop("x".repeat(101), 100), true);
-	});
-});
 
 describe("BoundedLog", () => {
 	test("keeps the most recent lines", () => {
@@ -130,8 +99,8 @@ describe("Session over the fake provider", () => {
 		const s = await start();
 		await s.terminate();
 		assert.strictEqual(s.isAlive(), false);
-		assert.throws(
-			() => s.sendCommand("hi"),
+		await assert.rejects(
+			s.sendCommand("hi"),
 			/no running pi process.*Respawn it with spawn_pi_session/s,
 		);
 		assert.notStrictEqual(s.status, "IDLE");
@@ -150,8 +119,9 @@ describe("Session over the fake provider", () => {
 	test("a command while another runs is refused", async () => {
 		const s = await start();
 		const first = s.sendCommand("hang");
-		assert.throws(
-			() => s.sendCommand("x"),
+		await new Promise((r) => setTimeout(r, 10));
+		await assert.rejects(
+			s.sendCommand("x"),
 			/Cannot send command when session status is RUNNING/,
 		);
 		s.abortCommand();
@@ -234,8 +204,8 @@ describe("Session over the fake provider", () => {
 			assert.strictEqual(s.status, "AWAITING_APPROVAL");
 			assert.strictEqual(s.pendingAction?.actionId, id);
 			assert.strictEqual(s.pendingAction?.riskLevel, RiskLevel.HIGH);
-			const out = await s.approveAction(id);
-			assert.match(out, /^bash ran with /);
+			const run = s.approveAction(id);
+			assert.match((await s.waitText(run)) as string, /^bash ran with /);
 			assert.strictEqual(s.status, "IDLE");
 			assert.strictEqual(s.pendingAction, null);
 			await s.terminate();
@@ -245,10 +215,8 @@ describe("Session over the fake provider", () => {
 			const s = await start();
 			const waiting = await s.sendCommand(confirmBash);
 			const id = waiting.match(/Action ID: (\S+)\./)?.[1] as string;
-			assert.strictEqual(
-				await s.rejectAction(id, "too risky"),
-				"bash blocked: too risky",
-			);
+			const run = s.rejectAction(id, "too risky");
+			assert.strictEqual(await s.waitText(run), "bash blocked: too risky");
 			await s.terminate();
 		});
 
@@ -264,7 +232,7 @@ describe("Session over the fake provider", () => {
 				() => s.rejectAction("other"),
 				/No pending action matching ID/,
 			);
-			await s.rejectAction(id);
+			s.rejectAction(id);
 			assert.throws(() => s.approveAction(id), /No pending action matching ID/);
 			await s.terminate();
 		});
@@ -340,7 +308,7 @@ describe("Session over the fake provider", () => {
 			await s.sendCommand(tool("bash", { command: "ls" }));
 			const waiting = await s.sendCommand(confirmBash);
 			const id = waiting.match(/Action ID: (\S+)\./)?.[1] as string;
-			await s.approveAction(id);
+			await s.waitText(s.approveAction(id));
 			const log = s.getGateLog();
 			assert.deepStrictEqual(
 				log.map((e) => [e.decision, e.decidedBy]),
@@ -373,24 +341,22 @@ describe("Session over the fake provider", () => {
 			assert.strictEqual(s.getGateLog().at(-1)?.decidedBy, "cancel");
 		});
 
-		test("two calls at once are answered one after the other", async () => {
+		test("two calls at once can be answered in any order", async () => {
 			const s = await start();
 			const first = await s.sendCommand(
 				`parallel:bash:${JSON.stringify({ command: "rm f" })}`,
 			);
 			const id1 = first.match(/Action ID: (\S+)\./)?.[1] as string;
-			// Both calls are pending; the coordinator sees them in order.
 			await new Promise((r) => setTimeout(r, 20));
-			const second = await s.approveAction(id1);
-			assert.match(second, /^AWAITING_APPROVAL/);
-			const id2 = second.match(/Action ID: (\S+)\./)?.[1] as string;
-			assert.notStrictEqual(
-				id1,
-				id2,
-				"the second call did not overwrite the first",
-			);
-			const done = await s.rejectAction(id2, "second no");
-			assert.match(done, /1: ran with|ran with/);
+			const run = s.activeRun as NonNullable<typeof s.activeRun>;
+			assert.strictEqual(run.approvals.size, 2);
+			const id2 = [...run.approvals.keys()].find((k) => k !== id1) as string;
+			// The second is answered first; nothing waits for the first.
+			s.rejectAction(id2, "second no");
+			assert.strictEqual(s.status, "AWAITING_APPROVAL");
+			s.approveAction(id1);
+			const done = (await s.waitText(run)) as string;
+			assert.match(done, /ran with/);
 			assert.match(done, /second no/);
 			assert.strictEqual(s.status, "IDLE");
 			await s.terminate();

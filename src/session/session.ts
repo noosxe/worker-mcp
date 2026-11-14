@@ -1,6 +1,8 @@
 import { type Config, defaultConfig } from "../config.js";
 import { ChildRegistry } from "../core/child.js";
 import { type OpenedWorker, openWorker } from "../core/host.js";
+import { RepeatCheck } from "../core/repeat-check.js";
+import { type Run, RunStore, type TerminalState } from "../core/run.js";
 import type { GateOutcome } from "../gate/classifier.js";
 import {
 	DEFAULT_MAX_AUTO_APPROVE,
@@ -16,11 +18,11 @@ import { RISK_LABELS, RiskLevel } from "../gate/risk.js";
 import type {
 	ApprovalDecision,
 	RawToolCall,
+	Usage,
 	WorkerEvent,
 	WorkerProvider,
 } from "../providers/types.js";
 import { BoundedLog } from "./bounded-log.js";
-import { detectLoop } from "./loop-detector.js";
 import type { RuntimeDir } from "./runtime-dir.js";
 
 export type SessionStatus =
@@ -67,16 +69,20 @@ export interface PendingAction {
 
 const SUMMARY_MAX_CHARS = 120;
 
-/** One line describing an action: its command or target path, truncated. */
-function summariseAction(a: AutoApprovedAction): string {
-	const raw = [a.input.command, a.input.cmd, a.input.script, a.input.path]
-		.concat([a.input.filePath, a.input.file, a.input.targetFile])
+/** One line describing a tool input: its command or target path, truncated. */
+function summariseInput(input: unknown): string {
+	const i = (input ?? {}) as Record<string, unknown>;
+	const raw = [i.command, i.cmd, i.script, i.path]
+		.concat([i.filePath, i.file, i.targetFile])
 		.find((v): v is string => typeof v === "string");
 	const oneLine = (raw ?? "").replace(/\s+/g, " ").trim();
 	return oneLine.length > SUMMARY_MAX_CHARS
 		? `${oneLine.slice(0, SUMMARY_MAX_CHARS)}…`
 		: oneLine;
 }
+
+const summariseAction = (a: AutoApprovedAction): string =>
+	summariseInput(a.input);
 
 /** What a session needs from the server; all optional for unit tests. */
 export interface SessionDeps {
@@ -89,25 +95,65 @@ export interface SessionDeps {
 	children?: ChildRegistry;
 	/** The agent this session runs; required to start it. */
 	provider?: WorkerProvider;
+	/** Where this session's runs live; one per server. */
+	runs?: RunStore;
+	/** How long an aborted run may take to settle before it is forced. */
+	abortGraceMs?: number;
+}
+
+/** A failure with a stable code, so the MCP tools can name it. */
+export class RunError extends Error {
+	override name = "RunError";
+	constructor(
+		readonly code:
+			| "WORKER_BUSY"
+			| "WORKER_NOT_RUNNING"
+			| "APPROVAL_NOT_FOUND"
+			| "RUN_START_FAILED",
+		message: string,
+		readonly runId?: string,
+	) {
+		super(message);
+	}
 }
 
 interface PendingApproval {
 	call: RawToolCall;
 	action: PendingAction;
+	run: Run;
 	outcome: GateOutcome | null;
 	resolve: (d: ApprovalDecision) => void;
+	timer: ReturnType<typeof setTimeout> | null;
 	cancelled: boolean;
 }
 
+/** The run in flight and what the session needs to end it. */
+interface ActiveRun {
+	run: Run;
+	abort: AbortController;
+	repeat: RepeatCheck;
+	/** Streamed text of the current assistant message. */
+	turnOutput: string;
+	/** Set when the run is being stopped for a reason: the state it ends in. */
+	cause: { state: TerminalState; error?: string } | null;
+	aborting: boolean;
+	maxTimer: ReturnType<typeof setTimeout> | null;
+	graceTimer: ReturnType<typeof setTimeout> | null;
+}
+
+class StartTimeout extends Error {}
+
 /**
- * One worker as the MCP tools see it: a status, a single command in flight,
+ * One worker as the MCP tools see it: a status, at most one run in flight,
  * and the approvals the coordinator has to answer. The agent itself sits
- * behind the provider interface; this class holds no protocol.
+ * behind the provider interface; this class holds no protocol. A run's state
+ * and result live in the `RunStore`, so they outlive this session.
  */
 export class Session {
 	private static readonly MAX_LOG_LINES = 2000;
 	private static readonly MAX_AUTO_APPROVED_SHOWN = 20;
 	private static readonly MAX_AUTO_APPROVED_LOG = 500;
+	private static readonly MAX_HISTORY = 500;
 
 	public sessionId: string;
 	public cwd: string;
@@ -126,25 +172,12 @@ export class Session {
 	private readonly approvalGate: ApprovalGate;
 	/** What happened to the policy given at spawn: clamped, converted. */
 	public readonly policyReport: PolicyReport | null;
-	public onStatusChange:
-		| ((sessionId: string, status: SessionStatus, message?: string) => void)
-		| null = null;
 
 	private worker: OpenedWorker | null = null;
 	private alive = false;
 	/** Approvals waiting for the coordinator, oldest first. */
 	private readonly pending = new Map<string, PendingApproval>();
-	private resolveCommand: ((value: string) => void) | null = null;
-	private rejectCommand: ((reason: Error) => void) | null = null;
-	private currentRun: {
-		runId: string;
-		abort: AbortController;
-		texts: string[];
-		turnOutput: string;
-	} | null = null;
-	private runCounter = 0;
-	private abortInFlight = false;
-	private activeTaskId: string | null = null;
+	private currentRun: ActiveRun | null = null;
 	private terminating = false;
 	/** Set when a call asked for `summarize`, which is deprecated and ignored. */
 	private summarizeIgnored = false;
@@ -154,6 +187,8 @@ export class Session {
 	private readonly processEnv: NodeJS.ProcessEnv;
 	private readonly children: ChildRegistry;
 	private readonly provider: WorkerProvider | undefined;
+	readonly runs: RunStore;
+	private readonly abortGraceMs: number;
 
 	constructor(
 		sessionId: string,
@@ -170,6 +205,8 @@ export class Session {
 			deps.children ??
 			new ChildRegistry({ env: this.processEnv, envConfig: this.config.env });
 		this.provider = deps.provider;
+		this.runs = deps.runs ?? runStoreFor(this.config);
+		this.abortGraceMs = deps.abortGraceMs ?? 3000;
 		this.sessionId = sessionId;
 		this.cwd = cwd;
 		this.model = model;
@@ -200,6 +237,14 @@ export class Session {
 		console.error(`[Session ${this.sessionId}] ${formatted}`);
 	}
 
+	/** Append to the conversation history, which keeps only the newest entries. */
+	private remember(entry: unknown): void {
+		this.history.push(entry);
+		if (this.history.length > Session.MAX_HISTORY) {
+			this.history.splice(0, this.history.length - Session.MAX_HISTORY);
+		}
+	}
+
 	/** Recent log lines of this worker, newest last. */
 	public get logs(): string[] {
 		return this.logBuffer.lines;
@@ -209,6 +254,11 @@ export class Session {
 	public get pendingAction(): PendingAction | null {
 		for (const p of this.pending.values()) return p.action;
 		return null;
+	}
+
+	/** The run in flight, if any. */
+	public get activeRun(): Run | null {
+		return this.currentRun?.run ?? null;
 	}
 
 	public async start(): Promise<void> {
@@ -258,24 +308,22 @@ export class Session {
 
 	private onEvent(event: WorkerEvent): void {
 		if (this.terminating) return;
-		const run = this.currentRun;
+		const active = this.currentRun;
+		const mine =
+			active !== null && "runId" in event && event.runId === active.run.id;
 		switch (event.type) {
+			case "run_started":
+				if (mine) this.runs.setState(active.run, "running");
+				return;
 			case "text_delta":
-				if (run && event.runId === run.runId) {
-					run.turnOutput += event.text;
-					if (detectLoop(run.turnOutput, this.config.limits.maxOutputChars)) {
-						this.log(
-							"[WARNING] Endless output loop detected! Aborting turn...",
-						);
-						this.abortCommand();
-					}
-				}
+				if (mine) this.onDelta(active, event.text);
 				return;
 			case "assistant_message":
-				if (run && event.runId === run.runId) {
-					run.turnOutput = "";
-					if (event.text) run.texts.push(event.text);
-					this.history.push({
+				if (mine) {
+					active.turnOutput = "";
+					active.repeat.reset();
+					this.runs.addOutput(active.run, event.text);
+					this.remember({
 						type: "message_end",
 						message: {
 							role: "assistant",
@@ -286,12 +334,19 @@ export class Session {
 				return;
 			case "tool_started":
 				this.log(`[tool] ${event.toolName} started`);
+				if (mine) {
+					const what = summariseInput(event.input);
+					this.runs.addActivity(
+						active.run,
+						what ? `${event.toolName}: ${what}` : event.toolName,
+					);
+				}
 				return;
 			case "notice":
 				this.log(`[${event.level}] ${event.text}`);
 				return;
 			case "run_finished":
-				if (run && event.runId === run.runId) this.onRunFinished(event);
+				if (mine) this.onRunFinished(active, event);
 				return;
 			case "exited":
 				this.onExited(event);
@@ -300,39 +355,57 @@ export class Session {
 		}
 	}
 
+	/** Streamed text: bounded in size, and checked for a worker stuck repeating. */
+	private onDelta(active: ActiveRun, text: string): void {
+		active.turnOutput += text;
+		if (active.turnOutput.length > this.config.limits.maxOutputChars) {
+			this.log("[WARNING] Output size limit reached. Aborting the run...");
+			this.abortWith(active, {
+				state: "failed",
+				error: `output limit exceeded: one message passed ${this.config.limits.maxOutputChars} characters`,
+			});
+			return;
+		}
+		if (active.repeat.feed(text)) {
+			this.log("[WARNING] Repeated output detected. Aborting the run...");
+			this.abortWith(active, {
+				state: "failed",
+				error: "repeated output: the worker kept writing the same line",
+			});
+		}
+	}
+
 	private onRunFinished(
+		active: ActiveRun,
 		event: Extract<WorkerEvent, { type: "run_finished" }>,
 	): void {
-		const run = this.currentRun;
-		if (!run) return;
-		this.currentRun = null;
-		this.abortInFlight = false;
-		this.dropPending();
-		this.activeTaskId = null;
-		const resolve = this.resolveCommand;
-		const reject = this.rejectCommand;
-		this.resolveCommand = null;
-		this.rejectCommand = null;
+		const run = active.run;
+		if (run.output.total === 0 && event.finalText) {
+			this.runs.addOutput(run, event.finalText);
+		}
+		const usage = event.usage;
 		if (event.outcome === "error") {
 			this.log(`Run failed: ${event.error}`);
-			// A worker that is still there is idle again; a dead one is reported
-			// by its exit.
-			if (this.alive && this.status === "RUNNING") {
-				this.status = "IDLE";
-			}
-			reject?.(new Error(event.error ?? "the run failed"));
+			this.finish(active, "failed", {
+				error: event.error ?? "the run failed",
+				usage,
+			});
+			return;
+		}
+		// A run that was stopped for a reason ends with that reason, unless the
+		// worker finished on its own anyway after a plain cancel.
+		const cause = active.cause;
+		if (event.outcome === "aborted") {
+			const c = cause ?? { state: "cancelled" as const };
+			this.finish(active, c.state, { error: c.error, usage });
+			return;
+		}
+		if (cause && cause.state !== "cancelled") {
+			this.finish(active, cause.state, { error: cause.error, usage });
 			return;
 		}
 		this.log("Agent settled.");
-		if (this.status === "RUNNING") {
-			this.status = "IDLE";
-			this.onStatusChange?.(this.sessionId, "IDLE", "Agent settled");
-		}
-		if (!resolve) return;
-		const fullOutput = run.texts.join("\n\n");
-		const notes = this.takeAutoApprovedNotes();
-		const fallbackResult = `${fullOutput || "Agent finished task run successfully."}${notes}`;
-		resolve(`${fallbackResult}${this.takeSummarizeNote()}`);
+		this.finish(active, "completed", { usage });
 	}
 
 	private onExited(event: Extract<WorkerEvent, { type: "exited" }>): void {
@@ -351,32 +424,79 @@ export class Session {
 			this.status = "FINISHED";
 			this.log("Process completed and exited successfully.");
 		}
-		this.dropPending();
-		const crashed = this.status === "CRASHED";
-		const reject = this.rejectCommand;
-		const resolve = this.resolveCommand;
-		this.resolveCommand = null;
-		this.rejectCommand = null;
-		this.currentRun = null;
-		if (reject) {
+		const active = this.currentRun;
+		if (active) {
 			// The run's own error normally got here first; this covers the rest.
-			reject(
-				new Error(`Worker exited unexpectedly (${this.describeExit(event)})`),
-			);
-		} else {
-			resolve?.("Process terminated");
+			if (event.expected) {
+				this.finish(active, "cancelled", { error: "worker closed" });
+			} else {
+				this.finish(active, "failed", {
+					error: `Worker exited unexpectedly (${this.describeExit(event)})`,
+				});
+			}
 		}
-		if (crashed) {
-			this.onStatusChange?.(
-				this.sessionId,
-				"CRASHED",
-				`Worker exited unexpectedly (${this.describeExit(event)})`,
-			);
-		}
+		this.dropPending("the worker ended before the call was answered");
+		this.runs.workerClosed(this.sessionId);
 	}
 
 	private describeExit(e: { code: number | null; signal: string | null }) {
 		return `code ${e.code}${e.signal ? `, signal ${e.signal}` : ""}`;
+	}
+
+	// ---- ending a run ------------------------------------------------------------
+
+	/**
+	 * Settle the run once and tidy up: timers, approvals, status. Returns false
+	 * when it had already ended.
+	 */
+	private finish(
+		active: ActiveRun,
+		state: TerminalState,
+		fields: { error?: string; usage?: Usage } = {},
+	): boolean {
+		if (!this.runs.settle(active.run, state, fields)) return false;
+		if (active.maxTimer) clearTimeout(active.maxTimer);
+		if (active.graceTimer) clearTimeout(active.graceTimer);
+		if (this.currentRun === active) this.currentRun = null;
+		this.dropPending("the run ended before the call was answered");
+		if (this.alive && !this.terminating) this.status = "IDLE";
+		return true;
+	}
+
+	/**
+	 * Stop the run for `cause`: tell the worker to abort and end the run in the
+	 * cause's state when it does. A worker that ignores the abort is forced:
+	 * the run ends anyway and the wedged worker is closed.
+	 */
+	private abortWith(
+		active: ActiveRun,
+		cause: { state: TerminalState; error?: string },
+	): void {
+		if (active.run.terminal) return;
+		active.cause ??= cause;
+		if (active.aborting) return;
+		active.aborting = true;
+		this.log(`Run ${active.run.id} abort requested (${active.cause.state}).`);
+		active.abort.abort();
+		this.worker?.handle.abortRun("abort requested").catch((err) => {
+			this.log(
+				`Failed to abort: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		});
+		active.graceTimer = setTimeout(() => {
+			const c = active.cause ?? cause;
+			if (this.finish(active, c.state, { error: c.error })) {
+				this.log("The worker did not settle after the abort; closing it.");
+				void this.closeWedged();
+			}
+		}, this.abortGraceMs);
+		active.graceTimer.unref?.();
+	}
+
+	/** A worker that cannot be stopped or does not answer is closed. */
+	private async closeWedged(): Promise<void> {
+		await this.terminate();
+		this.status = "CRASHED";
 	}
 
 	// ---- approvals ---------------------------------------------------------------
@@ -410,10 +530,13 @@ export class Session {
 			toolName: call.toolName,
 			input: call.input,
 		});
+		const run = this.currentRun?.run;
+		const line = `${outcome.call.rawName} [${label}] ${summariseInput(outcome.call.input)}`;
 		if (outcome.decision === "allow") {
 			this.log(
 				`[AUTO-APPROVED] [${label}] Action ${call.callId}: ${message} (${outcome.reason})`,
 			);
+			run?.noteGate("allowed", line);
 			this.autoApprovedTotal++;
 			this.autoApprovedActions.push({
 				actionId: call.callId,
@@ -437,19 +560,30 @@ export class Session {
 			this.log(
 				`[AUTO-DENIED] [${label}] Action ${call.callId}: ${message} (${outcome.reason})`,
 			);
+			run?.noteGate("denied", `${line}: ${outcome.reason}`);
 			if (this.autoDenied.length < Session.MAX_AUTO_APPROVED_SHOWN) {
 				this.autoDenied.push(`${outcome.call.rawName}: ${outcome.reason}`);
 			}
 			return Promise.resolve({ kind: "deny", reason: outcome.reason });
 		}
-		return this.escalate(call, message, outcome, signal);
+		if (!run) {
+			return Promise.resolve({
+				kind: "deny",
+				reason: "there is no active run to ask about",
+			});
+		}
+		return this.escalate(call, message, outcome, run, signal);
 	}
 
-	/** Hold a tool call for the coordinator until it is answered or cancelled. */
+	/**
+	 * Hold a tool call for the coordinator until it is answered, cancelled or
+	 * the approval timeout passes (then it is denied).
+	 */
 	private escalate(
 		call: RawToolCall,
 		message: string,
 		outcome: GateOutcome,
+		run: Run,
 		signal: AbortSignal,
 	): Promise<ApprovalDecision> {
 		const label = RISK_LABELS[outcome.level];
@@ -465,14 +599,26 @@ export class Session {
 				reason: outcome.reason,
 				hardLimit: !outcome.autoAllowable,
 			};
+			const timeoutMs = this.config.gate.approvalTimeoutMs;
 			const entry: PendingApproval = {
 				call,
 				action,
+				run,
 				outcome,
 				resolve,
+				timer: null,
 				cancelled: false,
 			};
-			const first = this.pending.size === 0;
+			entry.timer = setTimeout(
+				() =>
+					this.cancelPending(
+						call.callId,
+						`approval timed out: the coordinator did not answer within ${Math.round(timeoutMs / 1000)} s`,
+						"timeout",
+					),
+				timeoutMs,
+			);
+			entry.timer.unref?.();
 			this.pending.set(call.callId, entry);
 			signal.addEventListener(
 				"abort",
@@ -486,46 +632,49 @@ export class Session {
 			this.log(
 				`[INTERCEPTED] [${label}] Action ${call.callId} awaiting coordinator approval: ${message}`,
 			);
-			if (!first) return;
-			this.status = "AWAITING_APPROVAL";
-			this.onStatusChange?.(
-				this.sessionId,
-				"AWAITING_APPROVAL",
-				`Intercepted tool call: ${message}`,
+			run.noteGate(
+				"escalated",
+				`${call.toolName} [${label}] ${summariseInput(call.input)}`,
 			);
-			this.announcePending();
+			this.status = "AWAITING_APPROVAL";
+			this.runs.addApproval(
+				run,
+				{
+					actionId: call.callId,
+					tool: call.toolName,
+					summary: summariseInput(call.input),
+					input: call.input,
+					riskLevel: outcome.level,
+					riskLabel: label,
+					reason: outcome.reason,
+					hardLimit: !outcome.autoAllowable,
+					expiresAt: Date.now() + timeoutMs,
+				},
+				`awaiting approval: ${call.toolName} ${summariseInput(call.input)}`.trim(),
+			);
 		});
 	}
 
-	/** Tell the caller waiting on a command that an approval is needed. */
-	private announcePending(): void {
-		const p = this.pendingAction;
-		if (!p || !this.resolveCommand) return;
-		const hard = p.hardLimit ? " Hard limit: only you can allow this." : "";
-		const message = (p.arguments as { message: string }).message;
-		this.resolveCommand(
-			`AWAITING_APPROVAL: [${p.riskLabel ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${p.actionId}. Message: ${message}${hard}${this.takeAutoApprovedNotes()}`,
-		);
-		this.resolveCommand = null;
-		this.rejectCommand = null;
-	}
-
 	/** An approval ended without the coordinator: record it and deny the call. */
-	private cancelPending(actionId: string, reason: string): void {
+	private cancelPending(
+		actionId: string,
+		reason: string,
+		by: "cancel" | "timeout" = "cancel",
+	): void {
 		const entry = this.pending.get(actionId);
 		if (!entry || entry.cancelled) return;
 		entry.cancelled = true;
+		if (entry.timer) clearTimeout(entry.timer);
 		this.pending.delete(actionId);
-		this.approvalGate.recordResolution(actionId, "deny", "cancel", reason);
+		this.approvalGate.recordResolution(actionId, "deny", by, reason);
+		this.runs.removeApproval(entry.run, actionId, by === "timeout");
 		entry.resolve({ kind: "deny", reason });
 		this.afterPendingChanged();
 	}
 
 	/** Pending approvals are gone without an answer: record them as cancelled. */
-	private dropPending() {
-		for (const id of this.pending.keys()) {
-			this.cancelPending(id, "the worker ended before the call was answered");
-		}
+	private dropPending(reason: string) {
+		for (const id of this.pending.keys()) this.cancelPending(id, reason);
 	}
 
 	private afterPendingChanged(): void {
@@ -603,99 +752,125 @@ export class Session {
 		return this.alive;
 	}
 
-	public setActiveTaskId(taskId: string | null): void {
-		this.activeTaskId = taskId;
-	}
+	// ---- runs --------------------------------------------------------------------
 
-	public getActiveTaskId(): string | null {
-		return this.activeTaskId;
-	}
-
-	// ---- commands --------------------------------------------------------------------
-
-	/** Abort the currently running command without terminating the session. */
-	public abortCommand(): void {
-		// Idempotent: a second request while one is pending changes nothing.
-		if (this.status !== "RUNNING" || this.abortInFlight || !this.worker) return;
-		this.abortInFlight = true;
-		this.log(`Command abort requested (task: ${this.activeTaskId})`);
-		this.worker.handle.abortRun("abort requested").catch((err) => {
-			this.log(
-				`Failed to abort: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		});
-		this.currentRun?.abort.abort();
-	}
-
-	public sendCommand(
-		commandText: string,
-		summarize?: boolean,
-	): Promise<string> {
-		// Reported before the status check so a session whose worker is gone says
+	/**
+	 * Give the worker a task. Resolves once the worker accepted it, not when it
+	 * finishes; follow the run through the store. Fails with `WORKER_BUSY` when
+	 * a run is already going (its id is on the error) and with
+	 * `WORKER_NOT_RUNNING` when no process is attached.
+	 */
+	public async startRun(prompt: string, intent?: string): Promise<Run> {
+		// Reported before the busy check so a session whose worker is gone says
 		// what to do instead of failing with "Process not running".
 		if (!this.isAlive() || !this.worker) {
-			throw new Error(
+			throw new RunError(
+				"WORKER_NOT_RUNNING",
 				`Session ${this.sessionId} has no running pi process (status: ${this.status}). Respawn it with spawn_pi_session.`,
 			);
 		}
-		if (this.status !== "IDLE" && this.status !== "FINISHED") {
-			throw new Error(
-				`Cannot send command when session status is ${this.status}`,
+		if (this.currentRun) {
+			throw new RunError(
+				"WORKER_BUSY",
+				`Cannot send command when session status is ${this.status}. It is running ${this.currentRun.run.id}: call wait_run with that runId, or cancel_run to stop it.`,
+				this.currentRun.run.id,
 			);
 		}
-
-		this.status = "RUNNING";
-		this.onStatusChange?.(
-			this.sessionId,
-			"RUNNING",
-			`Executing: ${commandText.substring(0, 100)}`,
-		);
-		this.summarizeIgnored = summarize === true;
-		const run = {
-			runId: `r${++this.runCounter}`,
+		const worker = this.worker;
+		const run = this.runs.create(this.sessionId, prompt, intent);
+		const active: ActiveRun = {
+			run,
 			abort: new AbortController(),
-			texts: [] as string[],
+			repeat: new RepeatCheck(),
 			turnOutput: "",
+			cause: null,
+			aborting: false,
+			maxTimer: null,
+			graceTimer: null,
 		};
-		this.currentRun = run;
-		this.history.push({
+		this.currentRun = active;
+		this.status = "RUNNING";
+		this.remember({
 			type: "message_end",
-			message: { role: "user", content: [{ type: "text", text: commandText }] },
+			message: { role: "user", content: [{ type: "text", text: prompt }] },
 		});
+		const maxRunMs = this.config.limits.maxRunMs;
+		active.maxTimer = setTimeout(
+			() =>
+				this.abortWith(active, {
+					state: "timed_out",
+					error: `the run exceeded the ${maxRunMs} ms limit and was aborted`,
+				}),
+			maxRunMs,
+		);
+		active.maxTimer.unref?.();
 
-		return new Promise((resolve, reject) => {
-			this.resolveCommand = resolve;
-			this.rejectCommand = reject;
-			this.worker!.handle.startRun({
-				runId: run.runId,
-				prompt: commandText,
-				signal: run.abort.signal,
-			}).catch((err) => {
-				if (this.currentRun === run) this.currentRun = null;
-				// Never claim IDLE for a session with no process behind it.
-				this.status = this.alive ? "IDLE" : "FINISHED";
-				this.resolveCommand = null;
-				this.rejectCommand = null;
-				reject(err);
-			});
-		});
+		const startMs = this.config.limits.runStartTimeoutMs;
+		let startTimer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				worker.handle.startRun({
+					runId: run.id,
+					prompt,
+					signal: active.abort.signal,
+				}),
+				new Promise<never>((_, reject) => {
+					startTimer = setTimeout(
+						() =>
+							reject(
+								new StartTimeout(
+									`the worker did not accept the prompt within ${startMs} ms`,
+								),
+							),
+						startMs,
+					);
+				}),
+			]);
+		} catch (e) {
+			const message = e instanceof Error ? e.message : String(e);
+			this.finish(active, "failed", { error: message });
+			// A worker that never acknowledges is wedged: do not leave it behind.
+			if (e instanceof StartTimeout) void this.closeWedged();
+			throw new RunError("RUN_START_FAILED", message, run.id);
+		} finally {
+			clearTimeout(startTimer);
+		}
+		// An approval or a quick finish may already have moved the run on.
+		if (run.state === "starting") this.runs.setState(run, "running");
+		return run;
 	}
 
-	/** Answer the pending approval and wait for the run's next stop. */
+	/** Note that a call asked for `summarize`, which is ignored. */
+	public markSummarize(flag: boolean): void {
+		this.summarizeIgnored = flag;
+	}
+
+	/** Stop the run in flight, if any. Idempotent. */
+	public cancelRun(): void {
+		const active = this.currentRun;
+		if (active) this.abortWith(active, { state: "cancelled" });
+	}
+
+	/** Abort the currently running command without terminating the session. */
+	public abortCommand(): void {
+		this.cancelRun();
+	}
+
+	/**
+	 * Answer a pending approval. Returns at once; follow the run to see what
+	 * the worker does next.
+	 */
 	private answer(
 		actionId: string,
 		decision: ApprovalDecision,
 		resolution: "allow" | "deny",
 		note: string,
 		summarize?: boolean,
-	): Promise<string> {
+	): Run {
 		const entry = this.pending.get(actionId);
-		if (
-			this.status !== "AWAITING_APPROVAL" ||
-			!entry ||
-			this.pendingAction?.actionId !== actionId
-		) {
-			throw new Error(
+		if (!entry) {
+			throw new RunError(
+				"APPROVAL_NOT_FOUND",
 				`No pending action matching ID: ${actionId} currently awaiting approval`,
 			);
 		}
@@ -705,25 +880,16 @@ export class Session {
 			"coordinator",
 			note,
 		);
+		if (entry.timer) clearTimeout(entry.timer);
 		this.pending.delete(actionId);
 		if (summarize === true) this.summarizeIgnored = true;
-
-		return new Promise((resolve, reject) => {
-			this.resolveCommand = resolve;
-			this.rejectCommand = reject;
-			if (this.pending.size > 0) {
-				// More calls are waiting: the next one is the coordinator's now.
-				this.status = "AWAITING_APPROVAL";
-				entry.resolve(decision);
-				this.announcePending();
-				return;
-			}
-			this.status = "RUNNING";
-			entry.resolve(decision);
-		});
+		this.runs.removeApproval(entry.run, actionId);
+		this.afterPendingChanged();
+		entry.resolve(decision);
+		return entry.run;
 	}
 
-	public approveAction(actionId: string, summarize?: boolean): Promise<string> {
+	public approveAction(actionId: string, summarize?: boolean): Run {
 		this.log(`Approving action ${actionId}`);
 		return this.answer(
 			actionId,
@@ -738,7 +904,7 @@ export class Session {
 		actionId: string,
 		reason?: string,
 		summarize?: boolean,
-	): Promise<string> {
+	): Run {
 		this.log(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
 		return this.answer(
 			actionId,
@@ -752,12 +918,75 @@ export class Session {
 		);
 	}
 
+	// ---- the blocking (legacy) view -------------------------------------------------
+
+	/**
+	 * Send a prompt and wait for its text, as `send_pi_command` always has:
+	 * the result when the run ends, or an `AWAITING_APPROVAL` message when it
+	 * stops at an approval. Rejects when the run fails or times out.
+	 */
+	public async sendCommand(
+		commandText: string,
+		summarize?: boolean,
+	): Promise<string> {
+		const run = await this.startRun(commandText);
+		this.summarizeIgnored = summarize === true;
+		return (await this.waitText(run)) as string;
+	}
+
+	/**
+	 * Wait for the run to end or need an approval and describe it as text.
+	 * Returns null when `timeoutMs` passes or `signal` aborts first; the run
+	 * carries on either way.
+	 */
+	public async waitText(
+		run: Run,
+		opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+	): Promise<string | null> {
+		const deadline =
+			opts.timeoutMs === undefined ? Infinity : Date.now() + opts.timeoutMs;
+		// The first pass wakes for any approval already pending; later passes
+		// only for a new one.
+		let since = 0;
+		for (;;) {
+			const left = deadline - Date.now();
+			if (left <= 0) return null;
+			const reason = await this.runs.waitForChange(run, {
+				sinceSeq: since,
+				maxWaitMs: Math.min(left, this.runs.maxWaitMs),
+				signal: opts.signal,
+			});
+			if (reason === "terminal" || reason === "approval") break;
+			if (reason === "detached") return null;
+			since = run.seq;
+		}
+		return this.describeRun(run);
+	}
+
+	private describeRun(run: Run): string {
+		if (run.terminal) {
+			if (run.state === "failed" || run.state === "timed_out") {
+				throw new Error(run.error ?? `the run ${run.state}`);
+			}
+			if (run.state === "cancelled" && run.error) return "Process terminated";
+			this.log("Agent settled.");
+			const notes = this.takeAutoApprovedNotes();
+			const fullOutput = run.output.all;
+			return `${fullOutput || "Agent finished task run successfully."}${notes}${this.takeSummarizeNote()}`;
+		}
+		const p = this.pendingAction;
+		if (!p) return `RUNNING: ${run.id} is still ${run.state}.`;
+		const hard = p.hardLimit ? " Hard limit: only you can allow this." : "";
+		const message = (p.arguments as { message: string }).message;
+		return `AWAITING_APPROVAL: [${p.riskLabel ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${p.actionId}. Message: ${message}${hard}${this.takeAutoApprovedNotes()}\n\nRun: ${run.id}. approve_action and reject_action return at once; call wait_run with this runId to follow the run.`;
+	}
+
 	/**
 	 * Stop the worker: SIGTERM, then SIGKILL for it and everything it started
-	 * once the grace period is over. Resolves when the process is gone.
-	 * Idempotent.
+	 * once the grace period is over. Resolves when the process is gone. Its run
+	 * ends and stays readable. Idempotent.
 	 */
-	public async terminate(): Promise<void> {
+	public async terminate(reason: "requested" | "shutdown" = "requested") {
 		this.log("Terminating subprocess...");
 		this.terminating = true;
 		const worker = this.worker;
@@ -765,15 +994,27 @@ export class Session {
 		const wasAlive = this.alive;
 		this.alive = false;
 		if (wasAlive) this.status = "FINISHED";
-		this.dropPending();
-		this.currentRun?.abort.abort();
-		this.currentRun = null;
-		const resolve = this.resolveCommand;
-		this.resolveCommand = null;
-		this.rejectCommand = null;
-		resolve?.("Process terminated");
-		this.onStatusChange?.(this.sessionId, "CRASHED", "Process terminated");
-		this.activeTaskId = null;
-		if (worker) await worker.close({ graceMs: 3000, reason: "requested" });
+		const active = this.currentRun;
+		if (active) {
+			active.abort.abort();
+			if (reason === "shutdown") {
+				this.finish(active, "failed", { error: "server shutting down" });
+			} else {
+				this.finish(active, "cancelled", { error: "worker terminated" });
+			}
+		}
+		this.dropPending("the worker was terminated");
+		this.runs.workerClosed(this.sessionId);
+		if (worker) await worker.close({ graceMs: 3000, reason });
 	}
+}
+
+/** A store configured from the server's limits. */
+export function runStoreFor(config: Config): RunStore {
+	return new RunStore({
+		retentionMs: config.limits.resultRetentionMs,
+		maxRetained: config.limits.maxRetainedRuns,
+		maxWaitMs: config.limits.maxWaitMs,
+		outputBufferChars: config.limits.outputBufferChars,
+	});
 }

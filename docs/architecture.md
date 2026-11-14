@@ -130,7 +130,7 @@ Sends a prompt or slash command to a running session.
   - `sessionId` (string, required): The ID of the target session.
   - `command` (string, required): The text prompt or slash command (e.g., `/model`, `/reload`, or a standard prompt).
   - `timeout` (number, optional): Maximum time in milliseconds to wait in blocking mode. If exceeded, returns with command still running. Environment variable `WORKER_MCP_COMMAND_TIMEOUT` provides a global default.
-- **Returns**: `{ success: boolean, responseText: string }` (or starts streaming response if supported). Note: Supports MCP Tasks API (`execution.taskSupport: "optional"`). Task-aware clients receive a `CreateTaskResult` immediately and can poll via `tasks/get`. Non-task clients retain backward-compatible blocking behavior.
+- **Returns**: the worker's output once the run ends, or `AWAITING_APPROVAL` text when a tool call needs a decision. Legacy: prefer `start_run` and `wait_run` (section 6).
 
 #### `cancel_pi_command`
 
@@ -246,16 +246,22 @@ Settings come from a JSON file, `WORKER_MCP_*` environment variables and flags (
 ----------------------------- | --------- | ------------------------------------------------------------------------- |
 | `WORKER_MCP_PI_PATH` | `pi` | Path to the pi executable |
 | `WORKER_MCP_ENV_PASSTHROUGH` | unset | Extra environment variable names for workers, see [security](security.md) |
-| `WORKER_MCP_MAX_OUTPUT_CHARS` | `64000` | Maximum output characters before loop detection |
-| `WORKER_MCP_COMMAND_TIMEOUT` | unset (∞) | Default timeout (ms) for blocking `send_pi_command` calls |
+| `WORKER_MCP_MAX_OUTPUT_CHARS` | `64000` | Largest single streamed message before the run is aborted |
+| `WORKER_MCP_RUN_TIMEOUT_MS` | `1800000` | Wall-clock limit of one run |
+| `WORKER_MCP_MAX_WAIT_MS` | `50000` | Longest `wait_run` blocks |
+| `WORKER_MCP_APPROVAL_TIMEOUT_MS` | `600000` | An unanswered approval is denied after this |
+| `WORKER_MCP_COMMAND_TIMEOUT` | unset (∞) | Default timeout (ms) for the legacy blocking `send_pi_command` |
 
 ---
 
 ## 6. Async Execution Model
 
-- The server advertises `tasks` capability with `list`, `cancel`, and `requests.tools.call` support
-- Uses `InMemoryTaskStore` from the MCP SDK for task state management
-- Task lifecycle: `working` → `completed` | `failed` | `cancelled`
-- The `input_required` task status maps to the existing `AWAITING_APPROVAL` session state
-- `send_pi_command` declares `execution.taskSupport: "optional"` for backward compatibility
-- Non-task clients can use the `timeout` parameter for bounded blocking, and `cancel_pi_command` for cancellation
+A task is a **run** (`src/core/run.ts`): `starting`, `running`, `awaiting_approval`, then one of `completed`, `failed`, `cancelled`, `timed_out`.
+
+- A `Session` has at most one run in flight. The `RunStore` (one per server) holds every run, with its bounded output and tool-call activity, and keeps a finished run for `limits.resultRetentionMs` after its worker is gone, at most `limits.maxRetainedRuns` of them.
+- A run settles exactly once (`RunStore.settle`). It ends through the provider's `run_finished`, the worker's exit, `cancel_run`, the run timeout, or shutdown. A worker that ignores an abort is closed after a grace period.
+- `start_run` returns a `runId`. `wait_run` blocks at most `limits.maxWaitMs` and wakes early only on a terminal state or a new (or expired) approval. A cancelled request detaches the wait and leaves the run alone.
+- `approve_action` and `reject_action` return at once. An approval not answered within `gate.approvalTimeoutMs` is denied, and the reason reaches the worker.
+- With a `progressToken`, blocking calls send progress notifications.
+- `send_pi_command` is a wrapper: it starts a run and waits.
+- MCP tasks are not offered. A thin adapter over the `RunStore` can be added if a client needs one.

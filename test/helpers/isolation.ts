@@ -108,6 +108,8 @@ export function createIsolation(): Isolation {
 			XDG_STATE_HOME: state,
 			XDG_RUNTIME_DIR: runtime,
 			WORKER_MCP_PI_PATH: FAKE_PI,
+			// A worker that never acknowledges a prompt fails its run quickly.
+			WORKER_MCP_RUN_START_TIMEOUT_MS: "1000",
 			FAKE_PI_RECORD: recordFile,
 			// Workers get a minimal environment; fake-pi's own settings and the
 			// variable below are passed through explicitly.

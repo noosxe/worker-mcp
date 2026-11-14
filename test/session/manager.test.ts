@@ -145,21 +145,18 @@ describe("SessionManager", () => {
 		}
 	});
 
-	test("onSessionStatusChange bubbles up and task ids can be queried", async () => {
+	test("runs live in the manager's store and outlive their session", async () => {
 		const manager = managerFor();
 		try {
-			let last: { sessionId: string; status: string } | undefined;
-			manager.onSessionStatusChange = (sessionId, status) => {
-				last = { sessionId, status };
-			};
-			const session = await manager.createSession("events", iso.cwd);
-			session.setActiveTaskId("task-123");
-			assert.strictEqual(
-				manager.findSessionByTaskId("task-123")?.sessionId,
-				"events",
-			);
-			session.onStatusChange?.("events", "CRASHED", "Test crash");
-			assert.deepStrictEqual(last, { sessionId: "events", status: "CRASHED" });
+			const session = await manager.createSession("keeps", iso.cwd);
+			const run = await session.startRun("hello");
+			assert.strictEqual(manager.listSessions()[0].currentRunId, run.id);
+			assert.strictEqual(manager.findSessionByRun("keeps"), session);
+			await session.waitText(run);
+			assert.strictEqual(manager.runs.get(run.id)?.state, "completed");
+			await manager.terminateSession("keeps");
+			assert.strictEqual(manager.findSessionByRun("keeps"), null);
+			assert.strictEqual(manager.runs.get(run.id)?.state, "completed");
 		} finally {
 			await manager.terminateAll();
 		}

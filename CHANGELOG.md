@@ -29,6 +29,27 @@
   `deny` override is reported in the next result.
 - Each worker keeps a bounded in-memory log of every gate decision.
 
+- **Asynchronous runs.** New tools `start_run`, `wait_run`, `get_run` and
+  `cancel_run`. `start_run` returns a run id at once (or after `waitMs`);
+  `wait_run` blocks for at most `limits.maxWaitMs` (50 s, under the 60 s
+  default request timeout of the TypeScript MCP client) and returns early only
+  when the run ends or a tool call needs an approval; `get_run` pages the
+  result; `cancel_run` aborts. A run's result is kept after the worker is
+  terminated or has crashed, for `limits.resultRetentionMs` (1 hour), and the
+  newest `limits.maxRetainedRuns` (100) are kept. If the client cancels a wait
+  the run carries on. When a request carries a `progressToken`, waiting calls
+  send progress notifications. See the README, "Running tasks".
+- Run limits: `limits.maxRunMs` (`WORKER_MCP_RUN_TIMEOUT_MS`, default 30
+  minutes; the run is aborted and ends `timed_out`), `limits.maxWaitMs`
+  (`WORKER_MCP_MAX_WAIT_MS`), `limits.runStartTimeoutMs`
+  (`WORKER_MCP_RUN_START_TIMEOUT_MS`, default 15 s: a worker that does not
+  acknowledge a prompt fails the run and is closed), `gate.approvalTimeoutMs`
+  (`WORKER_MCP_APPROVAL_TIMEOUT_MS`, default 10 minutes), and in the file only
+  `defaultWaitMs`, `resultRetentionMs`, `maxRetainedRuns`, `outputBufferChars`
+  and `pageChars`.
+- An approval nobody answers within `gate.approvalTimeoutMs` is denied with
+  the reason "approval timed out", which reaches the worker.
+
 ### Security
 
 - Stopping a worker now reaches everything it started. pi runs each bash
@@ -57,6 +78,29 @@
 
 ### Changed
 
+- **`approve_action` and `reject_action` return at once** with a short
+  acknowledgement naming the run, instead of waiting for the worker's next
+  stop. Follow the run with `wait_run`. A call that waits at an approval can be
+  answered in any order when several are pending.
+- `send_pi_command` is now a legacy wrapper over a run: it starts a run and
+  waits, with the same blocking behaviour and output. When it stops at an
+  approval, its text ends with the run id. If its `timeout` passes it names the
+  run, which can be followed with `wait_run`. `cancel_pi_command` also works
+  while a run waits at an approval.
+- **The loop detector is replaced.** A run now fails ("repeated output") when a
+  worker writes the same non-blank line more than 200 times in a row (or more
+  than 64 KiB of one repeated line); Markdown rules, table separators and
+  other short repeated patterns no longer abort a run. `limits.maxOutputChars`
+  now caps one streamed assistant message, and a run past it fails with
+  "output limit exceeded" (it used to end quietly with the partial text). Run
+  output is kept up to `limits.outputBufferChars` (1 MiB).
+- A command that fails, times out or is aborted for a reason now ends the run
+  as `failed` or `timed_out` and the blocking `send_pi_command` returns an
+  error for them; a plain cancel still returns the output so far.
+- A send to a worker that stopped reading its input, or that never
+  acknowledges a prompt, now fails within `limits.runStartTimeoutMs` and the
+  wedged worker is closed.
+- `list_pi_sessions` also reports `currentRunId`.
 - **A rejection's reason now reaches the worker.** The approval gate is
   rewritten (v3): it asks over pi's `input` dialog with a JSON decision instead
   of a yes/no `confirm`, so `reject_action`'s `reason` is what the model sees
@@ -171,6 +215,17 @@
   run (tool, risk level, truncated command or path).
 - Users will see more approval prompts: simple pipelines and package manager
   commands that used to pass now wait for approval.
+
+### Removed
+
+- **MCP tasks.** The task store, the `updateTaskStatus` patch, the `tasks`
+  capability, `execution.taskSupport` and the handling of `params.task` are
+  gone, along with their tests. The goal clients are not known to request
+  tasks, the SDK marks the API experimental, and the task path was where the
+  earlier crashes lived; runs replace it. A task-augmented call now gets a
+  plain result. A thin adapter over the run store can come back if a client
+  needs it.
+- The loop detector (`detectLoop`), replaced by the repeat check above.
 
 ## 0.4.2
 

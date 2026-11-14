@@ -56,6 +56,49 @@ function failure(fn: () => unknown): string {
 	assert.fail("expected the config to be rejected");
 }
 
+describe("run limits", () => {
+	test("come from the file, the environment and flags", () => {
+		const file = path.join(root, "limits.json");
+		fs.writeFileSync(
+			file,
+			JSON.stringify({
+				limits: { maxRunMs: 111, maxWaitMs: 20_000, defaultWaitMs: 30_000 },
+				gate: { approvalTimeoutMs: 222 },
+			}),
+			{ mode: 0o600 },
+		);
+		const fromFile = load([`--config=${file}`]);
+		assert.strictEqual(fromFile.limits.maxRunMs, 111);
+		assert.strictEqual(fromFile.gate.approvalTimeoutMs, 222);
+		// The default wait never exceeds the longest wait.
+		assert.strictEqual(fromFile.limits.defaultWaitMs, 20_000);
+
+		const fromEnv = load([`--config=${file}`], {
+			...env,
+			WORKER_MCP_RUN_TIMEOUT_MS: "333",
+			WORKER_MCP_APPROVAL_TIMEOUT_MS: "444",
+			WORKER_MCP_MAX_WAIT_MS: "5000",
+		});
+		assert.strictEqual(fromEnv.limits.maxRunMs, 333);
+		assert.strictEqual(fromEnv.gate.approvalTimeoutMs, 444);
+		assert.strictEqual(fromEnv.limits.maxWaitMs, 5000);
+
+		const fromFlag = load(
+			["--run-timeout-ms", "555", "--approval-timeout-ms=666"],
+			{ ...env, WORKER_MCP_RUN_TIMEOUT_MS: "333" },
+		);
+		assert.strictEqual(fromFlag.limits.maxRunMs, 555);
+		assert.strictEqual(fromFlag.gate.approvalTimeoutMs, 666);
+	});
+
+	test("a bad value fails and names its source", () => {
+		const message = failure(() =>
+			load([], { ...env, WORKER_MCP_RUN_TIMEOUT_MS: "soon" }),
+		);
+		assert.match(message, /WORKER_MCP_RUN_TIMEOUT_MS.*limits\.maxRunMs/);
+	});
+});
+
 describe("defaults", () => {
 	test("need no file and no environment", () => {
 		const config = load();
@@ -67,7 +110,11 @@ describe("defaults", () => {
 		assert.deepStrictEqual(config.gate, {
 			maxAutoApprove: "MEDIUM",
 			protectedPaths: [],
+			approvalTimeoutMs: 600_000,
 		});
+		assert.strictEqual(config.limits.maxRunMs, 1_800_000);
+		assert.strictEqual(config.limits.maxWaitMs, 50_000);
+		assert.strictEqual(config.limits.defaultWaitMs, 25_000);
 		assert.strictEqual(config.stateDir, path.join(root, "state", "worker-mcp"));
 		assert.strictEqual(config.runtimeDir, env.XDG_RUNTIME_DIR);
 	});
