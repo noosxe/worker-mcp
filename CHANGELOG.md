@@ -16,6 +16,12 @@
   the old behaviour pass `riskPolicy: { autoApproveUpTo: 0, notifyUpTo: 1,
   overrides: [] }` to `spawn_pi_session` or `set_risk_policy`.
 
+- Override patterns for commands: `*` no longer matches shell metacharacters
+  (`; & | < > ` $ ( ) \`) or newlines, so `git *` matches `git log --oneline`
+  but not `git status; rm -rf ~`. An `allow` override never auto-approves a
+  CRITICAL action unless it sets `maxRiskLevel` to CRITICAL. `pathPattern`
+  matching is unchanged.
+
 ### Changed
 
 - `send_pi_command` results list the actions that were auto-approved during the

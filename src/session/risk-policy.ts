@@ -51,6 +51,23 @@ export function matchesPattern(input: string, pattern: string): boolean {
 	return new RegExp(regexStr).test(input);
 }
 
+/**
+ * Like `matchesPattern`, but `*` stops at shell metacharacters and newlines,
+ * so a command pattern such as `git *` matches `git log --oneline` and not
+ * `git status; rm -rf ~`. Metacharacters written in the pattern itself still
+ * match literally.
+ */
+export function matchesCommandPattern(input: string, pattern: string): boolean {
+	const segments = pattern.split("*");
+	const regexStr =
+		"^" +
+		segments
+			.map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+			.join("[^;&|<>`$()\\\\\\n\\r]*") +
+		"$";
+	return new RegExp(regexStr).test(input);
+}
+
 /** File-related tool names that carry a target path in their input. */
 const FILE_TOOLS = [
 	"read_file",
@@ -120,8 +137,8 @@ export function shouldAutoApprove(
 	// Check overrides first
 	for (const override of policy.overrides) {
 		const commandMatches =
-			matchesPattern(cmdStr, override.pattern) ||
-			matchesPattern(toolCall.toolName, override.pattern);
+			matchesCommandPattern(cmdStr, override.pattern) ||
+			matchesCommandPattern(toolCall.toolName, override.pattern);
 
 		if (!commandMatches) continue;
 
@@ -136,6 +153,15 @@ export function shouldAutoApprove(
 		if (
 			override.maxRiskLevel !== undefined &&
 			classified.riskLevel > override.maxRiskLevel
+		) {
+			continue;
+		}
+
+		// An allow never covers a CRITICAL action unless it opts in explicitly.
+		if (
+			override.action === "allow" &&
+			classified.riskLevel === RiskLevel.CRITICAL &&
+			override.maxRiskLevel !== RiskLevel.CRITICAL
 		) {
 			continue;
 		}

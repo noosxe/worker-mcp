@@ -580,3 +580,67 @@ describe("default policy", () => {
 		assert.strictEqual(res.approved, true);
 	});
 });
+
+const decide = (
+	command: string,
+	overrides: Parameters<typeof shouldAutoApprove>[1]["overrides"],
+) => {
+	const call = { toolName: "bash", input: { command } };
+	return shouldAutoApprove(
+		classifyAction(call, "/work"),
+		{ ...DEFAULT_RISK_POLICY, overrides },
+		call,
+	);
+};
+const allow = (pattern: string, maxRiskLevel?: RiskLevel) => [
+	{ pattern, action: "allow" as const, maxRiskLevel },
+];
+
+describe("allow overrides", () => {
+	test("`*` matches ordinary arguments", () => {
+		const res = decide("git log --oneline", allow("git *"));
+		assert.strictEqual(res.approved, true);
+		assert.match(res.reason, /Allowed by override/);
+	});
+
+	test("`*` does not match chaining, substitution or newlines", () => {
+		for (const cmd of [
+			"git status; rm -rf ~",
+			"git status && rm -rf ~",
+			"git log | sh",
+			"git log $(id)",
+			"git log `id`",
+			"git log > out",
+			"git log\nrm -rf ~",
+		]) {
+			assert.strictEqual(decide(cmd, allow("git *")).approved, false, cmd);
+		}
+	});
+
+	test("an allow does not approve CRITICAL without an explicit maxRiskLevel", () => {
+		assert.strictEqual(decide("rm -rf ~", allow("rm *")).approved, true); // HIGH
+		assert.strictEqual(decide("sudo ls", allow("sudo *")).approved, false);
+		assert.strictEqual(
+			decide("sudo ls", allow("sudo *", RiskLevel.HIGH)).approved,
+			false,
+		);
+		assert.strictEqual(
+			decide("sudo ls", allow("sudo *", RiskLevel.CRITICAL)).approved,
+			true,
+		);
+	});
+
+	test("path patterns keep their matching", () => {
+		const call = {
+			toolName: "write_file",
+			input: { path: "/work/src/a;b.ts" },
+		};
+		const res = shouldAutoApprove(
+			classifyAction(call, "/work"),
+			DEFAULT_RISK_POLICY,
+			{ ...call },
+		);
+		assert.strictEqual(res.approved, false);
+		assert.strictEqual(matchesPattern("/work/src/a;b.ts", "*/src/*"), true);
+	});
+});
