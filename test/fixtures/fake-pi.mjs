@@ -20,6 +20,7 @@
 //   echo[ <text>]               reply `fake-pi reply: <text>`
 //   slow:<ms>[ <text>]          stream deltas for <ms>, then reply; abort ends it
 //   tool:<name>:<json>          propose a tool call through the gate, report result
+//   late-settled:<ms>[ <text>]  reply like echo, then send agent_settled <ms> later
 //   crash-mid-run               exit 1 after the first delta
 //   ignore-sigterm              ignore SIGTERM and stay running until aborted
 //   grandchild                  start a detached `sleep` in its own group
@@ -126,7 +127,7 @@ async function gate(toolName, input) {
 // ---- run state -------------------------------------------------------------
 let run = null; // { timer, finish }
 
-function finishRun(text) {
+function finishRun(text, { settled = true } = {}) {
 	if (!run) return;
 	clearInterval(run.timer);
 	run = null;
@@ -136,7 +137,7 @@ function finishRun(text) {
 	// Real pi follows agent_end with agent_settled. It is off by default: today's
 	// server settles a run on either event, so a trailing agent_settled can end
 	// the next run early. A later phase that consumes it sets FAKE_PI_SETTLED=1.
-	if (process.env.FAKE_PI_SETTLED === "1") send(agentSettled());
+	if (settled && process.env.FAKE_PI_SETTLED === "1") send(agentSettled());
 }
 
 function streamFor(ms, text, { crashAfterFirst = false } = {}) {
@@ -185,6 +186,11 @@ async function startPrompt(message) {
 	} else if ((m = spec.match(/^slow:(\d+)(?: ([\s\S]*))?$/))) {
 		run = { timer: null };
 		streamFor(Number(m[1]), reply(m[2] ?? "slow done"));
+	} else if ((m = spec.match(/^late-settled:(\d+)(?: ([\s\S]*))?$/))) {
+		// pi's agent_settled can trail agent_end; it may land inside the next run.
+		run = { timer: null };
+		finishRun(reply(m[2] ?? "late"), { settled: false });
+		setTimeout(() => send(agentSettled()), Number(m[1]));
 	} else if (spec === "crash-mid-run") {
 		run = { timer: null };
 		streamFor(60_000, "unreachable", { crashAfterFirst: true });
