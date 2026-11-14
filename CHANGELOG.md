@@ -1,0 +1,28 @@
+# Changelog
+
+## 0.4.2
+
+Hotfix that makes the server usable from clients that don't use MCP tasks.
+
+### Fixed
+
+- `send_pi_command` returns the worker's output to clients that don't use MCP
+  tasks. A task is created only when the request asks for one, and the
+  requested task TTL is honoured (default 1 hour).
+- Task results are stored at most once, and every task store call is guarded.
+  Cancelling, terminating or outliving the TTL no longer crashes the server.
+- A run that stops at an approval prompt no longer completes its task; the task
+  stays `input_required` until the action is approved or rejected.
+- A task is created only after the command is accepted, so a busy session no
+  longer leaves an orphaned task or replaces the live task's id.
+- Writes to a worker's stdin after it exits no longer crash the server.
+- The server terminates its workers and exits when the client closes the
+  connection or stdin, and on unhandled rejections and uncaught exceptions.
+- `sessionId` must match `^[A-Za-z0-9_-]{1,64}$`; anything else is rejected.
+- Invalid numeric environment variables (`WORKER_MCP_COMMAND_TIMEOUT`,
+  `WORKER_MCP_MAX_OUTPUT_CHARS`, `WORKER_MCP_SUMMARIZE_TIMEOUT`) and an invalid
+  `timeout` argument are rejected instead of being treated as `NaN`.
+
+### Documentation
+
+- Added a "Use with Claude Code" section to the README.

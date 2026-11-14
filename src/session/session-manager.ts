@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { assertValidSessionId, isValidSessionId } from "../validation.js";
 import { PiSession, type SessionStatus } from "./pi-session.js";
 import type { RiskPolicy } from "./risk-policy.js";
 
@@ -127,6 +128,10 @@ export default function(pi: any) {
 			const entries: SessionRegistryEntry[] = JSON.parse(content);
 
 			for (const entry of entries) {
+				if (!isValidSessionId(entry?.sessionId)) {
+					console.error("Skipping registry entry with an invalid session id.");
+					continue;
+				}
 				// Create session in FINISHED state because the process is not running yet
 				const session = new PiSession(
 					entry.sessionId,
@@ -176,6 +181,7 @@ export default function(pi: any) {
 		systemPrompt?: string,
 		riskPolicy?: RiskPolicy,
 	): Promise<PiSession> {
+		assertValidSessionId(sessionId);
 		const existing = this.sessions.get(sessionId);
 		if (existing) {
 			// A session with no subprocess is dead however its status reads —
@@ -219,6 +225,7 @@ export default function(pi: any) {
 	}
 
 	public getSession(sessionId: string): PiSession {
+		assertValidSessionId(sessionId);
 		const session = this.sessions.get(sessionId);
 		if (!session) {
 			throw new Error(`Session not found: ${sessionId}`);
