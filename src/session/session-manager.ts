@@ -33,7 +33,6 @@ export class SessionManager {
 		);
 
 		this.ensureRegistryDirectory();
-		this.deployGatingExtension();
 		this.loadRegistry();
 	}
 
@@ -41,79 +40,6 @@ export class SessionManager {
 		const dir = path.dirname(this.registryPath);
 		if (!fs.existsSync(dir)) {
 			fs.mkdirSync(dir, { recursive: true });
-		}
-	}
-
-	private static readonly GATE_EXTENSION_VERSION = "2";
-
-	private deployGatingExtension() {
-		const dir = path.dirname(this.registryPath);
-
-		if (!fs.existsSync(dir)) {
-			fs.mkdirSync(dir, { recursive: true });
-		}
-
-		const extensionPath = path.join(dir, "worker-mcp-gate.ts");
-
-		const extensionCode = `// Gating extension for worker-mcp (v${SessionManager.GATE_EXTENSION_VERSION})
-// Intercepts all tool execution requests and prompts the coordinator for approval.
-// Uses structured message format for server-side risk classification.
-
-export default function(pi: any) {
-  pi.on("tool_call", async (event: any, ctx: any) => {
-    // Send structured data for server-side risk classification
-    const payload = JSON.stringify({ toolName: event.toolName, input: event.input });
-    const approved = await ctx.ui.confirm(
-      "worker-mcp-gate",
-      payload
-    );
-    if (!approved) {
-      return { block: true, reason: "Tool execution blocked by the coordinator agent." };
-    }
-  });
-}
-`;
-
-		// Write if missing or if version has changed
-		let shouldWrite = !fs.existsSync(extensionPath);
-		if (!shouldWrite) {
-			try {
-				const existing = fs.readFileSync(extensionPath, "utf8");
-				if (!existing.includes(`(v${SessionManager.GATE_EXTENSION_VERSION})`)) {
-					shouldWrite = true;
-				}
-			} catch {
-				shouldWrite = true;
-			}
-		}
-
-		if (shouldWrite) {
-			fs.writeFileSync(extensionPath, extensionCode, "utf8");
-			console.error(
-				`Deployed supervisor gating extension v${SessionManager.GATE_EXTENSION_VERSION} to: ${extensionPath}`,
-			);
-		}
-
-		// Clean up the old gating extension path if it exists to avoid breaking standalone pi runs
-		const homeDir = os.homedir();
-		const oldExtensionPath = path.join(
-			homeDir,
-			".pi",
-			"agent",
-			"extensions",
-			"worker-mcp-gate.ts",
-		);
-		if (fs.existsSync(oldExtensionPath)) {
-			try {
-				fs.unlinkSync(oldExtensionPath);
-				console.error(
-					`Cleaned up old supervisor gating extension from: ${oldExtensionPath}`,
-				);
-			} catch (e) {
-				console.error(
-					`Failed to clean up old extension at ${oldExtensionPath}: ${e}`,
-				);
-			}
 		}
 	}
 

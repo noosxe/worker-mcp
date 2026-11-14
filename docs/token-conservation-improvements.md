@@ -6,7 +6,7 @@ This document outlines proposed enhancements to `worker-mcp` aimed at reducing t
 
 ## 1. Summarized Responses Instead of Full Transcripts (Done)
 
-**Status**: ✅ Implemented
+**Status**: ⛔ Removed. The `summarize` argument is still accepted but ignored; the summarizer ran a second, ungated `pi` on untrusted text. Summarize from paged output instead.
 
 **Problem**: `send_pi_command` currently returns `responseText` containing the full worker output. The coordinator must read and process the entire stream of consciousness from the worker, including irrelevant intermediate reasoning steps.
 

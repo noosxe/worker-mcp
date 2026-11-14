@@ -75,7 +75,7 @@ export const pidGone = (pid: number) => !isAlive(pid);
 
 /**
  * Private HOME, XDG_STATE_HOME and XDG_RUNTIME_DIR: the server writes under
- * ~/.config/worker-mcp and deletes a file under ~/.pi.
+ * ~/.config/worker-mcp and must never touch ~/.pi.
  */
 export function createIsolation(): Isolation {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-test-"));
@@ -109,6 +109,17 @@ export function createIsolation(): Isolation {
 			XDG_RUNTIME_DIR: runtime,
 			WORKER_MCP_PI_PATH: FAKE_PI,
 			FAKE_PI_RECORD: recordFile,
+			// Workers get a minimal environment; fake-pi's own settings and the
+			// variable below are passed through explicitly.
+			WORKER_MCP_ENV_PASSTHROUGH:
+				"FAKE_PI_*,WM_TEST_PASSED,WM_TEST_PASSED_TOKEN",
+			WM_TEST_PASSED: "passed-value",
+			WM_TEST_PASSED_TOKEN: "force-dropped-value",
+			WM_TEST_NOT_PASSED: "dropped-value",
+			GITHUB_TOKEN: "ghp_test_not_a_real_token",
+			AWS_SECRET_ACCESS_KEY: "test-not-a-real-secret",
+			MY_API_KEY: "test-not-a-real-key",
+			SSH_AUTH_SOCK: "/nonexistent/agent.sock",
 		},
 		workers: () =>
 			lines()

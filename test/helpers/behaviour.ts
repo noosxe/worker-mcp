@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { after, before, describe, test } from "node:test";
 
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -133,7 +134,7 @@ export function behaviourTests(name: string, layer: Layer) {
 					start.argv[start.argv.indexOf("--system-prompt") + 1],
 					"be brief",
 				);
-				assert.ok(start.argv.includes("--extension"));
+				assert.ok(start.argv.includes("-e"));
 			});
 		});
 
@@ -474,26 +475,122 @@ export function behaviourTests(name: string, layer: Layer) {
 			});
 		});
 
-		test(
-			"gate file missing: spawn is refused",
-			{
-				todo: "fails open today (pi is started without the gate); the launch-hardening phase makes it pass",
-			},
-			async () => {
-				await withServer(async (client) => {
-					const gate = `${iso.home}/.config/worker-mcp/worker-mcp-gate.ts`;
-					fs.rmSync(gate);
+		test("gate cannot be written: spawn is refused", async () => {
+			await withServer(async (client) => {
+				// A regular file where the runtime directory belongs.
+				const base = `${iso.env.XDG_RUNTIME_DIR}/worker-mcp`;
+				fs.rmSync(base, { recursive: true, force: true });
+				fs.writeFileSync(base, "not a directory");
+				try {
+					const startsBefore = iso.starts().length;
 					const result = await call(client, TOOLS.spawn, {
 						sessionId: "nogate",
 						cwd: iso.cwd,
 					});
 					assert.strictEqual(result.isError, true, "spawn must be refused");
-					assert.ok(
-						!iso.starts().some((s) => !s.argv.includes("--extension")),
-						"no ungated pi may have been started",
+					assert.match(textOf(result), /without the approval gate/);
+					await sleep(200);
+					assert.strictEqual(
+						iso.starts().length,
+						startsBefore,
+						"pi was started",
 					);
+					// The id is free again once the runtime directory works.
+					fs.rmSync(base);
+					await spawnSession(client, "nogate");
+				} finally {
+					fs.rmSync(base, { recursive: true, force: true });
+				}
+			});
+		});
+
+		test("pi gets the hardening flags and a private per-spawn gate", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "launch");
+				const start = iso.starts().at(-1);
+				assert.ok(start);
+				for (const flag of ["--no-extensions", "--no-mcp", "--no-approve"]) {
+					assert.ok(start.argv.includes(flag), `${flag} missing`);
+				}
+				const at = start.argv.indexOf("-e");
+				assert.notStrictEqual(at, -1, "-e missing");
+				const gateFile = start.argv[at + 1];
+				const dir = path.dirname(gateFile);
+				assert.strictEqual(
+					path.dirname(dir),
+					`${iso.env.XDG_RUNTIME_DIR}/worker-mcp`,
+				);
+				assert.strictEqual(fs.statSync(dir).mode & 0o777, 0o700);
+				assert.strictEqual(fs.statSync(gateFile).mode & 0o777, 0o600);
+				assert.match(fs.readFileSync(gateFile, "utf8"), /pi\.on\("tool_call"/);
+				// Nothing is persisted outside the private directory.
+				assert.ok(!fs.existsSync(`${iso.home}/.pi`));
+				assert.ok(
+					!fs.existsSync(`${iso.home}/.config/worker-mcp/worker-mcp-gate.ts`),
+				);
+
+				await callOk(client, TOOLS.terminate, { sessionId: "launch" });
+				await waitUntil(() => !fs.existsSync(dir), 3000, "gate dir removal");
+			});
+		});
+
+		test("each worker gets its own gate directory", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "gate-a");
+				await spawnSession(client, "gate-b");
+				const [a, b] = iso.starts().slice(-2);
+				const dirOf = (s: typeof a) =>
+					path.dirname(s.argv[s.argv.indexOf("-e") + 1]);
+				assert.notStrictEqual(dirOf(a), dirOf(b));
+				await callOk(client, TOOLS.terminate, { sessionId: "gate-a" });
+				await waitUntil(() => !fs.existsSync(dirOf(a)), 3000, "gate-a removal");
+				assert.ok(fs.existsSync(dirOf(b)), "gate-b must survive gate-a's exit");
+				await callOk(client, TOOLS.terminate, { sessionId: "gate-b" });
+			});
+		});
+
+		test("the worker gets an allowlisted environment, not the server's", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "envtest");
+				const env: Record<string, string | undefined> =
+					iso.starts().at(-1)?.env ?? {};
+				assert.strictEqual(env.HOME, iso.home);
+				assert.strictEqual(env.PATH, iso.env.PATH);
+				assert.strictEqual(env.WM_TEST_PASSED, "passed-value");
+				for (const key of [
+					"GITHUB_TOKEN",
+					"AWS_SECRET_ACCESS_KEY",
+					"MY_API_KEY",
+					"SSH_AUTH_SOCK",
+					"WM_TEST_NOT_PASSED",
+					"WM_TEST_PASSED_TOKEN",
+					"WORKER_MCP_ENV_PASSTHROUGH",
+					"WORKER_MCP_PI_PATH",
+				]) {
+					assert.strictEqual(env[key], undefined, `${key} reached the worker`);
+				}
+			});
+		});
+
+		test("summarize is accepted, ignored and noted", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "sum");
+				const text = await callOk(client, TOOLS.send, {
+					sessionId: "sum",
+					command: "hello",
+					summarize: true,
 				});
-			},
-		);
+				assert.match(
+					text,
+					/^fake-pi reply: hello\n\nNote: `summarize` is deprecated/,
+				);
+				assert.strictEqual(
+					iso.runs().length > 0 && iso.received().includes("prompt"),
+					true,
+				);
+				// No second pi process was started for a summary.
+				assert.ok(iso.starts().every((s) => s.argv.includes("rpc")));
+			});
+		});
 	});
 }

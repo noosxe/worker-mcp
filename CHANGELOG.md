@@ -4,6 +4,27 @@
 
 ### Security
 
+- Workers no longer inherit the server's environment. It is built from an
+  allowlist (`PATH`, `HOME`, locale, `TERM`, XDG and temp dirs, TLS/CA and Nix
+  variables, `PI_*`). `SSH_AUTH_SOCK`, `*_TOKEN`, `*_SECRET*`, `AWS_*`, cloud
+  and cluster credentials and `WORKER_MCP_*` are never passed. Set
+  `WORKER_MCP_ENV_PASSTHROUGH=NAME1,NAME2` to opt other names in. **LLM keys
+  set in the environment (for example `ANTHROPIC_API_KEY`) no longer reach
+  workers unless listed there**; prefer pi's own auth file.
+- The approval gate is written from a constant compiled into the server to a
+  fresh private directory (0700) for every worker, and removed when the worker
+  exits. If it cannot be written, the spawn is refused instead of starting pi
+  ungated.
+- pi is started with `--no-extensions --no-mcp --no-approve`, so only the gate
+  is loaded and project-local extensions, MCP servers and files are ignored.
+- The summarizer, which ran a second ungated pi on the worker's output, is
+  removed. `summarize` is still accepted but ignored, with a note in the
+  result. `WORKER_MCP_SUMMARIZE_TIMEOUT` is gone.
+- The server no longer deletes `~/.pi/agent/extensions/worker-mcp-gate.ts` or
+  writes anything else under `~/.pi`. It also stops writing the persistent
+  `~/.config/worker-mcp/worker-mcp-gate.ts`; an old copy there is unused and
+  can be deleted.
+- Added `docs/security.md`.
 - The shell risk classifier is no longer bypassed by command chaining. Any
   command with `;`, `&&`, `||`, `|`, `&`, backticks, `$`, parentheses,
   redirections, backslashes or newlines is at least HIGH, as are wrappers
