@@ -1,103 +1,28 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
-import { assertValidSessionId, isValidSessionId } from "../validation.js";
+import { type Config } from "../config.js";
+import { assertValidSessionId } from "../validation.js";
 import { PiSession, type SessionStatus } from "./pi-session.js";
 import type { RiskPolicy } from "./risk-policy.js";
-
-interface SessionRegistryEntry {
-	sessionId: string;
-	cwd: string;
-	model?: string;
-	systemPrompt?: string;
-	riskPolicy?: RiskPolicy;
-}
+import { RuntimeDir } from "./runtime-dir.js";
 
 export class SessionManager {
 	private sessions: Map<string, PiSession> = new Map();
-	private registryPath: string;
+	private readonly runtime: RuntimeDir;
 	public onSessionStatusChange?: (
 		sessionId: string,
 		status: SessionStatus,
 		message?: string,
 	) => void;
 
-	constructor() {
-		const homeDir = os.homedir();
-		this.registryPath = path.join(
-			homeDir,
-			".config",
-			"worker-mcp",
-			"sessions.json",
-		);
-
-		this.ensureRegistryDirectory();
-		this.loadRegistry();
-	}
-
-	private ensureRegistryDirectory() {
-		const dir = path.dirname(this.registryPath);
-		if (!fs.existsSync(dir)) {
-			fs.mkdirSync(dir, { recursive: true });
-		}
-	}
-
-	private loadRegistry() {
-		if (!fs.existsSync(this.registryPath)) {
-			this.saveRegistry();
-			return;
-		}
-
-		try {
-			const content = fs.readFileSync(this.registryPath, "utf8");
-			const entries: SessionRegistryEntry[] = JSON.parse(content);
-
-			for (const entry of entries) {
-				if (!isValidSessionId(entry?.sessionId)) {
-					console.error("Skipping registry entry with an invalid session id.");
-					continue;
-				}
-				// Create session in FINISHED state because the process is not running yet
-				const session = new PiSession(
-					entry.sessionId,
-					entry.cwd,
-					entry.model,
-					entry.systemPrompt,
-					entry.riskPolicy,
-				);
-				session.status = "FINISHED";
-				session.onStatusChange = (sid, status, message) => {
-					this.onSessionStatusChange?.(sid, status, message);
-				};
-				this.sessions.set(entry.sessionId, session);
-			}
-			console.error(`Loaded ${entries.length} sessions from registry.`);
-		} catch (e) {
-			console.error(`Failed to load session registry: ${e}`);
-		}
-	}
-
-	private saveRegistry() {
-		try {
-			const entries: SessionRegistryEntry[] = Array.from(
-				this.sessions.values(),
-			).map((s) => ({
-				sessionId: s.sessionId,
-				cwd: s.cwd,
-				model: s.model,
-				systemPrompt: s.systemPrompt,
-				riskPolicy: s.riskPolicy,
-			}));
-
-			fs.writeFileSync(
-				this.registryPath,
-				JSON.stringify(entries, null, 2),
-				"utf8",
-			);
-		} catch (e) {
-			console.error(`Failed to save session registry: ${e}`);
-		}
+	/**
+	 * Does no I/O: workers live only as long as this server, and the runtime
+	 * directory is created when the first worker needs it.
+	 */
+	constructor(
+		readonly config: Config,
+		private readonly env: NodeJS.ProcessEnv = {},
+		runtime?: RuntimeDir,
+	) {
+		this.runtime = runtime ?? new RuntimeDir(config.runtimeDir);
 	}
 
 	public async createSession(
@@ -110,8 +35,7 @@ export class SessionManager {
 		assertValidSessionId(sessionId);
 		const existing = this.sessions.get(sessionId);
 		if (existing) {
-			// A session with no subprocess is dead however its status reads —
-			// sessions restored from the registry have never been started at all.
+			// A session with no subprocess is dead however its status reads.
 			const active =
 				existing.isAlive() &&
 				existing.status !== "FINISHED" &&
@@ -128,12 +52,12 @@ export class SessionManager {
 			model,
 			systemPrompt,
 			riskPolicy,
+			{ config: this.config, runtime: this.runtime, env: this.env },
 		);
 		session.onStatusChange = (sid, status, message) => {
 			this.onSessionStatusChange?.(sid, status, message);
 		};
 		this.sessions.set(sessionId, session);
-		this.saveRegistry();
 
 		try {
 			await session.start();
@@ -143,7 +67,6 @@ export class SessionManager {
 			// active and makes the id permanently unusable. Roll the registration
 			// back so the caller can simply retry.
 			this.sessions.delete(sessionId);
-			this.saveRegistry();
 			throw e;
 		}
 
@@ -171,7 +94,6 @@ export class SessionManager {
 	public setRiskPolicy(sessionId: string, riskPolicy: RiskPolicy) {
 		const session = this.getSession(sessionId);
 		session.riskPolicy = riskPolicy;
-		this.saveRegistry();
 	}
 
 	public listSessions() {
@@ -187,12 +109,13 @@ export class SessionManager {
 		const session = this.getSession(sessionId);
 		session.terminate();
 		this.sessions.delete(sessionId);
-		this.saveRegistry();
 	}
 
+	/** Terminate every worker and remove the runtime directory. */
 	public terminateAll() {
 		for (const session of this.sessions.values()) {
 			session.terminate();
 		}
+		this.runtime.dispose();
 	}
 }

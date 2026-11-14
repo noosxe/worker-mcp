@@ -11,7 +11,6 @@ import { RiskLevel } from "./session/risk-classifier.js";
 import type { RiskPolicy } from "./session/risk-policy.js";
 import type { SessionManager } from "./session/session-manager.js";
 import { TaskSettler } from "./task-settle.js";
-import { readPositiveIntEnv } from "./validation.js";
 
 const DEFAULT_TASK_TTL_MS = 60 * 60 * 1000;
 
@@ -527,7 +526,9 @@ export function createServer(
 						);
 					}
 					const effectiveTimeout =
-						timeout ?? readPositiveIntEnv("WORKER_MCP_COMMAND_TIMEOUT");
+						timeout ??
+						sessionManager.config.limits.commandTimeoutMs ??
+						undefined;
 
 					if (effectiveTimeout != null) {
 						const result = await Promise.race([

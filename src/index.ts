@@ -5,9 +5,9 @@ import { fileURLToPath } from "node:url";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
+import { ConfigError, formatConfig, loadConfig } from "./config.js";
 import { createServer } from "./server.js";
 import { SessionManager } from "./session/session-manager.js";
-import { validateEnv } from "./validation.js";
 
 // Parse version from package.json
 const __filename = fileURLToPath(import.meta.url);
@@ -22,34 +22,53 @@ try {
 	// fallback
 }
 
-// Handle version/help flags
-if (process.argv.includes("--version") || process.argv.includes("-v")) {
+// Build the effective config first: invalid settings stop the server here.
+let loaded: ReturnType<typeof loadConfig>;
+try {
+	loaded = loadConfig(process.argv.slice(2), process.env);
+} catch (error) {
+	console.error(
+		error instanceof ConfigError || error instanceof Error
+			? error.message
+			: String(error),
+	);
+	process.exit(1);
+}
+
+if (loaded.flags.version) {
 	console.log(`worker-mcp v${version}`);
 	process.exit(0);
 }
 
-if (process.argv.includes("--help") || process.argv.includes("-h")) {
+if (loaded.flags.help) {
 	console.log(`worker-mcp - Model Context Protocol server supervising local worker agents
 
 Usage:
   worker-mcp [options]
 
 Options:
-  -v, --version  Show version
-  -h, --help     Show help
+  -v, --version               Show version
+  -h, --help                  Show help
+      --print-config          Print the effective configuration and exit
+      --config <path>         JSON config file (default: $XDG_CONFIG_HOME/worker-mcp/config.json)
+      --pi-path <path>        Path to the pi binary
+      --command-timeout-ms <n>  Default blocking-call timeout
+      --max-output-chars <n>  Output size cap
+      --env-passthrough <names>  Extra worker env names, comma-separated
+      --state-dir <path>      State directory
+      --runtime-dir <path>    Directory for the private runtime dir
+
+Settings may also come from WORKER_MCP_* environment variables; see the README.
 `);
 	process.exit(0);
 }
 
-// Reject bad numeric settings up front instead of misbehaving later.
-try {
-	validateEnv();
-} catch (error) {
-	console.error(error instanceof Error ? error.message : String(error));
-	process.exit(1);
+if (loaded.flags.printConfig) {
+	process.stdout.write(formatConfig(loaded.config));
+	process.exit(0);
 }
 
-const sessionManager = new SessionManager();
+const sessionManager = new SessionManager(loaded.config, process.env);
 const server = createServer(sessionManager, version);
 
 // Terminate every worker and exit. Safe to call more than once.

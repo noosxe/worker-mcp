@@ -11,7 +11,7 @@ Instead of rolling a custom local LLM tool loop, `worker-mcp` delegates coding, 
 - **Interactive Gating (Consent Hook)**: Automatically intercepts and blocks high-risk operations (e.g. executing shell commands or writing files) and prompts the coordinator for approval before execution.
 - **MCP Tool Integration**: Standardized tools to spawn worker sessions, dispatch prompts, list active runners, and approve/deny pending commands.
 - **Log and History Resources**: Message history and subprocess logs (including `stderr` feeds) are exposed as standard MCP resources.
-- **Session Registry Persistence**: Session configurations and directory bindings survive server restarts via state files in `~/.config/worker-mcp/sessions.json`.
+- **Workers live with the server**: Nothing about workers is persisted. When the server stops, its workers stop, and the next server starts empty.
 - **Per-spawn Gate**: Writes its supervisor gate extension to a fresh private directory for every worker and starts `pi` with `--no-extensions --no-mcp --no-approve`; a worker is never started without the gate, and nothing is written under `~/.pi`.
 - **Minimal Worker Environment**: Workers get an allowlisted environment, not the server's. See [docs/security.md](docs/security.md).
 
@@ -254,13 +254,60 @@ yet resumable.
 
 ---
 
-## Operational Configuration
+## Configuration
 
-### Environment Variables
+The server builds one validated configuration at startup. An invalid setting
+(bad JSON, an unknown key, a wrong type, `NaN`, a non-positive number) stops the
+server with a message naming the source and the key. Check what a registration
+actually resolves to with `worker-mcp --print-config`, which prints the
+effective configuration (secret-looking values redacted) and exits.
 
-- **`WORKER_MCP_PI_PATH`**: Absolute path to the `pi` coding-agent binary (defaults to searching `PATH` for `pi`).
-- **`WORKER_MCP_COMMAND_TIMEOUT`**, **`WORKER_MCP_MAX_OUTPUT_CHARS`**: Positive integers (milliseconds, characters). The server refuses to start if one is set to anything else.
-- **`WORKER_MCP_ENV_PASSTHROUGH`**: Comma-separated names (or `PREFIX_*` patterns) of extra environment variables to pass to workers, for example `WORKER_MCP_ENV_PASSTHROUGH=ANTHROPIC_API_KEY`. Workers otherwise get only an allowlisted environment, and secrets such as `*_TOKEN` and `AWS_*` are never passed. See [docs/security.md](docs/security.md).
+### Sources and precedence
+
+Lowest to highest:
+
+1. Built-in defaults.
+2. A JSON config file: `--config <path>`, else `WORKER_MCP_CONFIG`, else
+   `$XDG_CONFIG_HOME/worker-mcp/config.json` (`~/.config/worker-mcp/config.json`
+   when `XDG_CONFIG_HOME` is unset). A missing default file is fine; a missing
+   explicit one is an error. The file is JSON only, never code, and is refused
+   if it is group- or world-writable or owned by another user. See
+   [config.example.json](config.example.json).
+3. `WORKER_MCP_*` environment variables.
+4. Command-line flags.
+
+`env.allow` is a list: names from every source are added together.
+
+### Settings
+
+| Config key                | Environment variable          | Flag                   | Default                                   |
+| ------------------------- | ----------------------------- | ---------------------- | ----------------------------------------- |
+| (file location)           | `WORKER_MCP_CONFIG`           | `--config <path>`      | `$XDG_CONFIG_HOME/worker-mcp/config.json` |
+| `providers.pi.path`       | `WORKER_MCP_PI_PATH`          | `--pi-path`            | `pi` (found on `PATH`)                    |
+| `limits.commandTimeoutMs` | `WORKER_MCP_COMMAND_TIMEOUT`  | `--command-timeout-ms` | unset: blocking calls wait for the worker |
+| `limits.maxOutputChars`   | `WORKER_MCP_MAX_OUTPUT_CHARS` | `--max-output-chars`   | `64000`                                   |
+| `env.allow`               | `WORKER_MCP_ENV_PASSTHROUGH`  | `--env-passthrough`    | none                                      |
+| `stateDir`                | `WORKER_MCP_STATE_DIR`        | `--state-dir`          | `$XDG_STATE_HOME/worker-mcp`              |
+| `runtimeDir`              | `WORKER_MCP_RUNTIME_DIR`      | `--runtime-dir`        | `$XDG_RUNTIME_DIR`, else `<stateDir>/run` |
+
+- Numbers are positive integers; directories are absolute paths.
+- `env.allow` / `WORKER_MCP_ENV_PASSTHROUGH`: names, or `PREFIX_*` patterns, of
+  extra environment variables to pass to workers (comma-separated in the
+  variable and the flag). Workers otherwise get only an allowlisted
+  environment, and secrets such as `*_TOKEN` and `AWS_*` are never passed. One
+  exception: a name written exactly (no `*`) in the config file's `env.allow`
+  is passed even if it matches one of those patterns. The same name in the
+  environment variable, a flag or a pattern is not. See
+  [docs/security.md](docs/security.md).
+- `runtimeDir` is the directory in which the server keeps its private
+  per-instance directory `worker-mcp-<pid>` (mode 0700). It holds each worker's
+  gate, is created when the first worker starts, and is removed on shutdown.
+  Directories left by a killed server are removed at the next start only when
+  their pid is no longer running.
+- `stateDir` is reserved; nothing is written there yet.
+
+Workers are not persisted. A `sessions.json` left in `~/.config/worker-mcp/` by
+an earlier version is ignored and can be deleted.
 
 `summarize` arguments are deprecated and ignored: the full output is always returned, with a note.
 

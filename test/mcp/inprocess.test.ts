@@ -9,6 +9,7 @@ import {
 	CreateTaskResultSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
+import { loadConfig } from "../../src/config.js";
 import { createServer } from "../../src/server.js";
 import { SessionManager } from "../../src/session/session-manager.js";
 import {
@@ -26,7 +27,10 @@ import {
 import { TOOLS } from "../helpers/tools.js";
 
 async function connect(): Promise<Connection & { manager: SessionManager }> {
-	const manager = new SessionManager();
+	const manager = new SessionManager(
+		loadConfig([], process.env).config,
+		process.env,
+	);
 	const server = createServer(manager, "0.0.0-test");
 	const [clientTransport, serverTransport] =
 		InMemoryTransport.createLinkedPair();

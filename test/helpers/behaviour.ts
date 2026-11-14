@@ -478,7 +478,7 @@ export function behaviourTests(name: string, layer: Layer) {
 		test("gate cannot be written: spawn is refused", async () => {
 			await withServer(async (client) => {
 				// A regular file where the runtime directory belongs.
-				const base = `${iso.env.XDG_RUNTIME_DIR}/worker-mcp`;
+				const base = iso.env.XDG_RUNTIME_DIR;
 				fs.rmSync(base, { recursive: true, force: true });
 				fs.writeFileSync(base, "not a directory");
 				try {
@@ -516,10 +516,12 @@ export function behaviourTests(name: string, layer: Layer) {
 				assert.notStrictEqual(at, -1, "-e missing");
 				const gateFile = start.argv[at + 1];
 				const dir = path.dirname(gateFile);
+				// Under the per-instance runtime dir, named for the server's pid.
 				assert.strictEqual(
-					path.dirname(dir),
-					`${iso.env.XDG_RUNTIME_DIR}/worker-mcp`,
+					path.dirname(path.dirname(dir)),
+					iso.env.XDG_RUNTIME_DIR,
 				);
+				assert.match(path.basename(path.dirname(dir)), /^worker-mcp-\d+$/);
 				assert.strictEqual(fs.statSync(dir).mode & 0o777, 0o700);
 				assert.strictEqual(fs.statSync(gateFile).mode & 0o777, 0o600);
 				assert.match(fs.readFileSync(gateFile, "utf8"), /pi\.on\("tool_call"/);

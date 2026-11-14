@@ -222,16 +222,15 @@ Retrieves the audit log of actions that were auto-approved by the risk policy.
 
 ### 5.2. Per-spawn Gating Extension
 
-- The gate extension source is a constant compiled into the server. Before each worker spawn, `worker-mcp` writes it to a fresh private directory (`mkdtemp` under `$XDG_RUNTIME_DIR/worker-mcp`, or `$XDG_STATE_HOME/worker-mcp/run` when that is unset; directory mode 0700, file mode 0600) and loads it with `-e`.
+- The gate extension source is a constant compiled into the server. Before each worker spawn, `worker-mcp` writes it to a fresh private directory (`mkdtemp` under the server's private runtime directory `<runtimeDir>/worker-mcp-<pid>`, where `runtimeDir` defaults to `$XDG_RUNTIME_DIR`, or `<stateDir>/run` when that is unset; directory mode 0700, file mode 0600) and loads it with `-e`.
 - pi is started with `--no-extensions --no-mcp --no-approve`, so it loads no discovered extensions, no MCP servers and no project-local files; only the gate runs.
 - If the gate cannot be written, or the file is missing right before the spawn, the spawn is refused. pi is never started without the gate.
-- The directory is removed when the worker exits or is terminated. Nothing is written under `~/.pi`.
+- The worker's directory is removed when the worker exits or is terminated, and the runtime directory when the server shuts down cleanly. At the next start, instance directories of pids that are no longer running are removed. Nothing is written under `~/.pi`.
 - The gate sends structured JSON payloads (`{ toolName, input }`), enabling server-side risk classification.
 
-### 5.3. Session Registry Persistence
+### 5.3. No Persistence
 
-- To survive restarts of the `worker-mcp` server, session metadata (mapping of `sessionId` -> `cwd`, model overrides, status, and system prompts) is persisted locally in `~/.config/worker-mcp/sessions.json`.
-- When the server boots up, it reads this registry. Active sessions are marked as `Finished` or `Disconnected` until they are explicitly re-connected or spawned.
+- Workers are not persisted. They live and die with the server, and `sessions.json` is neither read nor written (an old file is ignored). `SessionManager` does no I/O when constructed; the runtime directory is created when the first worker starts.
 
 ### 5.4. Subprocess Lifecycle & Stderr Management
 
@@ -239,14 +238,15 @@ Retrieves the audit log of actions that were auto-approved by the risk policy.
 - **Crash Detection**: If the child process exits with a non-zero code without completing, the session state transitions to `Crashed`.
 - **State Transition back to Idle**: When `pi` emits the `agent_settled` event on stdout, `worker-mcp` updates the session status from `Running Task` back to `Idle`, notifying the coordinator that it is ready for the next command.
 
-### 5.5. Environment Variables
+### 5.5. Configuration
 
-| Variable                      | Default   | Description                                                               |
-| ----------------------------- | --------- | ------------------------------------------------------------------------- |
-| `WORKER_MCP_PI_PATH`          | `pi`      | Path to the pi executable                                                 |
-| `WORKER_MCP_ENV_PASSTHROUGH`  | unset     | Extra environment variable names for workers, see [security](security.md) |
-| `WORKER_MCP_MAX_OUTPUT_CHARS` | `64000`   | Maximum output characters before loop detection                           |
-| `WORKER_MCP_COMMAND_TIMEOUT`  | unset (∞) | Default timeout (ms) for blocking `send_pi_command` calls                 |
+Settings come from a JSON file, `WORKER_MCP_*` environment variables and flags (in that order of precedence), are validated at startup with zod, and are passed down as one `Config` object (`src/config.ts`). The full table is in the [README](../README.md#configuration). `worker-mcp --print-config` prints the effective config.
+
+----------------------------- | --------- | ------------------------------------------------------------------------- |
+| `WORKER_MCP_PI_PATH` | `pi` | Path to the pi executable |
+| `WORKER_MCP_ENV_PASSTHROUGH` | unset | Extra environment variable names for workers, see [security](security.md) |
+| `WORKER_MCP_MAX_OUTPUT_CHARS` | `64000` | Maximum output characters before loop detection |
+| `WORKER_MCP_COMMAND_TIMEOUT` | unset (∞) | Default timeout (ms) for blocking `send_pi_command` calls |
 
 ---
 

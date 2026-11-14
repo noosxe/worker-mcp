@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+
+import type { Config } from "../config.js";
+import type { RuntimeDir } from "./runtime-dir.js";
 
 /**
  * Source of the approval gate, written fresh for every worker. It is a
@@ -36,16 +38,6 @@ export const PI_HARDENING_FLAGS = [
 
 export class GateError extends Error {}
 
-/** Directory under which per-worker private directories are created. */
-export function runtimeBaseDir(env: NodeJS.ProcessEnv = process.env): string {
-	if (env.XDG_RUNTIME_DIR) {
-		return path.join(env.XDG_RUNTIME_DIR, "worker-mcp");
-	}
-	const state =
-		env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
-	return path.join(state, "worker-mcp", "run");
-}
-
 export interface Gate {
 	/** Private 0700 directory holding the gate; remove it with `removeGate`. */
 	dir: string;
@@ -54,25 +46,14 @@ export interface Gate {
 }
 
 /**
- * Write the gate into a fresh private directory. Throws a `GateError` when it
- * cannot be written or is not there afterwards: the caller must not start pi.
+ * Write the gate into a fresh private directory under the instance's runtime
+ * dir. Throws a `GateError` when it cannot be written or is not there
+ * afterwards: the caller must not start pi.
  */
-export function writeGate(env: NodeJS.ProcessEnv = process.env): Gate {
+export function writeGate(runtime: RuntimeDir): Gate {
 	let dir: string | undefined;
 	try {
-		const base = runtimeBaseDir(env);
-		fs.mkdirSync(base, { recursive: true, mode: 0o700 });
-		const st = fs.lstatSync(base);
-		if (!st.isDirectory()) {
-			throw new Error(`${base} is not a directory`);
-		}
-		if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
-			throw new Error(`${base} is not owned by the current user`);
-		}
-		fs.chmodSync(base, 0o700);
-
-		dir = fs.mkdtempSync(path.join(base, "worker-"));
-		fs.chmodSync(dir, 0o700);
+		dir = runtime.createWorkerDir();
 		const file = path.join(dir, GATE_FILE_NAME);
 		fs.writeFileSync(file, GATE_EXTENSION_SOURCE, {
 			encoding: "utf8",
@@ -160,8 +141,6 @@ export const ENV_FORCE_DROP: readonly string[] = [
 	"WORKER_MCP_*",
 ];
 
-export const ENV_PASSTHROUGH_VAR = "WORKER_MCP_ENV_PASSTHROUGH";
-
 /** `*` matches any run of characters; everything else is literal. */
 function matches(pattern: string, name: string): boolean {
 	if (!pattern.includes("*")) return pattern === name;
@@ -175,29 +154,26 @@ function matches(pattern: string, name: string): boolean {
 const matchesAny = (patterns: readonly string[], name: string) =>
 	patterns.some((p) => matches(p, name));
 
-/** Names or `PREFIX_*` patterns from the passthrough variable. */
-export function parsePassthrough(raw: string | undefined): string[] {
-	return (raw ?? "")
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean);
-}
-
 /**
  * The environment for a worker, built from empty: allowlisted names, then the
- * user's passthrough names, minus anything force-dropped.
+ * configured extra names, minus anything force-dropped. A name listed exactly
+ * in the config file (`forceDropExempt`) is the one thing that can pass
+ * despite a force-drop pattern; environment variables and patterns cannot.
  */
 export function buildWorkerEnv(
-	source: NodeJS.ProcessEnv = process.env,
+	source: NodeJS.ProcessEnv,
+	envConfig: Pick<Config["env"], "allow" | "forceDropExempt">,
 ): Record<string, string> {
-	const allowed = [
-		...ENV_ALLOWLIST,
-		...parsePassthrough(source[ENV_PASSTHROUGH_VAR]),
-	];
+	const allowed = [...ENV_ALLOWLIST, ...envConfig.allow];
 	const env: Record<string, string> = {};
 	for (const [name, value] of Object.entries(source)) {
 		if (value === undefined) continue;
-		if (matchesAny(ENV_FORCE_DROP, name)) continue;
+		if (
+			matchesAny(ENV_FORCE_DROP, name) &&
+			!envConfig.forceDropExempt.includes(name)
+		) {
+			continue;
+		}
 		if (matchesAny(allowed, name)) env[name] = value;
 	}
 	return env;

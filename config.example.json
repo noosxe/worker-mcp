@@ -1,0 +1,8 @@
+{
+	"providers": { "pi": { "path": "pi" } },
+	"limits": {
+		"commandTimeoutMs": 600000,
+		"maxOutputChars": 64000
+	},
+	"env": { "allow": ["ANTHROPIC_API_KEY", "HTTPS_PROXY"] }
+}

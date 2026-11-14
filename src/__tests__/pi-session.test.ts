@@ -1,9 +1,14 @@
 /* oxlint-disable no-explicit-any -- testing private methods */
 import assert from "node:assert";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, test } from "node:test";
 
+import { DEFAULT_MAX_OUTPUT_CHARS, defaultConfig } from "../config.js";
 import { PiSession } from "../session/pi-session.js";
 import { RiskLevel } from "../session/risk-classifier.js";
+import { RuntimeDir } from "../session/runtime-dir.js";
 
 describe("PiSession - Unit Tests", () => {
 	test("detectLoop - Normal text should not trigger loop detection", () => {
@@ -44,9 +49,7 @@ describe("PiSession - Unit Tests", () => {
 		const session = new PiSession("test", "./scratch");
 		const detectLoop = (session as any).detectLoop.bind(session);
 
-		const limit = process.env.WORKER_MCP_MAX_OUTPUT_CHARS
-			? Number.parseInt(process.env.WORKER_MCP_MAX_OUTPUT_CHARS, 10)
-			: 64000;
+		const limit = DEFAULT_MAX_OUTPUT_CHARS;
 
 		let longNonRepeating = "";
 		for (let i = 0; i < Math.ceil(limit / 5) + 1000; i++) {
@@ -146,11 +149,21 @@ describe("PiSession - Unit Tests", () => {
 	});
 
 	test("start() rejects when the pi binary cannot be spawned", async () => {
-		const previous = process.env.WORKER_MCP_PI_PATH;
-		process.env.WORKER_MCP_PI_PATH = "worker-mcp-nonexistent-binary-xyz";
-
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-test-"));
 		try {
-			const session = new PiSession("test", ".");
+			const config = defaultConfig();
+			config.providers.pi.path = "worker-mcp-nonexistent-binary-xyz";
+			const session = new PiSession(
+				"test",
+				".",
+				undefined,
+				undefined,
+				undefined,
+				{
+					config,
+					runtime: new RuntimeDir(root),
+				},
+			);
 			await assert.rejects(
 				() => session.start(),
 				/Failed to start pi/,
@@ -158,11 +171,7 @@ describe("PiSession - Unit Tests", () => {
 			);
 			assert.strictEqual(session.status, "CRASHED");
 		} finally {
-			if (previous === undefined) {
-				delete process.env.WORKER_MCP_PI_PATH;
-			} else {
-				process.env.WORKER_MCP_PI_PATH = previous;
-			}
+			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
 
