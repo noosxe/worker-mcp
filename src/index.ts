@@ -72,18 +72,26 @@ if (loaded.flags.printConfig) {
 const sessionManager = new SessionManager(loaded.config, process.env);
 const server = createServer(sessionManager, version);
 
-// Terminate every worker and exit. Safe to call more than once.
+// Terminate every worker (and what each started) and exit. Safe to call more
+// than once; a repeated signal while waiting kills at once.
 let shuttingDown = false;
-function shutdown(code: number, reason: string) {
-	if (shuttingDown) return;
+function shutdown(code: number, reason: string, isSignal = false) {
+	if (shuttingDown) {
+		// Closing stdin and the MCP transport fire together: only a repeated
+		// signal means "stop waiting".
+		if (!isSignal) return;
+		console.error(`${reason} Killing workers immediately.`);
+		sessionManager.killAllNow();
+		process.exit(code);
+	}
 	shuttingDown = true;
 	console.error(`${reason} Terminating all active worker processes...`);
-	try {
-		sessionManager.terminateAll();
-	} catch (error) {
-		console.error("Error while terminating workers:", error);
-	}
-	process.exit(code);
+	sessionManager
+		.terminateAll()
+		.catch((error) => {
+			console.error("Error while terminating workers:", error);
+		})
+		.finally(() => process.exit(code));
 }
 
 // Run server using stdio transport
@@ -102,8 +110,8 @@ async function main() {
 	console.error("worker-mcp server running on stdio");
 }
 
-process.on("SIGINT", () => shutdown(0, "Shutdown signal received."));
-process.on("SIGTERM", () => shutdown(0, "Shutdown signal received."));
+process.on("SIGINT", () => shutdown(0, "Shutdown signal received.", true));
+process.on("SIGTERM", () => shutdown(0, "Shutdown signal received.", true));
 process.on("unhandledRejection", (reason) => {
 	console.error("Unhandled rejection:", reason);
 	shutdown(1, "Unhandled rejection.");

@@ -43,7 +43,7 @@ async function connect(): Promise<Connection & { manager: SessionManager }> {
 		manager,
 		client,
 		async close() {
-			manager.terminateAll();
+			await manager.terminateAll();
 			await client.close();
 		},
 	};

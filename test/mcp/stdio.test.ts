@@ -89,50 +89,77 @@ describe(`MCP stdio (${RUNTIME}): process lifecycle`, () => {
 		await waitUntil(() => pidGone(pid), 3000, "fake-pi to exit");
 	});
 
-	test(
-		"terminate kills a worker that ignores SIGTERM",
-		{
-			todo: "only SIGTERM is sent today; the provider-split phase adds the SIGKILL escalation",
-		},
-		async () => {
-			const server = await start();
-			const pid = await spawnWorker(server, "stubborn");
-			iso.allowLeak(pid); // cleanup kills it if the assertion below fails
-			// The send never answers; the request is abandoned with the server.
-			server
-				.callTool(TOOLS.send, {
-					sessionId: "stubborn",
-					command: "scenario:ignore-sigterm",
-				})
-				.catch(() => {});
-			await waitUntil(
-				() => iso.runs().includes("ignore-sigterm"),
-				5000,
-				"the scenario to start",
-			);
-			await server.callTool(TOOLS.terminate, { sessionId: "stubborn" });
-			await waitUntil(() => pidGone(pid), 3000, "fake-pi to exit");
-		},
-	);
+	test("terminate kills a worker that ignores SIGTERM", async () => {
+		const server = await start();
+		const pid = await spawnWorker(server, "stubborn");
+		iso.allowLeak(pid); // cleanup kills it if the assertion below fails
+		// The send never answers; the request is abandoned with the server.
+		server
+			.callTool(TOOLS.send, {
+				sessionId: "stubborn",
+				command: "scenario:ignore-sigterm",
+			})
+			.catch(() => {});
+		await waitUntil(
+			() => iso.runs().includes("ignore-sigterm"),
+			5000,
+			"the scenario to start",
+		);
+		await server.callTool(TOOLS.terminate, { sessionId: "stubborn" });
+		await waitUntil(() => pidGone(pid), 3000, "fake-pi to exit");
+	});
 
-	test(
-		"terminate kills the worker's detached grandchild",
-		{
-			todo: "leaks today: pi's bash children run in their own process group and only pi is signalled; fixed by the tree kill in the provider-split phase",
-		},
-		async () => {
-			const server = await start();
-			await spawnWorker(server, "grand");
-			const res = await server.callTool(TOOLS.send, {
-				sessionId: "grand",
-				command: "scenario:grandchild",
-			});
-			const grandchild = Number(
-				textOf(res.result).match(/grandchild pid: (\d+)/)?.[1],
-			);
-			assert.ok(grandchild > 0);
-			await server.callTool(TOOLS.terminate, { sessionId: "grand" });
-			await waitUntil(() => pidGone(grandchild), 2000, "grandchild to exit");
-		},
-	);
+	test("terminate kills the worker's detached grandchild", async () => {
+		const server = await start();
+		await spawnWorker(server, "grand");
+		const res = await server.callTool(TOOLS.send, {
+			sessionId: "grand",
+			command: "scenario:grandchild",
+		});
+		const grandchild = Number(
+			textOf(res.result).match(/grandchild pid: (\d+)/)?.[1],
+		);
+		assert.ok(grandchild > 0);
+		await server.callTool(TOOLS.terminate, { sessionId: "grand" });
+		await waitUntil(() => pidGone(grandchild), 2000, "grandchild to exit");
+	});
+
+	test("SIGTERM to the server kills a worker's grandchild and a worker that ignores SIGTERM", async () => {
+		const server = await start();
+		await spawnWorker(server, "tree");
+		const res = await server.callTool(TOOLS.send, {
+			sessionId: "tree",
+			command: "scenario:grandchild",
+		});
+		const grandchild = Number(
+			textOf(res.result).match(/grandchild pid: (\d+)/)?.[1],
+		);
+		assert.ok(grandchild > 0);
+		const stubbornPid = await spawnWorker(server, "tree-stubborn");
+		iso.allowLeak(stubbornPid); // cleanup kills it if the assertion below fails
+		server
+			.callTool(TOOLS.send, {
+				sessionId: "tree-stubborn",
+				command: "scenario:ignore-sigterm",
+			})
+			.catch(() => {});
+		await waitUntil(
+			() => iso.runs().includes("ignore-sigterm"),
+			5000,
+			"the scenario to start",
+		);
+		server.child.kill("SIGTERM");
+		await Promise.race([
+			server.exited,
+			new Promise((_, reject) =>
+				setTimeout(() => reject(new Error("server did not exit")), 8000),
+			),
+		]);
+		await waitUntil(() => pidGone(grandchild), 3000, "grandchild to exit");
+		await waitUntil(
+			() => pidGone(stubbornPid),
+			3000,
+			"stubborn worker to exit",
+		);
+	});
 });

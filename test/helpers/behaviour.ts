@@ -590,7 +590,7 @@ export function behaviourTests(name: string, layer: Layer) {
 		test(
 			"a send to a worker that closed its stdin fails promptly",
 			{
-				todo: "the call hangs today: the failed write is not turned into a run error; fixed with the EPIPE-safe framing in the provider-split phase",
+				todo: "the call hangs: the worker stops reading its stdin without the pipe breaking, so no write fails and nothing ends the run; fixed by the run timeout and liveness handling in the run-model phase",
 			},
 			async () => {
 				await withServer(async (client) => {

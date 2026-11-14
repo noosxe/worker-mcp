@@ -1,4 +1,5 @@
 import { type Config } from "../config.js";
+import { ChildRegistry } from "../core/child.js";
 import { assertValidSessionId } from "../validation.js";
 import {
 	PiSession,
@@ -10,6 +11,8 @@ import { RuntimeDir } from "./runtime-dir.js";
 export class SessionManager {
 	private sessions: Map<string, PiSession> = new Map();
 	private readonly runtime: RuntimeDir;
+	/** Every worker process of this server starts and ends here. */
+	readonly children: ChildRegistry;
 	public onSessionStatusChange?: (
 		sessionId: string,
 		status: SessionStatus,
@@ -26,6 +29,7 @@ export class SessionManager {
 		runtime?: RuntimeDir,
 	) {
 		this.runtime = runtime ?? new RuntimeDir(config.runtimeDir);
+		this.children = new ChildRegistry({ env, envConfig: config.env });
 	}
 
 	public async createSession(
@@ -46,7 +50,7 @@ export class SessionManager {
 			if (active) {
 				throw new Error(`Session ${sessionId} already exists and is active.`);
 			}
-			existing.terminate();
+			await existing.terminate();
 		}
 
 		const session = new PiSession(
@@ -55,7 +59,12 @@ export class SessionManager {
 			model,
 			systemPrompt,
 			riskPolicy,
-			{ config: this.config, runtime: this.runtime, env: this.env },
+			{
+				config: this.config,
+				runtime: this.runtime,
+				env: this.env,
+				children: this.children,
+			},
 		);
 		session.onStatusChange = (sid, status, message) => {
 			this.onSessionStatusChange?.(sid, status, message);
@@ -108,17 +117,26 @@ export class SessionManager {
 		}));
 	}
 
-	public terminateSession(sessionId: string) {
+	public async terminateSession(sessionId: string): Promise<void> {
 		const session = this.getSession(sessionId);
-		session.terminate();
 		this.sessions.delete(sessionId);
+		await session.terminate();
 	}
 
-	/** Terminate every worker and remove the runtime directory. */
-	public terminateAll() {
-		for (const session of this.sessions.values()) {
-			session.terminate();
-		}
+	/**
+	 * Terminate every worker, wait for the processes (and what they started) to
+	 * be gone, and remove the runtime directory. Never rejects.
+	 */
+	public async terminateAll(): Promise<void> {
+		const all = [...this.sessions.values()].map((s) => s.terminate());
+		this.sessions.clear();
+		await Promise.all([...all, this.children.terminateAll()]);
+		this.runtime.dispose();
+	}
+
+	/** Second-signal path: SIGKILL everything now, without waiting. */
+	public killAllNow(): void {
+		this.children.killAllNow();
 		this.runtime.dispose();
 	}
 }

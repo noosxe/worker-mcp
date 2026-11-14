@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { describe, test } from "node:test";
 
 import { DEFAULT_MAX_OUTPUT_CHARS, defaultConfig } from "../config.js";
+import { LineFramer } from "../core/framing.js";
 import { RiskLevel } from "../gate/risk.js";
 import { PiSession } from "../session/pi-session.js";
 import { RuntimeDir } from "../session/runtime-dir.js";
@@ -97,36 +98,18 @@ describe("PiSession - Unit Tests", () => {
 	});
 
 	test("Buffer splitting - splits stdout chunks by newline", () => {
-		const session = new PiSession("test", "./scratch");
-
+		// Framing moved to the core's child handling; the behaviour is the same.
 		const parsedLines: string[] = [];
-		(session as any).handleStdoutLine = (line: string) => {
-			parsedLines.push(line);
-		};
-
-		const stdoutBufferReceiver = (chunk: Buffer) => {
-			(session as any).stdoutBuffer += chunk.toString("utf8");
-			let boundary = (session as any).stdoutBuffer.indexOf("\n");
-			while (boundary !== -1) {
-				const line = (session as any).stdoutBuffer
-					.substring(0, boundary)
-					.trim();
-				(session as any).stdoutBuffer = (session as any).stdoutBuffer.substring(
-					boundary + 1,
-				);
-				if (line) {
-					(session as any).handleStdoutLine(line);
-				}
-				boundary = (session as any).stdoutBuffer.indexOf("\n");
-			}
-		};
-
-		stdoutBufferReceiver(
-			Buffer.from('{"type":"turn_start"}\n{"type":"message'),
+		const framer = new LineFramer(
+			1024,
+			(line) => parsedLines.push(line),
+			() => {},
 		);
+
+		framer.push('{"type":"turn_start"}\n{"type":"message');
 		assert.deepStrictEqual(parsedLines, ['{"type":"turn_start"}']);
 
-		stdoutBufferReceiver(Buffer.from('_update","text":"Hello"}\n'));
+		framer.push('_update","text":"Hello"}\n');
 		assert.deepStrictEqual(parsedLines, [
 			'{"type":"turn_start"}',
 			'{"type":"message_update","text":"Hello"}',

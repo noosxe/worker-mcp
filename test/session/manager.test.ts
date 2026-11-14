@@ -27,7 +27,7 @@ function managerFor(env: Record<string, string> = iso.env) {
 const runtimeBase = () => iso.env.XDG_RUNTIME_DIR;
 
 describe("SessionManager", () => {
-	test("construction does no I/O", () => {
+	test("construction does no I/O", async () => {
 		const missing = path.join(iso.root, "nonexistent");
 		const env = {
 			...iso.env,
@@ -40,7 +40,7 @@ describe("SessionManager", () => {
 		assert.strictEqual(manager.listSessions().length, 0);
 		assert.ok(!fs.existsSync(missing), "nothing may be created");
 		// Nor does a manager that is shut down without ever spawning.
-		manager.terminateAll();
+		await manager.terminateAll();
 		assert.ok(!fs.existsSync(missing));
 	});
 
@@ -75,14 +75,14 @@ describe("SessionManager", () => {
 		manager.setRiskPolicy("fresh", {
 			...manager.getSession("fresh").riskPolicy,
 		});
-		manager.terminateSession("fresh");
-		manager.terminateAll();
+		await manager.terminateSession("fresh");
+		await manager.terminateAll();
 
 		assert.strictEqual(fs.readFileSync(file, "utf8"), old, "left untouched");
 		fs.rmSync(file);
 		const second = managerFor();
 		await second.createSession("again", iso.cwd);
-		second.terminateAll();
+		await second.terminateAll();
 		assert.ok(!fs.existsSync(file), "never created");
 	});
 
@@ -95,7 +95,7 @@ describe("SessionManager", () => {
 		assert.strictEqual(fs.statSync(instance).mode & 0o777, 0o700);
 		assert.strictEqual(fs.readdirSync(instance).length, 1, "one gate dir");
 
-		manager.terminateAll();
+		await manager.terminateAll();
 		assert.ok(!fs.existsSync(instance), "removed on shutdown");
 	});
 
@@ -120,17 +120,17 @@ describe("SessionManager", () => {
 			await manager.createSession("reuse", iso.cwd);
 			assert.strictEqual(manager.getSession("reuse").isAlive(), true);
 		} finally {
-			manager.terminateAll();
+			await manager.terminateAll();
 		}
 	});
 
 	test("terminateSession frees the id", async () => {
 		const manager = managerFor();
 		await manager.createSession("doomed", iso.cwd);
-		manager.terminateSession("doomed");
+		await manager.terminateSession("doomed");
 		assert.strictEqual(manager.listSessions().length, 0);
 		assert.throws(() => manager.getSession("doomed"), /Session not found/);
-		manager.terminateAll();
+		await manager.terminateAll();
 	});
 
 	test("two managers do not share sessions", async () => {
@@ -140,8 +140,8 @@ describe("SessionManager", () => {
 			await a.createSession("mine", iso.cwd);
 			assert.strictEqual(b.listSessions().length, 0);
 		} finally {
-			a.terminateAll();
-			b.terminateAll();
+			await a.terminateAll();
+			await b.terminateAll();
 		}
 	});
 
@@ -161,7 +161,7 @@ describe("SessionManager", () => {
 			session.onStatusChange?.("events", "CRASHED", "Test crash");
 			assert.deepStrictEqual(last, { sessionId: "events", status: "CRASHED" });
 		} finally {
-			manager.terminateAll();
+			await manager.terminateAll();
 		}
 	});
 });

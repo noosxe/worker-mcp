@@ -574,7 +574,7 @@ export function createServer(
 
 				case "terminate_pi_session": {
 					const { sessionId } = args as { sessionId: string };
-					sessionManager.terminateSession(sessionId);
+					await sessionManager.terminateSession(sessionId);
 					return {
 						content: [
 							{

@@ -31,6 +31,12 @@
 
 ### Security
 
+- Stopping a worker now reaches everything it started. pi runs each bash
+  command in a process group of its own, which a single group kill missed, and
+  a SIGKILL of pi left them running. The server sends SIGTERM first, then after
+  a grace period SIGKILL to the worker's group and to every descendant found by
+  walking the process tree (`/proc` on Linux, `ps` elsewhere), on terminate and
+  on server shutdown. A second shutdown signal kills at once.
 - The risk classifier works on pi's real tool names (`bash`, `read`, `edit`,
   `write`, `grep`, `find`, `ls`). Before, it matched names pi does not use, so
   every file tool was treated as an unknown tool. Unknown tools are HIGH.
@@ -51,6 +57,14 @@
 
 ### Changed
 
+- Worker processes are started in one place (`src/core/child.ts`), which
+  builds the environment, puts each worker in its own process group, frames its
+  JSON lines with a line-length cap (8 MiB, longer lines are dropped and
+  reported), truncates stderr lines, and never throws on a write to a closed
+  pipe. `terminate_pi_session` now returns once the worker is gone.
+- Internal: a provider interface (`src/providers/`) with a static registry and
+  an in-process fake provider for tests. pi is not behind it yet; tool names
+  and behaviour are unchanged.
 - **Auto-approval is bounded by the server.** With the default
   `gate.maxAutoApprove` a policy cannot auto-approve HIGH or CRITICAL calls,
   whatever `autoApproveUpTo` or `maxRiskLevel` it carries.
