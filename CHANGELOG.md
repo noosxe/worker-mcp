@@ -69,7 +69,8 @@
 - **Invalid configuration now fails startup**, with a message naming the source
   and key: bad JSON, unknown keys, wrong types, non-positive or non-numeric
   values, relative directories, unknown command-line flags, and a config file
-  that is group- or world-writable.
+  that is group- or world-writable, owned by neither you nor root, or in a
+  directory others can write to.
 - **Workers are no longer persisted.** `~/.config/worker-mcp/sessions.json` is
   no longer read or written, so a restarted server starts with no sessions.
   An existing file is left alone and ignored; it can be deleted. This also

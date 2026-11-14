@@ -360,6 +360,30 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 	};
 }
 
+/**
+ * Why a config file must not be trusted, or null. Like OpenSSH: owned by the
+ * current user or by root, not group- or world-writable, and not in a
+ * directory others can write to (a root-owned sticky directory is fine).
+ * `uid` is the current user, or null where there is no such notion.
+ */
+export function configFileProblem(
+	file: { mode: number; uid: number },
+	dir: { mode: number; uid: number },
+	uid: number | null,
+): string | null {
+	if (uid !== null && file.uid !== uid && file.uid !== 0) {
+		return "refusing a file that is not owned by you or root";
+	}
+	if ((file.mode & 0o022) !== 0) {
+		return "refusing a file that is group- or world-writable (run chmod go-w on it)";
+	}
+	const sticky = (dir.mode & 0o1000) !== 0;
+	if ((dir.mode & 0o022) !== 0 && !(dir.uid === 0 && sticky)) {
+		return "refusing a file in a directory that is group- or world-writable";
+	}
+	return null;
+}
+
 function readConfigFile(file: string): FileLayer {
 	const where = `file ${file}`;
 	let stat: fs.Stats;
@@ -373,16 +397,19 @@ function readConfigFile(file: string): FileLayer {
 	if (!stat.isFile()) {
 		throw new ConfigError(`Invalid config (${where}): not a regular file`);
 	}
-	if ((stat.mode & 0o022) !== 0) {
+	const uid = typeof process.getuid === "function" ? process.getuid() : null;
+	let parent: { mode: number; uid: number };
+	try {
+		// The directory of the resolved target, so a symlink is judged by where
+		// it leads (a Nix-managed file is a symlink into the store).
+		parent = fs.statSync(path.dirname(fs.realpathSync(file)));
+	} catch (e) {
 		throw new ConfigError(
-			`Invalid config (${where}): refusing a file that is group- or world-writable (run chmod go-w on it)`,
+			`Invalid config (${where}): cannot check its directory (${(e as NodeJS.ErrnoException).code ?? String(e)})`,
 		);
 	}
-	if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-		throw new ConfigError(
-			`Invalid config (${where}): refusing a file owned by another user`,
-		);
-	}
+	const problem = configFileProblem(stat, parent, uid);
+	if (problem) throw new ConfigError(`Invalid config (${where}): ${problem}`);
 	let json: unknown;
 	try {
 		json = JSON.parse(fs.readFileSync(file, "utf8"));

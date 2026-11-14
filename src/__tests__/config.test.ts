@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 
 import {
 	ConfigError,
+	configFileProblem,
 	defaultConfig,
 	formatConfig,
 	loadConfig,
@@ -347,5 +348,67 @@ describe("--print-config", () => {
 
 	test("the default config prints no secrets", () => {
 		assert.ok(!formatConfig(defaultConfig()).includes("[redacted]"));
+	});
+});
+
+describe("config file trust", () => {
+	const ME = 1000;
+	const ok = { mode: 0o100644, uid: ME };
+	const dir = { mode: 0o040755, uid: ME };
+
+	test("own file and root's file are accepted, others' are not", () => {
+		assert.strictEqual(configFileProblem(ok, dir, ME), null);
+		assert.strictEqual(configFileProblem({ ...ok, uid: 0 }, dir, ME), null);
+		assert.match(
+			configFileProblem({ ...ok, uid: 4242 }, dir, ME) ?? "",
+			/owned by you or root/,
+		);
+	});
+
+	test("group- or world-writable files are refused for either owner", () => {
+		for (const uid of [ME, 0]) {
+			for (const mode of [0o100664, 0o100646, 0o100666]) {
+				assert.match(
+					configFileProblem({ mode, uid }, dir, ME) ?? "",
+					/writable/,
+				);
+			}
+		}
+	});
+
+	test("a writable directory is refused unless root-owned and sticky", () => {
+		assert.ok(configFileProblem(ok, { mode: 0o040777, uid: ME }, ME));
+		assert.ok(configFileProblem(ok, { mode: 0o040775, uid: 0 }, ME));
+		assert.strictEqual(
+			configFileProblem(ok, { mode: 0o041777, uid: 0 }, ME),
+			null,
+		);
+		assert.strictEqual(
+			configFileProblem(ok, { mode: 0o041775, uid: 0 }, ME), // like /nix/store
+			null,
+		);
+	});
+
+	test("no uid notion: only the mode checks apply", () => {
+		assert.strictEqual(configFileProblem({ ...ok, uid: 5 }, dir, null), null);
+	});
+
+	test("a symlink to an acceptable file is accepted", () => {
+		const target = writeFile({ providers: { pi: { path: "via-link" } } });
+		const link = path.join(root, "link.json");
+		fs.symlinkSync(target, link);
+		assert.strictEqual(load(["--config", link]).providers.pi.path, "via-link");
+	});
+
+	test("a file in a world-writable directory is refused", () => {
+		const open = path.join(root, "open");
+		fs.mkdirSync(open);
+		fs.chmodSync(open, 0o777);
+		const file = path.join(open, "c.json");
+		fs.writeFileSync(file, "{}", { mode: 0o600 });
+		assert.match(
+			failure(() => load(["--config", file])),
+			/directory/,
+		);
 	});
 });
