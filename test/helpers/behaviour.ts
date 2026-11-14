@@ -1,0 +1,383 @@
+import assert from "node:assert";
+import * as fs from "node:fs";
+import { after, before, describe, test } from "node:test";
+
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+
+import {
+	createIsolation,
+	type Isolation,
+	pidGone,
+	sleep,
+	waitUntil,
+} from "./isolation.js";
+import { TOOLS } from "./tools.js";
+
+export interface Connection {
+	client: Client;
+	/** Close the client and shut the server down. */
+	close(): Promise<void>;
+}
+
+export interface Layer {
+	/** Called once with the isolation before any test; returns a teardown. */
+	setup?(iso: Isolation): () => void;
+	connect(iso: Isolation): Promise<Connection>;
+	/** Skip reason for the layer under the current runtime, if any. */
+	skip?: string;
+}
+
+export async function call(
+	client: Client,
+	name: string,
+	args: Record<string, unknown>,
+	timeoutMs?: number,
+) {
+	return client.callTool(
+		{ name, arguments: args },
+		undefined,
+		timeoutMs === undefined ? undefined : { timeout: timeoutMs },
+	);
+}
+
+export function textOf(result: object): string {
+	const content = (result as { content: { type: string; text: string }[] })
+		.content;
+	return content.map((block) => block.text).join("\n");
+}
+
+/** Call a tool and require a successful result; returns its text. */
+export async function callOk(
+	client: Client,
+	name: string,
+	args: Record<string, unknown>,
+) {
+	const result = await call(client, name, args);
+	assert.notStrictEqual(result.isError, true, textOf(result));
+	return textOf(result);
+}
+
+export async function sessionStatus(client: Client, sessionId: string) {
+	const list = JSON.parse(await callOk(client, TOOLS.list, {})) as {
+		sessionId: string;
+		status: string;
+	}[];
+	return list.find((s) => s.sessionId === sessionId)?.status;
+}
+
+export const gatedBash = (command: string) =>
+	`scenario:tool:bash:${JSON.stringify({ command })}`;
+
+/**
+ * Behaviour that must hold whatever sits underneath the tools: same tests run
+ * in-process and over stdio (and, over stdio, under Node and Bun).
+ */
+export function behaviourTests(name: string, layer: Layer) {
+	describe(name, { skip: layer.skip }, () => {
+		let iso: Isolation;
+		let teardown: (() => void) | undefined;
+
+		before(() => {
+			iso = createIsolation();
+			teardown = layer.setup?.(iso);
+		});
+		after(async () => {
+			teardown?.();
+			await iso.cleanup();
+		});
+
+		async function withServer(
+			fn: (client: Client, conn: Connection) => Promise<void>,
+		) {
+			const conn = await layer.connect(iso);
+			try {
+				await fn(conn.client, conn);
+			} finally {
+				await conn.close();
+			}
+		}
+
+		/** Spawn a session; returns the pid of its fake-pi. */
+		const spawnSession = async (client: Client, sessionId: string) => {
+			const known = iso.starts().length;
+			await callOk(client, TOOLS.spawn, { sessionId, cwd: iso.cwd });
+			return (await iso.workerAfter(known)).pid;
+		};
+
+		test("a plain send returns the worker's text", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "plain");
+				const result = await call(client, TOOLS.send, {
+					sessionId: "plain",
+					command: "hello",
+				});
+				assert.notStrictEqual(result.isError, true);
+				assert.strictEqual("task" in result, false);
+				assert.deepStrictEqual(result.content, [
+					{ type: "text", text: "fake-pi reply: hello" },
+				]);
+			});
+		});
+
+		test("spawn passes the gate extension and the system prompt to pi", async () => {
+			await withServer(async (client) => {
+				const known = iso.starts().length;
+				await callOk(client, TOOLS.spawn, {
+					sessionId: "argv",
+					cwd: iso.cwd,
+					systemPrompt: "be brief",
+				});
+				const start = await iso.workerAfter(known);
+				assert.deepStrictEqual(start.argv.slice(0, 2), ["--mode", "rpc"]);
+				assert.strictEqual(
+					start.argv[start.argv.indexOf("--system-prompt") + 1],
+					"be brief",
+				);
+				assert.ok(start.argv.includes("--extension"));
+			});
+		});
+
+		test("a gated tool call waits for approval, then runs", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "approve");
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "approve",
+					command: gatedBash("rm -rf build"),
+				});
+				assert.match(waiting, /^AWAITING_APPROVAL: /);
+				assert.match(waiting, /rm -rf build/);
+				const actionId = waiting.match(/Action ID: (\S+)\./)?.[1];
+				assert.ok(actionId, "the result names the action");
+				assert.strictEqual(
+					await sessionStatus(client, "approve"),
+					"AWAITING_APPROVAL",
+				);
+				const pending = JSON.parse(
+					await callOk(client, TOOLS.pending, { sessionId: "approve" }),
+				);
+				assert.strictEqual(pending.actionId, actionId);
+
+				const output = await callOk(client, TOOLS.approve, {
+					sessionId: "approve",
+					actionId,
+				});
+				assert.match(output, /^tool bash ran with /);
+				assert.strictEqual(await sessionStatus(client, "approve"), "IDLE");
+			});
+		});
+
+		test("a rejected tool call is blocked and the reason reaches the worker", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "reject");
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "reject",
+					command: gatedBash("rm -rf build"),
+				});
+				const actionId = waiting.match(/Action ID: (\S+)\./)?.[1];
+				assert.ok(actionId);
+				const output = await callOk(client, TOOLS.reject, {
+					sessionId: "reject",
+					actionId,
+					reason: "no",
+				});
+				assert.match(output, /^tool bash blocked: /);
+				assert.match(output, /blocked by the coordinator/);
+			});
+		});
+
+		test("a low-risk tool call is auto-approved without a prompt", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "lowrisk");
+				const output = await callOk(client, TOOLS.send, {
+					sessionId: "lowrisk",
+					command: `scenario:tool:read_file:${JSON.stringify({ path: "README.md" })}`,
+				});
+				assert.match(output, /^tool read_file ran with /);
+			});
+		});
+
+		test("cancel mid-run aborts the worker and the server stays up", async () => {
+			await withServer(async (client) => {
+				const pid = await spawnSession(client, "cancel");
+				const running = call(client, TOOLS.send, {
+					sessionId: "cancel",
+					command: "scenario:slow:60000",
+				});
+				await waitUntil(
+					async () => (await sessionStatus(client, "cancel")) === "RUNNING",
+					5000,
+					"RUNNING",
+				);
+				const cancelled = await callOk(client, TOOLS.cancel, {
+					sessionId: "cancel",
+				});
+				assert.match(cancelled, /Abort signal sent/);
+				await running; // the blocked send is released by the abort
+				await waitUntil(
+					async () => (await sessionStatus(client, "cancel")) === "IDLE",
+					5000,
+					"IDLE",
+				);
+				assert.ok(iso.received().includes("abort"));
+				assert.ok(!pidGone(pid), "the worker itself stays alive");
+
+				// The session and the server still work.
+				const output = await callOk(client, TOOLS.send, {
+					sessionId: "cancel",
+					command: "after cancel",
+				});
+				assert.strictEqual(output, "fake-pi reply: after cancel");
+			});
+		});
+
+		test("terminate mid-run: the server stays up and the worker is gone", async () => {
+			await withServer(async (client) => {
+				const pid = await spawnSession(client, "terminate");
+				const running = call(client, TOOLS.send, {
+					sessionId: "terminate",
+					command: "scenario:slow:60000",
+				});
+				await waitUntil(
+					async () => (await sessionStatus(client, "terminate")) === "RUNNING",
+					5000,
+					"RUNNING",
+				);
+				await callOk(client, TOOLS.terminate, { sessionId: "terminate" });
+				await running.catch(() => {}); // however the pending send ends
+				await waitUntil(() => pidGone(pid), 5000, "fake-pi to exit");
+
+				assert.strictEqual(await sessionStatus(client, "terminate"), undefined);
+				// The id is reusable and the server still serves.
+				await spawnSession(client, "terminate");
+				assert.strictEqual(
+					await callOk(client, TOOLS.send, {
+						sessionId: "terminate",
+						command: "again",
+					}),
+					"fake-pi reply: again",
+				);
+			});
+		});
+
+		test("a worker that crashes mid-run is reported and the server stays up", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "crash");
+				const output = await call(client, TOOLS.send, {
+					sessionId: "crash",
+					command: "scenario:crash-mid-run",
+				});
+				assert.strictEqual(textOf(output), "Process terminated");
+				await waitUntil(
+					async () => (await sessionStatus(client, "crash")) === "CRASHED",
+					5000,
+					"CRASHED",
+				);
+				const again = await call(client, TOOLS.send, {
+					sessionId: "crash",
+					command: "hello",
+				});
+				assert.strictEqual(again.isError, true);
+				assert.match(textOf(again), /no running pi process/);
+			});
+		});
+
+		test("a worker that closes its stdin does not take the server down", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "stdin-close");
+				const first = await callOk(client, TOOLS.send, {
+					sessionId: "stdin-close",
+					command: "scenario:stdin-close",
+				});
+				assert.match(first, /closing stdin/);
+				await sleep(100);
+				// Writing to the closed pipe must not crash the server. The call
+				// itself is not awaited: see the todo test below.
+				void call(
+					client,
+					TOOLS.send,
+					{ sessionId: "stdin-close", command: "anyone there?" },
+					1000,
+				).catch(() => {});
+				await sleep(200);
+				await callOk(client, TOOLS.list, {});
+				await callOk(client, TOOLS.terminate, { sessionId: "stdin-close" });
+			});
+		});
+
+		test(
+			"a send to a worker that closed its stdin fails promptly",
+			{
+				todo: "the call hangs today: the failed write is not turned into a run error; fixed with the EPIPE-safe framing in the provider-split phase",
+			},
+			async () => {
+				await withServer(async (client) => {
+					await spawnSession(client, "stdin-close-2");
+					await callOk(client, TOOLS.send, {
+						sessionId: "stdin-close-2",
+						command: "scenario:stdin-close",
+					});
+					await sleep(100);
+					const outcome = await call(
+						client,
+						TOOLS.send,
+						{ sessionId: "stdin-close-2", command: "anyone there?" },
+						3000,
+					).then(
+						() => "settled",
+						() => "hung",
+					);
+					assert.strictEqual(outcome, "settled");
+					await callOk(client, TOOLS.terminate, { sessionId: "stdin-close-2" });
+				});
+			},
+		);
+
+		test("large worker output arrives intact", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "big");
+				const output = await callOk(client, TOOLS.send, {
+					sessionId: "big",
+					command: "scenario:big-output:300000",
+				});
+				assert.strictEqual(output.length, 300000);
+				assert.ok(output.startsWith("0123456789abcdef"));
+			});
+		});
+
+		test("markdown rules and table separators pass through unchanged", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "markdown");
+				const output = await callOk(client, TOOLS.send, {
+					sessionId: "markdown",
+					command: "scenario:markdown-rules",
+				});
+				assert.strictEqual(
+					output,
+					"Title\n----\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n----",
+				);
+			});
+		});
+
+		test(
+			"gate file missing: spawn is refused",
+			{
+				todo: "fails open today (pi is started without the gate); the launch-hardening phase makes it pass",
+			},
+			async () => {
+				await withServer(async (client) => {
+					const gate = `${iso.home}/.config/worker-mcp/worker-mcp-gate.ts`;
+					fs.rmSync(gate);
+					const result = await call(client, TOOLS.spawn, {
+						sessionId: "nogate",
+						cwd: iso.cwd,
+					});
+					assert.strictEqual(result.isError, true, "spawn must be refused");
+					assert.ok(
+						!iso.starts().some((s) => !s.argv.includes("--extension")),
+						"no ungated pi may have been started",
+					);
+				});
+			},
+		);
+	});
+}
