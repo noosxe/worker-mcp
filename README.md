@@ -271,7 +271,7 @@ Lowest to highest:
    `$XDG_CONFIG_HOME/worker-mcp/config.json` (`~/.config/worker-mcp/config.json`
    when `XDG_CONFIG_HOME` is unset). A missing default file is fine; a missing
    explicit one is an error. The file is JSON only, never code, and is refused
-   if it is group- or world-writable, owned by anyone but you or root, or in a directory others can write to (a root-owned sticky directory is fine). A symlink is judged by its target, so a Nix or home-manager managed file works. See
+   if it is group- or world-writable, owned by anyone but you or root, or in a directory others can write to (a root-owned sticky directory is fine). A symlink is judged by its target. A file whose real path is inside the Nix store (`$NIX_STORE_DIR`, default `/nix/store`) is only checked for not being group- or world-writable, because the store is immutable and shows foreign owners under a user namespace; this is what makes a home-manager managed config work. See
    [config.example.json](config.example.json).
 3. `WORKER_MCP_*` environment variables.
 4. Command-line flags.

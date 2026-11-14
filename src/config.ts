@@ -364,13 +364,22 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
  * Why a config file must not be trusted, or null. Like OpenSSH: owned by the
  * current user or by root, not group- or world-writable, and not in a
  * directory others can write to (a root-owned sticky directory is fine).
+ * A file in the Nix store (`inStore`) only has to be not writable by others.
  * `uid` is the current user, or null where there is no such notion.
  */
 export function configFileProblem(
 	file: { mode: number; uid: number },
 	dir: { mode: number; uid: number },
 	uid: number | null,
+	inStore = false,
 ): string | null {
+	// The Nix store is immutable, and inside a user namespace its files show up
+	// owned by the overflow uid, so only the file's own mode is judged there.
+	if (inStore) {
+		return (file.mode & 0o022) !== 0
+			? "refusing a file that is group- or world-writable"
+			: null;
+	}
 	if (uid !== null && file.uid !== uid && file.uid !== 0) {
 		return "refusing a file that is not owned by you or root";
 	}
@@ -384,7 +393,7 @@ export function configFileProblem(
 	return null;
 }
 
-function readConfigFile(file: string): FileLayer {
+function readConfigFile(file: string, env: NodeJS.ProcessEnv): FileLayer {
 	const where = `file ${file}`;
 	let stat: fs.Stats;
 	try {
@@ -399,16 +408,20 @@ function readConfigFile(file: string): FileLayer {
 	}
 	const uid = typeof process.getuid === "function" ? process.getuid() : null;
 	let parent: { mode: number; uid: number };
+	let inStore = false;
 	try {
 		// The directory of the resolved target, so a symlink is judged by where
 		// it leads (a Nix-managed file is a symlink into the store).
-		parent = fs.statSync(path.dirname(fs.realpathSync(file)));
+		const real = fs.realpathSync(file);
+		const store = path.resolve(env.NIX_STORE_DIR || "/nix/store");
+		inStore = real.startsWith(store + path.sep);
+		parent = fs.statSync(path.dirname(real));
 	} catch (e) {
 		throw new ConfigError(
 			`Invalid config (${where}): cannot check its directory (${(e as NodeJS.ErrnoException).code ?? String(e)})`,
 		);
 	}
-	const problem = configFileProblem(stat, parent, uid);
+	const problem = configFileProblem(stat, parent, uid, inStore);
 	if (problem) throw new ConfigError(`Invalid config (${where}): ${problem}`);
 	let json: unknown;
 	try {
@@ -491,12 +504,12 @@ export function loadConfig(
 	let fileLayer: FileLayer = {};
 	if (explicit !== undefined) {
 		configFile = path.resolve(explicit);
-		fileLayer = readConfigFile(configFile);
+		fileLayer = readConfigFile(configFile, env);
 	} else {
 		const candidate = defaultConfigFile(env);
 		if (fs.existsSync(candidate)) {
 			configFile = candidate;
-			fileLayer = readConfigFile(candidate);
+			fileLayer = readConfigFile(candidate, env);
 		}
 	}
 
