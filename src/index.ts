@@ -57,6 +57,7 @@ Options:
       --env-passthrough <names>  Extra worker env names, comma-separated
       --state-dir <path>      State directory
       --runtime-dir <path>    Directory for the private runtime dir
+      --max-auto-approve <level>  Ceiling on auto-approval: LOW, MEDIUM or HIGH
 
 Settings may also come from WORKER_MCP_* environment variables; see the README.
 `);

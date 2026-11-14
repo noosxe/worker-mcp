@@ -16,9 +16,60 @@
   even when it matches a force-dropped pattern such as `*_TOKEN`. The same name
   from the environment or a flag, or a pattern, cannot.
 - `zod` is a direct dependency.
+- Server setting `gate.maxAutoApprove` (`WORKER_MCP_MAX_AUTO_APPROVE`,
+  `--max-auto-approve`; `LOW`, `MEDIUM` or `HIGH`, default `MEDIUM`): the
+  highest level a coordinator's policy may auto-approve. Policies given to
+  `spawn_pi_session` and `set_risk_policy` are lowered to it, and the result
+  lists what was lowered. `gate.protectedPaths` adds paths workers may never
+  write without approval.
+- Risk policy v2: `overrides[].match` (`kind`, `tool`, `command`, `path`) with
+  `action: allow | escalate | deny`. The earlier shape is converted on input.
+  The spawn and `set_risk_policy` results report the policy in force.
+- A pending approval reports `reason` and `hardLimit`, and a call refused by a
+  `deny` override is reported in the next result.
+- Each worker keeps a bounded in-memory log of every gate decision.
 
 ### Security
 
+- The risk classifier works on pi's real tool names (`bash`, `read`, `edit`,
+  `write`, `grep`, `find`, `ls`). Before, it matched names pi does not use, so
+  every file tool was treated as an unknown tool. Unknown tools are HIGH.
+  Paths are resolved with symlinks followed and checked with `path.relative`,
+  so `/work-evil`, `src/../../x` and a symlink out of the workspace are
+  outside it.
+- Protected paths are hard limits: writes or edits to `.mcp.json`, `.claude/`,
+  `.git/hooks/`, `.git/config`, `.envrc`, `.husky/`, shell startup files, pi
+  and worker-mcp's own configuration, and credentials, and shell commands that
+  name them, can never be auto-approved by any policy or override, inside the
+  workspace too. They always go to the coordinator. See `docs/security.md`.
+- The shell classifier now has a quote-aware lexer. It rates each command in a
+  pipeline or list and takes the highest, sees through quoting and escapes,
+  rates the body of `$(...)` and backticks, and treats anything it cannot parse
+  as HIGH at least.
+- Policy overrides use a glob matcher with no backtracking, so a pattern cannot
+  stall the server.
+
+### Changed
+
+- **Auto-approval is bounded by the server.** With the default
+  `gate.maxAutoApprove` a policy cannot auto-approve HIGH or CRITICAL calls,
+  whatever `autoApproveUpTo` or `maxRiskLevel` it carries.
+- An `allow` override with no `maxRiskLevel` now covers up to MEDIUM (it
+  covered everything but CRITICAL), never covers a path outside the workspace
+  unless its `path` pattern names it, and never covers a protected path.
+- `notifyUpTo` no longer has a separate meaning: it is merged into
+  `autoApproveUpTo` and every auto-approved call is reported in the next result.
+- Reads outside the workspace are MEDIUM (they were LOW); reading a credential
+  file is a hard limit. Edits and writes inside the workspace that are not
+  configuration files are MEDIUM (some were HIGH).
+- Simple LOW pipelines and lists such as `cat f | grep x` or `ls && pwd` are LOW
+  again; quoted metacharacters no longer count. `find ... -name x -delete` and
+  `chmod u+w ./dist` inside the workspace are MEDIUM instead of HIGH and
+  CRITICAL. Redirection to a file, here-documents, subshells, background jobs
+  and variable expansion in a command stay at least HIGH.
+- The old tool names `read_file`, `write_file`, `edit_file`, `run_command` and
+  the like are no longer recognised as tools (pi never used them); in a policy
+  override they are converted to pi's names.
 - Workers no longer inherit the server's environment. It is built from an
   allowlist (`PATH`, `HOME`, locale, `TERM`, XDG and temp dirs, TLS/CA and Nix
   variables, `PI_*`). `SSH_AUTH_SOCK`, `*_TOKEN`, `*_SECRET*`, `AWS_*`, cloud

@@ -22,6 +22,67 @@ For every tool call, a gate extension asks the server, which classifies the
 action by risk and either auto-approves it under the session's policy or waits
 for the coordinator.
 
+- **Tool calls are mapped to canonical kinds** before they are rated. pi's
+  tools map as `bash` to shell, `read` to read, `ls` to list, `grep` and `find`
+  to search, `edit` to edit and `write` to write. Any other tool name is HIGH.
+  Paths are resolved against the worker's working directory with every
+  symlink followed (a dangling one too), and "inside the workspace" is decided
+  by `path.relative`, not by a string prefix. A symlink inside the workspace
+  that points out counts as outside.
+- **Levels.** Reads, listings and searches in the workspace are LOW; outside it
+  MEDIUM. Writes and edits in the workspace are MEDIUM, HIGH for build and
+  configuration files (`package.json`, `flake.nix`, workflows and the like);
+  outside the workspace CRITICAL. Shell commands are rated by a quote-aware
+  lexer, below.
+- **Protected paths are hard limits.** A write or edit of one, or a shell
+  command that names one, is never auto-approved: no policy, override or
+  classifier can allow it, inside the workspace or out. It always goes to the
+  coordinator. The built-in list:
+
+  | Rule                 | Paths                                                                                                                                                                                                                                                                                 | Gate                      |
+  | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+  | `worker-mcp-state`   | the state and runtime directories, `~/.config/worker-mcp/`                                                                                                                                                                                                                            | write CRITICAL, read HIGH |
+  | `coordinator-config` | `<workspace>/.mcp.json`, `<workspace>/.claude/`, `~/.claude/`, `~/.claude.json`, `~/.config/Claude/`                                                                                                                                                                                  | write HIGH                |
+  | `runs-later`         | `.git/hooks/` and `.git/config` (also in submodules), `.envrc`, `.husky/`, `~/.bashrc`, `~/.bash_profile`, `~/.bash_login`, `~/.bash_logout`, `~/.profile`, `~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.zlogin`, `~/.config/fish/`, `~/.config/autostart/`, `~/.config/systemd/user/` | write HIGH                |
+  | `agent-config`       | `~/.pi/`, `<workspace>/.pi/`                                                                                                                                                                                                                                                          | write HIGH                |
+  | `secrets`            | `~/.ssh/`, `~/.gnupg/`, `~/.aws/`, `~/.config/gh/`, `~/.netrc`, `~/.docker/config.json`, `~/.pi/agent/auth.json`, `.env` and `.env.*` in the workspace                                                                                                                                | read HIGH, write CRITICAL |
+  | `configured`         | `gate.protectedPaths` from the config file                                                                                                                                                                                                                                            | write HIGH                |
+
+  Matching is case-insensitive and on real paths, so `./x/../.mcp.json` and a
+  symlink to `.mcp.json` are caught. A rule that would cover the whole
+  workspace is ignored. For shell, an argument that resolves to a protected
+  path applies the same rule (a read-only command like `cat` is a read, anything
+  else a write), as does `git config`, and a glob such as `.e*` that could
+  expand to one. This is best effort: `cd .git/hooks && cp x pre-commit` is
+  rated HIGH, not hard.
+
+- **Shell lexer.** A command is split into simple commands the way a shell
+  would (quotes, escapes, `$(...)`, backticks, `|`, `&&`, `||`, `;`, newlines)
+  and the level is the highest over its parts. A pipeline or list of LOW
+  commands (`cat f | grep x`, `ls | wc -l`, `ls && pwd`) is LOW; quoted
+  metacharacters are not metacharacters. At least HIGH: command or process
+  substitution (its body is rated too), redirection other than `2>&1` and
+  `/dev/null`, here-documents, subshells and groups, background jobs,
+  assignments before a command, a variable or other expansion whose value is
+  unknown (`$X`, `${X}`, `$'...'`, `{a,b}`), wrappers (`env`, `xargs`, `sh`,
+  `time`, ...), interpreters, package runners and anything unknown. Whatever
+  the lexer cannot parse with confidence is HIGH too. A pipe into a shell and
+  `eval`/`exec` are CRITICAL.
+- **The coordinator's policy has a ceiling.** `gate.maxAutoApprove` (default
+  MEDIUM, at most HIGH) bounds what `spawn_pi_session` and `set_risk_policy`
+  can auto-approve: `autoApproveUpTo` and every `allow` override are lowered to
+  it, and the result says what was lowered. A prompt-injected coordinator
+  therefore cannot talk the server into auto-approving HIGH or CRITICAL calls.
+  Only the server's configuration can change the ceiling.
+- **Overrides** apply to canonical calls. An `allow` never covers a hard limit,
+  never covers a path outside the workspace unless its `path` pattern names it,
+  and stops at its `maxRiskLevel` (default MEDIUM; CRITICAL only if given
+  explicitly, which the ceiling then lowers). `deny` refuses a call without
+  asking. Glob patterns are matched by an algorithm with no backtracking, so a
+  pattern cannot be written to stall the server.
+- Every decision, allowed or not, is kept in a bounded in-memory log for the
+  worker, with a digest of the arguments and a preview of at most 200
+  characters, not the arguments themselves.
 - The gate is a constant compiled into the server. Before each worker starts,
   it is written to a new private directory (mode 0700, file 0600) under the
   runtime directory (`$XDG_RUNTIME_DIR/worker-mcp`, or

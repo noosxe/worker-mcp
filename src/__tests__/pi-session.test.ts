@@ -6,9 +6,39 @@ import * as path from "node:path";
 import { describe, test } from "node:test";
 
 import { DEFAULT_MAX_OUTPUT_CHARS, defaultConfig } from "../config.js";
+import { RiskLevel } from "../gate/risk.js";
 import { PiSession } from "../session/pi-session.js";
-import { RiskLevel } from "../session/risk-classifier.js";
 import { RuntimeDir } from "../session/runtime-dir.js";
+
+const confirm = (id: string, toolName: string, input: unknown) =>
+	JSON.stringify({
+		type: "extension_ui_request",
+		method: "confirm",
+		id,
+		title: "worker-mcp-gate",
+		message: JSON.stringify({ toolName, input }),
+	});
+
+const withSession = (policy?: unknown) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-gate-"));
+	const home = path.join(root, "home");
+	const ws = path.join(root, "ws");
+	fs.mkdirSync(home);
+	fs.mkdirSync(ws);
+	const session = new PiSession("g", ws, undefined, undefined, policy, {
+		env: { HOME: home },
+	});
+	const written: any[] = [];
+	(session as any).writeRaw = async (obj: any) => {
+		written.push(obj);
+	};
+	return {
+		session,
+		written,
+		ws,
+		cleanup: () => fs.rmSync(root, { recursive: true }),
+	};
+};
 
 describe("PiSession - Unit Tests", () => {
 	test("detectLoop - Normal text should not trigger loop detection", () => {
@@ -590,5 +620,163 @@ describe("PiSession - Unit Tests", () => {
 
 		assert.strictEqual(session.status, "IDLE");
 		assert.strictEqual(resolved, "This is a detailed response about the task.");
+	});
+
+	describe("the approval gate", () => {
+		test("a protected path waits for the coordinator under any policy", () => {
+			const { session, written, cleanup } = withSession({
+				autoApproveUpTo: RiskLevel.CRITICAL,
+				overrides: [
+					{
+						match: { tool: "*" },
+						action: "allow",
+						maxRiskLevel: RiskLevel.CRITICAL,
+					},
+				],
+			});
+			try {
+				(session as any).handleStdoutLine(
+					confirm("p1", "write", { path: ".mcp.json" }),
+				);
+				assert.deepStrictEqual(written, []);
+				assert.strictEqual(session.status, "AWAITING_APPROVAL");
+				assert.strictEqual(session.pendingAction?.hardLimit, true);
+				assert.match(session.pendingAction?.reason ?? "", /protected/i);
+			} finally {
+				cleanup();
+			}
+		});
+
+		test("the ceiling holds even when a policy is passed straight to the session", () => {
+			const { session, written, cleanup } = withSession({
+				autoApproveUpTo: RiskLevel.HIGH,
+				overrides: [],
+			});
+			try {
+				assert.strictEqual(
+					session.riskPolicy.autoApproveUpTo,
+					RiskLevel.MEDIUM,
+				);
+				assert.ok(session.policyReport?.clamped.length);
+				(session as any).handleStdoutLine(
+					confirm("p2", "bash", { command: "rm f" }),
+				);
+				assert.deepStrictEqual(written, []);
+				assert.strictEqual(session.status, "AWAITING_APPROVAL");
+			} finally {
+				cleanup();
+			}
+		});
+
+		test("a deny override answers the worker without asking", () => {
+			const { session, written, cleanup } = withSession({
+				autoApproveUpTo: RiskLevel.LOW,
+				overrides: [{ match: { command: "rm *" }, action: "deny" }],
+			});
+			try {
+				(session as any).handleStdoutLine(
+					confirm("d1", "bash", { command: "rm f" }),
+				);
+				assert.strictEqual(written.length, 1);
+				assert.strictEqual(written[0].confirmed, false);
+				assert.match(written[0].value, /Denied by override/);
+				assert.strictEqual(session.status, "IDLE");
+				assert.strictEqual(session.pendingAction, null);
+				assert.match(
+					(session as any).takeAutoApprovedNotes(),
+					/Denied by the risk policy/,
+				);
+				assert.strictEqual((session as any).takeAutoApprovedNotes(), "");
+			} finally {
+				cleanup();
+			}
+		});
+
+		test("every decision lands in the gate log, including the coordinator's", async () => {
+			const { session, cleanup } = withSession();
+			try {
+				(session as any).handleStdoutLine(
+					confirm("l1", "bash", { command: "ls" }),
+				);
+				(session as any).handleStdoutLine(
+					confirm("l2", "bash", { command: "rm f" }),
+				);
+				const pending = session.approveAction("l2");
+				(session as any).handleStdoutLine('{"type":"agent_end"}');
+				await pending;
+				const log = session.getGateLog();
+				assert.deepStrictEqual(
+					log.map((e) => [e.actionId, e.decision, e.decidedBy]),
+					[
+						["l1", "allow", "rules"],
+						["l2", "escalate", "rules"],
+						["l2", "allow", "coordinator"],
+					],
+				);
+			} finally {
+				cleanup();
+			}
+		});
+
+		test("a worker that ends with a call pending is logged as cancelled", () => {
+			const { session, cleanup } = withSession();
+			try {
+				(session as any).handleStdoutLine(
+					confirm("c1", "bash", { command: "rm f" }),
+				);
+				session.terminate();
+				const last = session.getGateLog().at(-1);
+				assert.strictEqual(last?.decidedBy, "cancel");
+				assert.strictEqual(last?.decision, "deny");
+			} finally {
+				cleanup();
+			}
+		});
+
+		test("the earlier policy shape still works", () => {
+			const { session, written, cleanup } = withSession({
+				autoApproveUpTo: RiskLevel.LOW,
+				notifyUpTo: RiskLevel.MEDIUM,
+				overrides: [],
+			});
+			try {
+				assert.strictEqual(session.policyReport?.converted, true);
+				(session as any).handleStdoutLine(
+					confirm("v1", "bash", { command: "mkdir b" }),
+				);
+				assert.strictEqual(written[0].confirmed, true);
+			} finally {
+				cleanup();
+			}
+		});
+
+		test("an invalid policy is rejected when the session is built", () => {
+			assert.throws(
+				() =>
+					new PiSession("bad", "/work", undefined, undefined, {
+						autoApproveUpTo: 9,
+					}),
+				/Invalid riskPolicy/,
+			);
+		});
+
+		test("a request the gate cannot read goes to the coordinator", () => {
+			const { session, written, cleanup } = withSession();
+			try {
+				(session as any).handleStdoutLine(
+					JSON.stringify({
+						type: "extension_ui_request",
+						method: "confirm",
+						id: "u1",
+						title: "worker-mcp-gate",
+						message: "not json",
+					}),
+				);
+				assert.deepStrictEqual(written, []);
+				assert.strictEqual(session.status, "AWAITING_APPROVAL");
+			} finally {
+				cleanup();
+			}
+		});
 	});
 });

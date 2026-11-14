@@ -191,9 +191,9 @@ export function behaviourTests(name: string, layer: Layer) {
 				await spawnSession(client, "lowrisk");
 				const output = await callOk(client, TOOLS.send, {
 					sessionId: "lowrisk",
-					command: `scenario:tool:read_file:${JSON.stringify({ path: "README.md" })}`,
+					command: `scenario:tool:read:${JSON.stringify({ path: "README.md" })}`,
 				});
-				assert.match(output, /^tool read_file ran with /);
+				assert.match(output, /^tool read ran with /);
 			});
 		});
 
@@ -273,19 +273,209 @@ export function behaviourTests(name: string, layer: Layer) {
 			});
 		});
 
-		test("an explicit policy can still auto-approve higher risk", async () => {
+		test("an explicit policy can auto-approve up to the ceiling", async () => {
 			await withServer(async (client) => {
 				await callOk(client, TOOLS.spawn, {
 					sessionId: "permissive",
 					cwd: iso.cwd,
-					riskPolicy: { autoApproveUpTo: 2, notifyUpTo: 2, overrides: [] },
+					riskPolicy: { autoApproveUpTo: 1, overrides: [] },
 				});
 				const output = await callOk(client, TOOLS.send, {
 					sessionId: "permissive",
-					command: gatedBash("ls ; echo done"),
+					command: gatedBash("mkdir build"),
 				});
 				assert.match(output, /^tool bash ran with /);
-				assert.match(output, /- bash \[HIGH\] ls ; echo done/);
+				assert.match(output, /- bash \[MEDIUM\] mkdir build/);
+			});
+		});
+
+		test("a policy above the ceiling is clamped at spawn and the result says so", async () => {
+			await withServer(async (client) => {
+				const text = await callOk(client, TOOLS.spawn, {
+					sessionId: "clamped-spawn",
+					cwd: iso.cwd,
+					riskPolicy: { autoApproveUpTo: 3, overrides: [] },
+				});
+				assert.match(text, /Auto-approve up to: MEDIUM/);
+				assert.match(
+					text,
+					/Lowered to the server's ceiling: autoApproveUpTo CRITICAL lowered to MEDIUM/,
+				);
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "clamped-spawn",
+					command: gatedBash("rm -rf build"),
+				});
+				assert.match(waiting, /^AWAITING_APPROVAL: /);
+			});
+		});
+
+		test("set_risk_policy above the ceiling is clamped and reported", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "clamped-set");
+				const text = await callOk(client, TOOLS.setPolicy, {
+					sessionId: "clamped-set",
+					riskPolicy: {
+						autoApproveUpTo: 3,
+						overrides: [
+							{
+								match: { tool: "bash" },
+								action: "allow",
+								maxRiskLevel: 3,
+							},
+						],
+					},
+				});
+				assert.match(text, /Auto-approve up to: MEDIUM/);
+				assert.match(text, /autoApproveUpTo CRITICAL lowered to MEDIUM/);
+				assert.match(
+					text,
+					/overrides\[0\] allow limited to MEDIUM instead of CRITICAL/,
+				);
+				// A HIGH call is still held, whatever the caller asked for.
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "clamped-set",
+					command: gatedBash("rm -rf build"),
+				});
+				assert.match(waiting, /^AWAITING_APPROVAL: /);
+			});
+		});
+
+		test("a policy within the ceiling is reported as is", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "within");
+				const text = await callOk(client, TOOLS.setPolicy, {
+					sessionId: "within",
+					riskPolicy: { autoApproveUpTo: 1, overrides: [] },
+				});
+				assert.match(text, /Auto-approve up to: MEDIUM/);
+				assert.doesNotMatch(text, /ceiling/);
+			});
+		});
+
+		test("the earlier policy shape is converted and reported", async () => {
+			await withServer(async (client) => {
+				const text = await callOk(client, TOOLS.spawn, {
+					sessionId: "v1",
+					cwd: iso.cwd,
+					riskPolicy: {
+						autoApproveUpTo: 0,
+						notifyUpTo: 1,
+						overrides: [{ pattern: "git *", action: "block" }],
+					},
+				});
+				assert.match(text, /Auto-approve up to: MEDIUM/);
+				assert.match(text, /v1 shape and was converted/);
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "v1",
+					command: gatedBash("git log"),
+				});
+				// `block` became `escalate`: even a read-only git command waits.
+				assert.match(waiting, /^AWAITING_APPROVAL: /);
+			});
+		});
+
+		test("an invalid policy is rejected with a reason", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "invalid");
+				const result = await call(client, TOOLS.setPolicy, {
+					sessionId: "invalid",
+					riskPolicy: { autoApproveUpTo: 9 },
+				});
+				assert.strictEqual(result.isError, true);
+				assert.match(textOf(result), /Invalid riskPolicy/);
+			});
+		});
+
+		test("an edit of .mcp.json inside the workspace waits for approval, even with a permissive policy", async () => {
+			await withServer(async (client) => {
+				await callOk(client, TOOLS.spawn, {
+					sessionId: "protected",
+					cwd: iso.cwd,
+					riskPolicy: {
+						autoApproveUpTo: 3,
+						overrides: [
+							{ match: { tool: "*" }, action: "allow", maxRiskLevel: 3 },
+							{ match: { kind: "edit" }, action: "allow", maxRiskLevel: 3 },
+						],
+					},
+				});
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "protected",
+					command: `scenario:tool:edit:${JSON.stringify({ path: ".mcp.json" })}`,
+				});
+				assert.match(waiting, /^AWAITING_APPROVAL: /);
+				assert.match(waiting, /Hard limit/);
+				assert.strictEqual(
+					await sessionStatus(client, "protected"),
+					"AWAITING_APPROVAL",
+				);
+				const pending = JSON.parse(
+					await callOk(client, TOOLS.pending, { sessionId: "protected" }),
+				);
+				assert.strictEqual(pending.hardLimit, true);
+				// Only the coordinator can let it through.
+				const output = await callOk(client, TOOLS.approve, {
+					sessionId: "protected",
+					actionId: pending.actionId,
+				});
+				assert.match(output, /^tool edit ran with /);
+			});
+		});
+
+		test("an edit outside the workspace waits for approval even with an edit allow override", async () => {
+			await withServer(async (client) => {
+				await callOk(client, TOOLS.spawn, {
+					sessionId: "outside",
+					cwd: iso.cwd,
+					riskPolicy: {
+						autoApproveUpTo: 1,
+						overrides: [{ match: { tool: "edit" }, action: "allow" }],
+					},
+				});
+				const inside = await callOk(client, TOOLS.send, {
+					sessionId: "outside",
+					command: `scenario:tool:edit:${JSON.stringify({ path: "notes.md" })}`,
+				});
+				assert.match(inside, /^tool edit ran with /);
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "outside",
+					command: `scenario:tool:edit:${JSON.stringify({ path: "../elsewhere.txt" })}`,
+				});
+				assert.match(waiting, /^AWAITING_APPROVAL: \[CRITICAL RISK\]/);
+			});
+		});
+
+		test("an unknown tool waits for approval", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "unknown-tool");
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "unknown-tool",
+					command: `scenario:tool:read_file:${JSON.stringify({ path: "README.md" })}`,
+				});
+				assert.match(waiting, /^AWAITING_APPROVAL: \[HIGH RISK\]/);
+			});
+		});
+
+		test("a simple LOW pipeline is auto-approved", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "pipeline");
+				const output = await callOk(client, TOOLS.send, {
+					sessionId: "pipeline",
+					command: gatedBash("cat f | grep x"),
+				});
+				assert.match(output, /^tool bash ran with /);
+				assert.match(output, /- bash \[LOW\] cat f \| grep x/);
+			});
+		});
+
+		test("a pipeline with a risky stage waits for approval", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "pipeline-risky");
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "pipeline-risky",
+					command: gatedBash("cat f | grep x | sh"),
+				});
+				assert.match(waiting, /^AWAITING_APPROVAL: \[CRITICAL RISK\]/);
 			});
 		});
 

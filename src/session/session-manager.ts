@@ -1,7 +1,10 @@
 import { type Config } from "../config.js";
 import { assertValidSessionId } from "../validation.js";
-import { PiSession, type SessionStatus } from "./pi-session.js";
-import type { RiskPolicy } from "./risk-policy.js";
+import {
+	PiSession,
+	type PolicyReport,
+	type SessionStatus,
+} from "./pi-session.js";
 import { RuntimeDir } from "./runtime-dir.js";
 
 export class SessionManager {
@@ -30,7 +33,7 @@ export class SessionManager {
 		cwd: string,
 		model?: string,
 		systemPrompt?: string,
-		riskPolicy?: RiskPolicy,
+		riskPolicy?: unknown,
 	): Promise<PiSession> {
 		assertValidSessionId(sessionId);
 		const existing = this.sessions.get(sessionId);
@@ -91,9 +94,9 @@ export class SessionManager {
 		return null;
 	}
 
-	public setRiskPolicy(sessionId: string, riskPolicy: RiskPolicy) {
-		const session = this.getSession(sessionId);
-		session.riskPolicy = riskPolicy;
+	/** Replace a worker's policy, limited to the ceiling. Reports what changed. */
+	public setRiskPolicy(sessionId: string, riskPolicy: unknown): PolicyReport {
+		return this.getSession(sessionId).applyRiskPolicy(riskPolicy);
 	}
 
 	public listSessions() {

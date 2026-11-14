@@ -33,6 +33,15 @@ export interface Config {
 	providers: {
 		pi: { path: string };
 	};
+	gate: {
+		/**
+		 * Ceiling on what a coordinator-supplied policy may auto-approve. Policies
+		 * from `spawn` and `set_risk_policy` are lowered to it. Never CRITICAL.
+		 */
+		maxAutoApprove: "LOW" | "MEDIUM" | "HIGH";
+		/** Extra paths (absolute, or `~/`) workers may never write unasked. */
+		protectedPaths: string[];
+	};
 }
 
 export const DEFAULT_MAX_OUTPUT_CHARS = 64000;
@@ -56,6 +65,15 @@ const envName = z
 		"must be a variable name or a PREFIX_* pattern (letters, digits, '_' and '*')",
 	);
 
+const maxAutoApprove = z.enum(["LOW", "MEDIUM", "HIGH"]);
+const protectedPath = z
+	.string()
+	.min(1)
+	.refine(
+		(p) => path.isAbsolute(p) || p.startsWith("~/"),
+		"must be an absolute path or start with ~/",
+	);
+
 /** The JSON file: every key optional, unknown keys rejected. */
 export const configFileSchema = z.strictObject({
 	stateDir: absolutePath.optional(),
@@ -70,6 +88,12 @@ export const configFileSchema = z.strictObject({
 	providers: z
 		.strictObject({
 			pi: z.strictObject({ path: z.string().min(1).optional() }).optional(),
+		})
+		.optional(),
+	gate: z
+		.strictObject({
+			maxAutoApprove: maxAutoApprove.optional(),
+			protectedPaths: z.array(protectedPath).optional(),
 		})
 		.optional(),
 });
@@ -111,6 +135,10 @@ export const ENV_VARS = {
 	envPassthrough: { name: "WORKER_MCP_ENV_PASSTHROUGH", key: "env.allow" },
 	stateDir: { name: "WORKER_MCP_STATE_DIR", key: "stateDir" },
 	runtimeDir: { name: "WORKER_MCP_RUNTIME_DIR", key: "runtimeDir" },
+	maxAutoApprove: {
+		name: "WORKER_MCP_MAX_AUTO_APPROVE",
+		key: "gate.maxAutoApprove",
+	},
 } as const satisfies Record<string, EnvVar>;
 
 interface FlagDef {
@@ -139,6 +167,11 @@ const VALUE_FLAGS = {
 	},
 	stateDir: { flag: "--state-dir", key: "stateDir", kind: "string" },
 	runtimeDir: { flag: "--runtime-dir", key: "runtimeDir", kind: "string" },
+	maxAutoApprove: {
+		flag: "--max-auto-approve",
+		key: "gate.maxAutoApprove",
+		kind: "string",
+	},
 } as const satisfies Record<string, FlagDef>;
 
 export interface CliFlags {
@@ -203,6 +236,7 @@ function stringLayer(
 		passthrough?: { key: string; raw: string };
 		stateDir?: string;
 		runtimeDir?: string;
+		maxAutoApprove?: string;
 	},
 	keys: { piPath: string; stateDir: string; runtimeDir: string },
 ): FileLayer {
@@ -224,6 +258,15 @@ function stringLayer(
 	}
 	if (values.piPath !== undefined) {
 		layer.providers = { pi: { path: values.piPath } };
+	}
+	if (values.maxAutoApprove !== undefined) {
+		layer.gate = {
+			maxAutoApprove: check(
+				ENV_VARS.maxAutoApprove.key,
+				maxAutoApprove,
+				values.maxAutoApprove.toUpperCase(),
+			),
+		};
 	}
 	if (values.commandTimeout || values.maxOutputChars) {
 		layer.limits = {};
@@ -297,6 +340,11 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 			{ runtimeDir: get(ENV_VARS.runtimeDir) },
 			keysOf(),
 		),
+		stringLayer(
+			label(ENV_VARS.maxAutoApprove),
+			{ maxAutoApprove: get(ENV_VARS.maxAutoApprove) },
+			keysOf(),
+		),
 	];
 	return parts.reduce<FileLayer>(mergeLayers, {});
 }
@@ -339,6 +387,9 @@ function flagLayer(flags: CliFlags): FileLayer {
 			case "runtimeDir":
 				parts.push(stringLayer(source, { runtimeDir: raw }, keys));
 				break;
+			case "maxAutoApprove":
+				parts.push(stringLayer(source, { maxAutoApprove: raw }, keys));
+				break;
 			default:
 				break; // --config is handled when locating the file
 		}
@@ -356,6 +407,14 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		env: { allow },
 		providers: {
 			pi: { path: over.providers?.pi?.path ?? base.providers?.pi?.path },
+		},
+		gate: {
+			maxAutoApprove: over.gate?.maxAutoApprove ?? base.gate?.maxAutoApprove,
+			// Protected paths only ever accumulate.
+			protectedPaths: [
+				...(base.gate?.protectedPaths ?? []),
+				...(over.gate?.protectedPaths ?? []),
+			],
 		},
 	};
 }
@@ -474,6 +533,10 @@ function applyDefaults(
 			forceDropExempt: exempt,
 		},
 		providers: { pi: { path: layer.providers?.pi?.path || "pi" } },
+		gate: {
+			maxAutoApprove: layer.gate?.maxAutoApprove ?? "MEDIUM",
+			protectedPaths: [...new Set(layer.gate?.protectedPaths ?? [])],
+		},
 	};
 }
 
