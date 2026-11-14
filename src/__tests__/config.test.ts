@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -386,6 +387,69 @@ describe("config file trust", () => {
 		assert.strictEqual(
 			configFileProblem(ok, { mode: 0o041775, uid: 0 }, ME), // like /nix/store
 			null,
+		);
+	});
+
+	test("in the Nix store a foreign uid is fine, a writable mode is not", () => {
+		const foreign = { mode: 0o100444, uid: 65534 };
+		const store = { mode: 0o040755, uid: 65534 };
+		assert.strictEqual(configFileProblem(foreign, store, ME, true), null);
+		assert.strictEqual(
+			configFileProblem(foreign, { mode: 0o040777, uid: 65534 }, ME, true),
+			null,
+			"directory is not checked",
+		);
+		assert.match(
+			configFileProblem({ ...foreign, mode: 0o100464 }, store, ME, true) ?? "",
+			/writable/,
+		);
+		// The same uid outside the store is still refused.
+		assert.match(
+			configFileProblem(foreign, store, ME, false) ?? "",
+			/owned by you or root/,
+		);
+	});
+
+	test("a file outside NIX_STORE_DIR does not get the store exemption", () => {
+		// Group-writable parent would be refused, so it must not count as store.
+		const open = path.join(root, "notstore");
+		fs.mkdirSync(open);
+		fs.chmodSync(open, 0o777);
+		const file = path.join(open, "c.json");
+		fs.writeFileSync(file, "{}", { mode: 0o600 });
+		assert.match(
+			failure(() =>
+				load(["--config", file], { ...env, NIX_STORE_DIR: root + "/other" }),
+			),
+			/directory/,
+		);
+		// With the store pointed at that directory, the same file is accepted.
+		assert.doesNotThrow(() =>
+			load(["--config", file], { ...env, NIX_STORE_DIR: open }),
+		);
+	});
+
+	test("a symlink to a real Nix store file is accepted", (t) => {
+		const made = spawnSync(
+			"nix",
+			[
+				"eval",
+				"--impure",
+				"--raw",
+				"--expr",
+				'builtins.toFile "worker-mcp-test.json" "{\\"providers\\":{\\"pi\\":{\\"path\\":\\"from-store\\"}}}"',
+			],
+			{ encoding: "utf8" },
+		);
+		if (made.status !== 0 || !fs.existsSync(made.stdout.trim())) {
+			t.skip("nix is not available");
+			return;
+		}
+		const link = path.join(root, "store-link.json");
+		fs.symlinkSync(made.stdout.trim(), link);
+		assert.strictEqual(
+			load(["--config", link]).providers.pi.path,
+			"from-store",
 		);
 	});
 
