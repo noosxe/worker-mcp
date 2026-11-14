@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
 import type { Config } from "../config.js";
-import { buildWorkerEnv } from "../session/launch.js";
+import { buildWorkerEnv } from "./env.js";
 import { LineFramer } from "./framing.js";
 import { type Logger, noopLogger } from "./log.js";
 import { TreeTracker } from "./proctree.js";

@@ -57,14 +57,36 @@
 
 ### Changed
 
+- **A rejection's reason now reaches the worker.** The approval gate is
+  rewritten (v3): it asks over pi's `input` dialog with a JSON decision instead
+  of a yes/no `confirm`, so `reject_action`'s `reason` is what the model sees
+  (without a reason: "Tool execution blocked by the coordinator agent."). The
+  gate also reports `ready:<nonce>` when pi has loaded it, and a spawn fails
+  (and pi is killed) unless that arrives, so a gate that did not load can no
+  longer go unnoticed. Any reply that is not a valid decision with the right
+  nonce blocks the call.
+- Two tool calls waiting at once no longer overwrite each other: each is
+  decided on its own. `get_pending_actions` shows the oldest; answering it
+  reveals the next.
+- A dialog from pi that is not the gate's (`select`, `confirm`, `input`,
+  `editor`) is answered with cancel instead of being left waiting.
+- **A worker that exits by itself now fails the command.** `send_pi_command`
+  returns an error naming the exit code ("worker exited unexpectedly") instead
+  of the text "Process terminated", and the session is `CRASHED`.
+- A run now ends when pi reports `agent_settled`, not at the first `agent_end`.
+- The history resource lists the prompts and the assistant's replies; tool
+  results are no longer included.
+- Internal: pi lives in `src/providers/pi/` behind the provider interface and
+  `PiSession` is replaced by `Session` (`src/session/session.ts`), which opens
+  its worker through the provider. The pi provider and gate are described in
+  `docs/providers/pi.md`.
 - Worker processes are started in one place (`src/core/child.ts`), which
   builds the environment, puts each worker in its own process group, frames its
   JSON lines with a line-length cap (8 MiB, longer lines are dropped and
   reported), truncates stderr lines, and never throws on a write to a closed
   pipe. `terminate_pi_session` now returns once the worker is gone.
 - Internal: a provider interface (`src/providers/`) with a static registry and
-  an in-process fake provider for tests. pi is not behind it yet; tool names
-  and behaviour are unchanged.
+  an in-process fake provider for tests.
 - **Auto-approval is bounded by the server.** With the default
   `gate.maxAutoApprove` a policy cannot auto-approve HIGH or CRITICAL calls,
   whatever `autoApproveUpTo` or `maxRiskLevel` it carries.

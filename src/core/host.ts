@@ -123,9 +123,18 @@ export async function openWorker(
 ): Promise<OpenedWorker> {
 	assertOpenable(opts.provider, opts.policy);
 	const log = opts.log ?? noopLogger;
+	let privateDir: string;
+	try {
+		privateDir = opts.runtime.createWorkerDir();
+	} catch (e) {
+		throw new Error(
+			`Refusing to start ${opts.provider.id} without the approval gate: could not create its private directory (${e instanceof Error ? e.message : String(e)}).`,
+			{ cause: e },
+		);
+	}
 	const host = new WorkerHost({
 		children: opts.children,
-		privateDir: opts.runtime.createWorkerDir(),
+		privateDir,
 		emit: opts.emit,
 		approve: opts.approve,
 		log,

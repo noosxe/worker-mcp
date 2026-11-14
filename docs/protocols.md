@@ -339,40 +339,22 @@ Emitted during prompt execution to stream progress:
 
 ## 3. Human-in-the-Loop Interception Protocol
 
-To restrict the `pi` agent from executing actions autonomously without consent, we use a custom **Pi Permission Extension** combined with the standard `confirm` RPC UI message.
+To restrict the `pi` agent from executing actions autonomously without consent, worker-mcp loads a gate extension into pi and answers its questions over the RPC UI sub-protocol. The full design is in [providers/pi.md](providers/pi.md); in short:
 
 ### 3.1. The Interception Mechanism
 
-1. We configure the `pi` process to load a custom TypeScript extension, written fresh for each spawn from a constant in the server.
-2. The extension registers a listener for `tool_call` events:
-   ```typescript
-   pi.on("tool_call", async (event, ctx) => {
-   	// Trigger the standard confirm UI context
-   	const approved = await confirm(
-   		"Allow tool execution",
-   		`Allow ${event.tool} tool to run with arguments ${JSON.stringify(event.input)}?`,
-   	);
-   	if (!approved) {
-   		return {
-   			block: true,
-   			reason: "Command execution rejected by coordinator.",
-   		};
-   	}
-   });
-   ```
-3. Inside the `pi` engine, the `confirm` call is routed to `RpcExtensionUIRequest` because the agent is running in RPC mode.
-4. `pi` outputs the `confirm` request to stdout:
+1. pi is started with `--no-extensions -e <gate>`. The gate is written fresh for each spawn from a constant in the server.
+2. On `session_start` the gate reports `ready:<nonce>` through `setStatus`. The server does not consider the worker open until it sees it.
+3. The gate registers a `tool_call` listener that sends each call through `ctx.ui.input`:
    ```json
    {
    	"type": "extension_ui_request",
    	"id": "req_123",
-   	"method": "confirm",
-   	"title": "Allow tool execution",
-   	"message": "Allow bash tool to run with arguments ..."
+   	"method": "input",
+   	"title": "worker-mcp-gate/v3",
+   	"placeholder": "{\"v\":3,\"nonce\":\"…\",\"toolName\":\"bash\",\"input\":{…}}"
    }
    ```
-5. `worker-mcp` intercepts this message, marks the session as `AWAITING_APPROVAL`, and cache-maps `req_123` to the session.
-6. The coordinator receives notification, reviews the payload, and calls:
-   - **`approve_action`**: `worker-mcp` writes `{"type": "extension_ui_response", "id": "req_123", "confirmed": true}` to `pi`'s `stdin`.
-   - **`reject_action`**: `worker-mcp` writes `{"type": "extension_ui_response", "id": "req_123", "confirmed": false}` to `pi`'s `stdin`.
-7. The `confirm` promise inside the child process resolves with `true` or `false`, allowing or blocking the tool execution safely.
+4. `worker-mcp` classifies the call. It is allowed, denied or held for the coordinator (the session is `AWAITING_APPROVAL` meanwhile).
+5. The answer goes back as the `value` of an `extension_ui_response`, a JSON decision: `{"v":3,"nonce":"…","decision":"allow"}`, `"deny"` with a `reason`, or `"mutate"` with a new `input`.
+6. The gate allows, blocks with the reason (so a coordinator's `reject_action` reason reaches the model), or rewrites the input. Anything that is not a valid decision with the right nonce blocks the call.

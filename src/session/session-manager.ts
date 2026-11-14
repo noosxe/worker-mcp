@@ -1,18 +1,16 @@
 import { type Config } from "../config.js";
 import { ChildRegistry } from "../core/child.js";
+import { ProviderRegistry } from "../providers/registry.js";
 import { assertValidSessionId } from "../validation.js";
-import {
-	PiSession,
-	type PolicyReport,
-	type SessionStatus,
-} from "./pi-session.js";
 import { RuntimeDir } from "./runtime-dir.js";
+import { Session, type PolicyReport, type SessionStatus } from "./session.js";
 
 export class SessionManager {
-	private sessions: Map<string, PiSession> = new Map();
+	private sessions: Map<string, Session> = new Map();
 	private readonly runtime: RuntimeDir;
 	/** Every worker process of this server starts and ends here. */
 	readonly children: ChildRegistry;
+	private readonly providers: ProviderRegistry;
 	public onSessionStatusChange?: (
 		sessionId: string,
 		status: SessionStatus,
@@ -30,6 +28,10 @@ export class SessionManager {
 	) {
 		this.runtime = runtime ?? new RuntimeDir(config.runtimeDir);
 		this.children = new ChildRegistry({ env, envConfig: config.env });
+		this.providers = new ProviderRegistry({
+			enabled: ["pi"],
+			context: { config },
+		});
 	}
 
 	public async createSession(
@@ -38,7 +40,7 @@ export class SessionManager {
 		model?: string,
 		systemPrompt?: string,
 		riskPolicy?: unknown,
-	): Promise<PiSession> {
+	): Promise<Session> {
 		assertValidSessionId(sessionId);
 		const existing = this.sessions.get(sessionId);
 		if (existing) {
@@ -53,7 +55,8 @@ export class SessionManager {
 			await existing.terminate();
 		}
 
-		const session = new PiSession(
+		const provider = await this.providers.get("pi");
+		const session = new Session(
 			sessionId,
 			cwd,
 			model,
@@ -64,6 +67,7 @@ export class SessionManager {
 				runtime: this.runtime,
 				env: this.env,
 				children: this.children,
+				provider,
 			},
 		);
 		session.onStatusChange = (sid, status, message) => {
@@ -85,7 +89,7 @@ export class SessionManager {
 		return session;
 	}
 
-	public getSession(sessionId: string): PiSession {
+	public getSession(sessionId: string): Session {
 		assertValidSessionId(sessionId);
 		const session = this.sessions.get(sessionId);
 		if (!session) {
@@ -94,7 +98,7 @@ export class SessionManager {
 		return session;
 	}
 
-	public findSessionByTaskId(taskId: string): PiSession | null {
+	public findSessionByTaskId(taskId: string): Session | null {
 		for (const session of this.sessions.values()) {
 			if (session.getActiveTaskId() === taskId) {
 				return session;

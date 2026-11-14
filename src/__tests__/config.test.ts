@@ -14,7 +14,7 @@ import {
 	parseArgs,
 	redactConfig,
 } from "../config.js";
-import { buildWorkerEnv } from "../session/launch.js";
+import { buildWorkerEnv } from "../core/env.js";
 
 let root: string;
 let env: Record<string, string>;

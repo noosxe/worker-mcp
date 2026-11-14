@@ -112,7 +112,10 @@ for the coordinator.
   an allowed call. Use a key with a narrow scope and spend limit.
 - There is no process sandbox yet. Workers can read and write whatever the
   server's user can, subject to the gate.
-- The gate cannot yet confirm that pi actually loaded it.
+- The gate's nonce is not a secret from the worker. It keeps stray or forged
+  messages out of the gate dialog, but a tool that can read the worker's
+  `/proc/<pid>/environ` can read it. The boundary against a hostile worker is a
+  sandbox, not the nonce.
 
 ## Worker environment
 

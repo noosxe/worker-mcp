@@ -181,8 +181,28 @@ export function behaviourTests(name: string, layer: Layer) {
 					actionId,
 					reason: "no",
 				});
-				assert.match(output, /^tool bash blocked: /);
-				assert.match(output, /blocked by the coordinator/);
+				// The coordinator's reason reaches the worker.
+				assert.strictEqual(output, "tool bash blocked: no");
+			});
+		});
+
+		test("a rejection without a reason says the coordinator blocked it", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "reject-bare");
+				const waiting = await callOk(client, TOOLS.send, {
+					sessionId: "reject-bare",
+					command: gatedBash("rm -rf build"),
+				});
+				const actionId = waiting.match(/Action ID: (\S+)\./)?.[1];
+				assert.ok(actionId);
+				const output = await callOk(client, TOOLS.reject, {
+					sessionId: "reject-bare",
+					actionId,
+				});
+				assert.match(
+					output,
+					/^tool bash blocked: .*blocked by the coordinator/,
+				);
 			});
 		});
 
@@ -549,7 +569,9 @@ export function behaviourTests(name: string, layer: Layer) {
 					sessionId: "crash",
 					command: "scenario:crash-mid-run",
 				});
-				assert.strictEqual(textOf(output), "Process terminated");
+				// An unexpected exit ends the run with an error; it is not a silent finish.
+				assert.strictEqual(output.isError, true);
+				assert.match(textOf(output), /worker exited unexpectedly \(code 1/);
 				await waitUntil(
 					async () => (await sessionStatus(client, "crash")) === "CRASHED",
 					5000,
@@ -615,29 +637,23 @@ export function behaviourTests(name: string, layer: Layer) {
 			},
 		);
 
-		test(
-			"a trailing agent_settled does not end the next run early",
-			{
-				todo: "the server settles on agent_end or agent_settled, so the late event ends the second run with no output; fixed when runs settle on a single event",
-			},
-			async () => {
-				await withServer(async (client) => {
-					await spawnSession(client, "late");
-					const first = await callOk(client, TOOLS.send, {
-						sessionId: "late",
-						command: "scenario:late-settled:300 first",
-					});
-					assert.strictEqual(first, "fake-pi reply: first");
-					// Sent as soon as the first returns; its run is still going when
-					// the first run's agent_settled arrives.
-					const second = await callOk(client, TOOLS.send, {
-						sessionId: "late",
-						command: "scenario:slow:800 second",
-					});
-					assert.strictEqual(second, "fake-pi reply: second");
+		test("a trailing agent_settled does not end the next run early", async () => {
+			await withServer(async (client) => {
+				await spawnSession(client, "late");
+				const first = await callOk(client, TOOLS.send, {
+					sessionId: "late",
+					command: "scenario:late-settled:300 first",
 				});
-			},
-		);
+				assert.strictEqual(first, "fake-pi reply: first");
+				// Sent as soon as the first returns; its run is still going when
+				// the first run's agent_settled arrives.
+				const second = await callOk(client, TOOLS.send, {
+					sessionId: "late",
+					command: "scenario:slow:800 second",
+				});
+				assert.strictEqual(second, "fake-pi reply: second");
+			});
+		});
 
 		test("large worker output arrives intact", async () => {
 			await withServer(async (client) => {

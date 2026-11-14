@@ -108,6 +108,7 @@ export class FakeHandle implements WorkerHandle {
 		try {
 			finalText = await this.script(run.prompt, runId, signal);
 			if (signal.aborted) outcome = "aborted";
+			else emit({ type: "assistant_message", runId, text: finalText });
 		} catch (e) {
 			outcome = signal.aborted ? "aborted" : "error";
 			error = e instanceof Error ? e.message : String(e);
@@ -149,9 +150,7 @@ export class FakeHandle implements WorkerHandle {
 			return results.join(" | ");
 		}
 		this.host.emit({ type: "text_delta", runId, text: "fake " });
-		const text = `fake reply: ${prompt}`;
-		this.host.emit({ type: "assistant_message", runId, text });
-		return text;
+		return `fake reply: ${prompt}`;
 	}
 
 	private async callTool(
@@ -189,6 +188,11 @@ export class FakeHandle implements WorkerHandle {
 			preview: "ok",
 		});
 		return `${toolName} ran with ${JSON.stringify(actual)}`;
+	}
+
+	/** Simulate the worker dying by itself (not through `close`). */
+	crash(code: number | null = 1, signal: string | null = null): void {
+		this.host.emit({ type: "exited", code, signal, expected: false });
 	}
 
 	abortRun(_reason: string): Promise<void> {

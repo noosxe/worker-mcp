@@ -23,12 +23,23 @@
 //   late-settled:<ms>[ <text>]  reply like echo, then send agent_settled <ms> later
 //   crash-mid-run               exit 1 after the first delta
 //   ignore-sigterm              ignore SIGTERM and stay running until aborted
+//   ignore-abort                keep streaming and ignore the abort command
 //   grandchild                  start a detached `sleep` in its own group
 //   stdin-close                 close own stdin, then reply
 //   big-output:<bytes>          reply with <bytes> characters of text
 //   markdown-rules              reply with horizontal rules and table separators
-// Scenarios for later phases (mutate, parallel-tools, dialog:*,
-// no-gate-handshake, gate-error) are not implemented yet.
+//   mutate:<name>:<json>        like tool:, but reports the input the call ran with
+//                               after the gate (which may have rewritten it)
+//   parallel-tools:<name>:<json>  two calls through the gate before either is
+//                               answered (the input gets "n": 1 and "n": 2)
+//   dialog:<method>             send a non-gate select/input/editor/confirm and
+//                               report how it was answered
+// Startup scenarios, chosen with FAKE_PI_SCENARIO (they act before any prompt):
+//   no-gate-handshake           never send the gate's ready status
+//   gate-error                  report an extension_error for the gate file
+//   exit-at-start               exit 1 at once, as pi does for a bad -e path
+// After loading the extensions fake-pi fires `session_start` the way pi does,
+// so a gate that reports readiness from that hook is seen on the wire.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -36,6 +47,11 @@ import { pathToFileURL } from "node:url";
 
 import {
 	agentEnd,
+	editorRequest,
+	extensionError,
+	inputRequest,
+	selectRequest,
+	setStatusRequest,
 	agentSettled,
 	agentStart,
 	confirmRequest,
@@ -57,6 +73,10 @@ const record = (obj) => {
 };
 
 const argv = process.argv.slice(2);
+if (argv.includes("--version")) {
+	console.log("fake-pi 0.0.0");
+	process.exit(0);
+}
 record({
 	kind: "start",
 	pid: process.pid,
@@ -99,14 +119,35 @@ const ctx = {
 			const reply = await dialog(confirmRequest(randomUUID(), title, message));
 			return reply.cancelled ? false : reply.confirmed === true;
 		},
+		// Resolves the entered string, or undefined when cancelled, like pi.
+		input: async (title, placeholder) => {
+			const reply = await dialog(
+				inputRequest(randomUUID(), title, placeholder),
+			);
+			return reply.cancelled ? undefined : reply.value;
+		},
 		notify: () => {},
-		setStatus: () => {},
+		setStatus: (key, text) => send(setStatusRequest(randomUUID(), key, text)),
 	},
 };
 
+const startup = process.env.FAKE_PI_SCENARIO;
+if (startup === "exit-at-start") {
+	process.stderr.write("Error: Failed to load extension\n");
+	process.exit(1);
+}
 for (const extensionPath of extensionPaths) {
 	const mod = await import(pathToFileURL(extensionPath).href);
 	await mod.default(pi);
+}
+if (startup === "gate-error") {
+	send(extensionError(extensionPaths[0], "tool_call", "gate crashed"));
+}
+// pi starts the session after loading extensions: session_start fires then.
+if (startup !== "no-gate-handshake") {
+	for (const handler of handlers.get("session_start") ?? []) {
+		await handler({ type: "session_start", reason: "startup" }, ctx);
+	}
 }
 
 /** Run the tool_call handlers; resolves to `{ blocked, reason }`. */
@@ -121,11 +162,13 @@ async function gate(toolName, input) {
 		const result = await handler(event, ctx);
 		if (result?.block) return { blocked: true, reason: result.reason };
 	}
-	return { blocked: false };
+	// A handler may rewrite event.input in place.
+	return { blocked: false, input: event.input };
 }
 
 // ---- run state -------------------------------------------------------------
 let run = null; // { timer, finish }
+let ignoreAbort = false;
 
 function finishRun(text, { settled = true } = {}) {
 	if (!run) return;
@@ -134,10 +177,8 @@ function finishRun(text, { settled = true } = {}) {
 	if (text !== undefined) send(messageEnd(text));
 	send(turnEnd());
 	send(agentEnd());
-	// Real pi follows agent_end with agent_settled. It is off by default: today's
-	// server settles a run on either event, so a trailing agent_settled can end
-	// the next run early. A later phase that consumes it sets FAKE_PI_SETTLED=1.
-	if (settled && process.env.FAKE_PI_SETTLED === "1") send(agentSettled());
+	// Real pi follows agent_end with agent_settled; a run is over at that event.
+	if (settled) send(agentSettled());
 }
 
 function streamFor(ms, text, { crashAfterFirst = false } = {}) {
@@ -164,6 +205,7 @@ function parseScenario(message) {
 async function startPrompt(message) {
 	const { spec, text, prefixed } = parseScenario(message);
 	if (spec === "ignore-sigterm") process.on("SIGTERM", () => {});
+	if (spec === "ignore-abort") ignoreAbort = true;
 	record({ kind: "run", spec });
 	send(agentStart());
 	send(turnStart());
@@ -183,6 +225,47 @@ async function startPrompt(message) {
 		send(toolExecutionStart(toolCallId, toolName, input));
 		send(toolExecutionEnd(toolCallId, toolName));
 		finishRun(`tool ${toolName} ran with ${json}`);
+	} else if ((m = spec.match(/^mutate:([^:]+):([\s\S]*)$/))) {
+		const [, toolName, json] = m;
+		run = { timer: null };
+		const result = await gate(toolName, JSON.parse(json));
+		if (!run) return;
+		if (result.blocked) {
+			finishRun(`tool ${toolName} blocked: ${result.reason}`);
+			return;
+		}
+		const toolCallId = randomUUID();
+		send(toolExecutionStart(toolCallId, toolName, result.input));
+		send(toolExecutionEnd(toolCallId, toolName));
+		finishRun(`tool ${toolName} ran with ${JSON.stringify(result.input)}`);
+	} else if ((m = spec.match(/^parallel-tools:([^:]+):([\s\S]*)$/))) {
+		const [, toolName, json] = m;
+		const base = JSON.parse(json);
+		run = { timer: null };
+		// Both go out before either is answered.
+		const results = await Promise.all(
+			[1, 2].map(async (n) => {
+				const input = { ...base, n };
+				const result = await gate(toolName, input);
+				return result.blocked
+					? `${n}: blocked: ${result.reason}`
+					: `${n}: ran with ${JSON.stringify(result.input)}`;
+			}),
+		);
+		if (!run) return;
+		finishRun(results.join(" | "));
+	} else if ((m = spec.match(/^dialog:(select|input|editor|confirm)$/))) {
+		run = { timer: null };
+		const id = randomUUID();
+		const request = {
+			select: selectRequest(id, "pick one", ["a", "b"]),
+			input: inputRequest(id, "a question", "type here"),
+			editor: editorRequest(id, "edit", "text"),
+			confirm: confirmRequest(id, "sure?", "really"),
+		}[m[1]];
+		const answer = await dialog(request);
+		if (!run) return;
+		finishRun(`dialog ${m[1]} ${answer.cancelled ? "cancelled" : "answered"}`);
 	} else if ((m = spec.match(/^slow:(\d+)(?: ([\s\S]*))?$/))) {
 		run = { timer: null };
 		streamFor(Number(m[1]), reply(m[2] ?? "slow done"));
@@ -194,7 +277,7 @@ async function startPrompt(message) {
 	} else if (spec === "crash-mid-run") {
 		run = { timer: null };
 		streamFor(60_000, "unreachable", { crashAfterFirst: true });
-	} else if (spec === "ignore-sigterm") {
+	} else if (spec === "ignore-sigterm" || spec === "ignore-abort") {
 		run = { timer: null };
 		streamFor(600_000, "unreachable");
 	} else if (spec === "grandchild") {
@@ -249,7 +332,7 @@ process.stdin.on(
 			void startPrompt(msg.message);
 		} else if (msg.type === "abort") {
 			send(response(msg.id, "abort"));
-			finishRun();
+			if (!ignoreAbort) finishRun();
 		} else if (msg.type === "set_model") {
 			send(response(msg.id, "set_model"));
 		} else if (msg.type === "extension_ui_response") {

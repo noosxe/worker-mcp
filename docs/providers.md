@@ -6,8 +6,10 @@ one agent's protocol. The interface is internal (`src/providers/types.ts`): the
 registry is static and never loads a path from configuration, because that
 would be code execution from a setting.
 
-pi still runs through `PiSession` on the core's child handling. Moving it
-behind the interface (and a new approval gate for it) is the next step.
+pi is the first provider (`src/providers/pi/`, see [providers/pi.md](providers/pi.md)).
+`Session` (`src/session/session.ts`) is what the MCP tools talk to: it holds
+status, the command in flight and the approvals, and opens its worker through
+`openWorker`.
 
 ## The seam
 
