@@ -434,6 +434,7 @@ describe("jev dialect: transport", () => {
 		assert.strictEqual(a.decision, "allow");
 		assert.strictEqual(b.decision, "allow");
 		assert.strictEqual(peak, 1);
+		// b had plenty of time left when the slot freed, so it was sent.
 		assert.strictEqual(s.seen.length, 2);
 	});
 
@@ -450,7 +451,7 @@ describe("jev dialect: transport", () => {
 			assert.strictEqual(o.escalatedBecause, "classifier_error");
 		}
 		assert.ok(Date.now() - t0 < 1000, "nobody waited for the slow server");
-		assert.ok(s.seen.length <= 2, "the queued calls did not all send");
+		assert.strictEqual(s.seen.length, 1, "only the first call was sent");
 	});
 });
 
