@@ -308,13 +308,22 @@ Applied in order (defaults; keys under `thresholds`):
    an **escalation**.
 4. Everything else is an **allow**.
 
-These are jev-guard's rules. An allow's confidence is the weakest certainty it
-rests on: the `risk` confidence, `1 - approval` (or `user_requested` for a
-risky-but-requested call) and `1 - from_untrusted`. The chain then applies the
-usual `minAllowConfidence` (0.85) and `minDenyConfidence` (0.6), so with the
-defaults an allow needs `approval` <= 0.15 and `from_untrusted` <= 0.15, which
-is stricter than the rules alone. `gate.httpAllowCeiling` still applies, and
-CRITICAL calls and hard limits are never sent.
+The probabilities and the `risk` score decide the verdict only, through
+their thresholds. They are not confidences. An allow's confidence is the lowest
+confidence **jev reports** among the answers the allow rests on: the `risk`
+answer's, always, and the confidence of `approval` and `from_untrusted` (not
+risky) or `user_requested` and `from_untrusted` (risky but requested) when jev
+sends one for them. The chain then applies the usual `minAllowConfidence`
+(0.85) and `minDenyConfidence` (0.6), so a confidently low-risk call can be
+allowed even when `approval` is, say, 0.6. `gate.httpAllowCeiling` still
+applies, and CRITICAL calls and hard limits are never sent.
+
+**Margin guard.** `thresholds.thresholdMargin` (default 0.05): an allow is
+refused (escalated) when a value it rests on is within the margin of its
+threshold: `risk` against `askScore`, `approval` against `askProbability` and
+`from_untrusted` against `untrustedProbability` (not risky); `user_requested`
+against `userRequestedProbability`, `from_untrusted` and `risk` against
+`denyScore` (risky but requested). `0` turns the guard off.
 
 The `risk` position is computed from the answer's `probabilities` (level
 number times probability, summed) when they are present; they must be four
@@ -323,8 +332,10 @@ by more than 0.25 is not believed and the call escalates ("unknown scale"). A
 `score` alone is read on the 0-3 scale, **which is unverified** until a real
 response has been checked.
 
-A `noul` answer has no confidence in System One (its probability is the
-certainty); `score` answers do. A response where an answer is missing, out of
+A `noul` answer may carry its own confidence, in `answers[id].confidence` or
+`providerMetadata.typesafe.confidence[id]`; it is used when present (a value
+outside 0..1 makes the call escalate) and never made up from the probability.
+`score` answers have one. A response where an answer is missing, out of
 range (probabilities outside 0..1, `risk` outside 0..3) or a `risk` has no
 confidence (`confidence`, or `providerMetadata.typesafe.confidence.risk`) is an
 escalation; a response without `answers`, a non-2xx status, bad JSON or a

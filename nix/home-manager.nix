@@ -82,7 +82,9 @@ let
         description = ''
           Dialect `jev` only: how answers map to a verdict. Keys:
           `denyScore` (2.5), `askScore` (1.5), `askProbability` (0.75),
-          `untrustedProbability` (0.7), `userRequestedProbability` (0.85).
+          `untrustedProbability` (0.7), `userRequestedProbability` (0.85),
+          `thresholdMargin` (0.05): an allow is refused when a probability or
+          score it rests on is this close to its threshold.
           Unset keys keep the server default.
         '';
         example = {

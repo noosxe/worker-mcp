@@ -4,6 +4,13 @@
 
 ### Jev classifier dialect
 
+- **Jev confidence**: an allow's confidence is now the lowest confidence jev
+  reports (the `risk` answer's, plus a noul answer's own when present), no
+  longer a function of the probabilities, so a confidently low-risk call can be
+  auto-allowed. New `thresholds.thresholdMargin` (default 0.05; Nix
+  `thresholds.thresholdMargin`) escalates an allow whose values sit next to a
+  threshold.
+
 - **`dialect: "jev"`** for `gate.classifiers`: asks TypeSafe's System One API
   (`POST <base>/v1/systemone`) four typed questions about a call (`risk`,
   `approval`, `user_requested`, `from_untrusted`) and maps the answers to
