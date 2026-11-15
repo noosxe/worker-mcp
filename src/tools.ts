@@ -125,8 +125,8 @@ export function gateEntries(
 	return log.slice(-(opts.limit ?? 200)).map((e) => ({
 		ts: e.ts,
 		requestId: e.requestId,
-		approvalId: session.approvalIdFor(e.actionId),
-		providerCallId: e.actionId,
+		approvalId: e.approvalId ?? session.approvalIdFor(e.providerCallId),
+		providerCallId: e.providerCallId,
 		provider: e.provider,
 		tool: e.tool,
 		kind: e.kind,

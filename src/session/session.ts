@@ -601,6 +601,8 @@ export class Session {
 		call: RawToolCall,
 		signal: AbortSignal,
 	): Promise<ApprovalDecision> {
+		// Made now so the gate's records carry it if the call is escalated.
+		const approvalId = newApprovalId();
 		const decided = this.approvalGate.decide(
 			{
 				provider: this.provider?.id ?? "unknown",
@@ -612,11 +614,12 @@ export class Session {
 			{
 				runId: this.currentRun?.run.id,
 				intent: this.currentRun?.run.intent,
+				approvalId,
 				signal,
 			},
 		);
 		return Promise.resolve(decided).then((outcome) =>
-			this.applyOutcome(call, outcome, signal),
+			this.applyOutcome(call, outcome, signal, approvalId),
 		);
 	}
 
@@ -624,6 +627,7 @@ export class Session {
 		call: RawToolCall,
 		outcome: GateOutcome,
 		signal: AbortSignal,
+		approvalId: string,
 	): Promise<ApprovalDecision> {
 		const label = RISK_LABELS[outcome.level];
 		const message = JSON.stringify({
@@ -673,7 +677,7 @@ export class Session {
 				reason: "there is no active run to ask about",
 			});
 		}
-		return this.escalate(call, message, outcome, run, signal);
+		return this.escalate(call, message, outcome, run, signal, approvalId);
 	}
 
 	/**
@@ -686,9 +690,9 @@ export class Session {
 		outcome: GateOutcome,
 		run: Run,
 		signal: AbortSignal,
+		id: string,
 	): Promise<ApprovalDecision> {
 		const label = RISK_LABELS[outcome.level];
-		const id = newApprovalId();
 		this.approvalByCall.set(call.callId, id);
 		if (this.approvalByCall.size > 500) {
 			const oldest = this.approvalByCall.keys().next().value;

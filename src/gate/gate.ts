@@ -74,6 +74,8 @@ export interface DecideContext {
 	runId?: string;
 	/** The coordinator's one-line summary of the task. */
 	intent?: string;
+	/** The id to give the approval if the call is escalated (server-made). */
+	approvalId?: string;
 	/** Aborts a classifier request still in flight when the run ends. */
 	signal?: AbortSignal;
 }
@@ -312,7 +314,8 @@ export class Gate {
 			requestId: o.requestId,
 			workerId: this.options.workerId,
 			runId: ctx.runId,
-			actionId,
+			providerCallId: actionId,
+			approvalId: o.decision === "escalate" ? ctx.approvalId : undefined,
 			provider: o.call.provider,
 			tool: o.call.rawName,
 			kind: o.call.kind,

@@ -12,7 +12,9 @@ export interface GateLogEntry {
 	workerId?: string;
 	runId?: string;
 	/** The provider's id for the call, when it has one (pi's request id). */
-	actionId?: string;
+	providerCallId?: string;
+	/** The `a_…` id of the approval, when the call went to the coordinator. */
+	approvalId?: string;
 	provider: string;
 	tool: string;
 	kind: ToolKind;
@@ -59,7 +61,7 @@ export class AuditRing {
 	/** The newest entry for a provider action id, if still in the ring. */
 	findByAction(actionId: string): GateLogEntry | undefined {
 		for (let i = this.items.length - 1; i >= 0; i--) {
-			if (this.items[i].actionId === actionId) return this.items[i];
+			if (this.items[i].providerCallId === actionId) return this.items[i];
 		}
 		return undefined;
 	}
