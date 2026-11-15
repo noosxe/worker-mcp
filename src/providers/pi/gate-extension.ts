@@ -6,13 +6,16 @@ export const GATE_DIALOG_TITLE = "worker-mcp-gate/v3";
 export const GATE_STATUS_KEY = "worker-mcp-gate";
 export const GATE_NONCE_ENV = "WORKER_MCP_GATE_NONCE";
 export const GATE_FILE_NAME = "gate.ts";
+/** The module the gate takes pi's own tool implementations from. */
+export const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 
 /**
  * Source of the approval gate (v3), written fresh for every worker from this
  * constant, so no file on disk is trusted as code.
  *
- * - On `session_start` it reports `ready:<nonce>` through `setStatus`; the
- *   server waits for that before it considers the worker open.
+ * - On `session_start` it makes pi's file and shell tools sequential (see the
+ *   comment in the source) and reports `ready:<nonce>` through `setStatus`;
+ *   the server waits for that before it considers the worker open.
  * - Every tool call is sent to the server through `ctx.ui.input`, whose
  *   response is a string and so can carry a structured decision: allow, deny
  *   with a reason, or mutate with a new input.
@@ -25,7 +28,33 @@ export const GATE_EXTENSION_SOURCE = `// Approval gate for worker-mcp (v3)
 export default function (pi: any) {
   const NONCE = process.env.${GATE_NONCE_ENV};
   delete process.env.${GATE_NONCE_ENV};
-  pi.on("session_start", (_event: any, ctx: any) => {
+  pi.on("session_start", async (_event: any, ctx: any) => {
+    // pi runs the calls of one assistant message in parallel, and rates all
+    // of them before it runs any: a file tool rated while a path is harmless
+    // can run after a shell command made that path a link to a secret. Every
+    // tool that touches files or runs commands is registered again, the same
+    // implementation, as sequential: pi then rates and runs one call at a
+    // time. If that cannot be done the gate does not report ready, so the
+    // worker never opens.
+    try {
+      const lib: any = await import("${PI_PACKAGE}");
+      const make: Record<string, any> = {
+        read: lib.createReadToolDefinition,
+        bash: lib.createBashToolDefinition,
+        edit: lib.createEditToolDefinition,
+        write: lib.createWriteToolDefinition,
+        grep: lib.createGrepToolDefinition,
+        find: lib.createFindToolDefinition,
+        ls: lib.createLsToolDefinition,
+      };
+      for (const name of pi.getActiveTools()) {
+        if (!(name in make)) continue;
+        if (typeof make[name] !== "function") throw new Error("no " + name);
+        pi.registerTool({ ...make[name](process.cwd()), executionMode: "sequential" });
+      }
+    } catch {
+      return;
+    }
     if (NONCE) ctx.ui.setStatus("${GATE_STATUS_KEY}", "ready:" + NONCE);
   });
   pi.on("tool_call", async (event: any, ctx: any) => {
