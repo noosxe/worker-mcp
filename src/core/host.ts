@@ -12,8 +12,13 @@ import type {
 	WorkerSpec,
 } from "../providers/types.js";
 import type { RuntimeDir } from "../session/runtime-dir.js";
-import type { ChildRegistry, ChildSpec, ManagedChild } from "./child.js";
+import type {
+	ChildRegistry,
+	ManagedChild,
+	ProviderChildSpec,
+} from "./child.js";
 import { type Logger, noopLogger } from "./log.js";
+import type { SandboxProfile } from "./sandbox.js";
 
 export type Approver = (
 	call: RawToolCall,
@@ -28,6 +33,9 @@ export class WorkerHost implements ProviderHost {
 		private readonly deps: {
 			children: ChildRegistry;
 			privateDir: string;
+			/** Decided by the core for every process of this worker. */
+			sandbox?: "none" | "workspace";
+			sandboxProfile?: SandboxProfile;
 			emit: (event: WorkerEvent) => void;
 			approve: Approver;
 			log: Logger;
@@ -42,8 +50,13 @@ export class WorkerHost implements ProviderHost {
 		return this.deps.log;
 	}
 
-	spawn(spec: ChildSpec): ManagedChild {
-		const child = this.deps.children.spawn(spec);
+	spawn(spec: ProviderChildSpec): ManagedChild {
+		const child = this.deps.children.spawn({
+			...spec,
+			sandbox: this.deps.sandbox ?? "none",
+			sandboxProfile: this.deps.sandboxProfile,
+			privateDir: this.deps.privateDir,
+		});
 		this.spawned.push(child);
 		// A per-run provider starts many processes: forget the ones that ended.
 		void child.exited.then(() => {
@@ -135,6 +148,8 @@ export async function openWorker(
 	const host = new WorkerHost({
 		children: opts.children,
 		privateDir,
+		sandbox: opts.policy.sandbox,
+		sandboxProfile: opts.provider.sandboxProfile,
 		emit: opts.emit,
 		approve: opts.approve,
 		log,

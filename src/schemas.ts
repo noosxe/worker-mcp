@@ -140,6 +140,12 @@ export const schemas = {
 			.optional()
 			.describe("Extra system instructions for the worker."),
 		policy: RiskPolicy.optional(),
+		sandbox: z
+			.enum(["none", "workspace"])
+			.optional()
+			.describe(
+				"How the worker is confined. \"workspace\" (Linux, bubblewrap): the worker can write only its workspace, and cannot see the home directory (such as ~/.ssh). Default: the server's default; it can never be lower than the server's minimum (list_providers shows both).",
+			),
 	}),
 	getPendingActions: z.strictObject({
 		workerId: ref("Only this worker's approvals").optional(),

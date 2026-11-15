@@ -55,6 +55,44 @@ export interface ProtectedPathsOptions {
 
 const lower = (p: string) => p.toLowerCase();
 
+/**
+ * The protected places inside a workspace, relative to its root: the one list
+ * both the gate's hard limits and the sandbox's read-only mounts are built
+ * from. Files are matched exactly, trees cover everything beneath them.
+ */
+export const WORKSPACE_PROTECTED = {
+	/** Reconfigure the coordinating agent. */
+	coordinatorFiles: [".mcp.json"],
+	coordinatorTrees: [".claude"],
+	/** Code in them runs later with the user's authority. */
+	runsLaterFiles: [".envrc"],
+	runsLaterTrees: [".husky"],
+	/** Inside `.git`: hooks run on commit, config can name programs to run. */
+	gitTrees: ["hooks"],
+	gitFiles: ["config"],
+	/** The agent's own configuration. */
+	agentTrees: [".pi"],
+} as const;
+
+/**
+ * Every workspace path that can be protected by name alone, as absolute
+ * paths (the `.env*` pattern and nested `.git` dirs are not listed). Whether
+ * they exist is the caller's business.
+ */
+export function workspaceProtectedPaths(workspace: string): string[] {
+	const w = WORKSPACE_PROTECTED;
+	const git = path.join(workspace, ".git");
+	return [
+		...w.coordinatorFiles,
+		...w.coordinatorTrees,
+		...w.runsLaterFiles,
+		...w.runsLaterTrees,
+		...w.agentTrees,
+	]
+		.map((rel) => path.join(workspace, rel))
+		.concat([...w.gitTrees, ...w.gitFiles].map((rel) => path.join(git, rel)));
+}
+
 /** `.env`, `.env.local`, ...: any file named like that in the workspace. */
 const ENV_FILE = /^\.env(\..+)?$/;
 
@@ -88,8 +126,8 @@ export class ProtectedPaths {
 				id: "coordinator-config",
 				reason: "reconfigures the coordinating agent",
 				entries: [
-					...file(w(".mcp.json")),
-					...tree(w(".claude")),
+					...WORKSPACE_PROTECTED.coordinatorFiles.flatMap((f) => file(w(f))),
+					...WORKSPACE_PROTECTED.coordinatorTrees.flatMap((t) => tree(w(t))),
 					...tree(h(".claude")),
 					...file(h(".claude.json")),
 					...tree(h(".config/Claude")),
@@ -100,8 +138,8 @@ export class ProtectedPaths {
 				id: "runs-later",
 				reason: "code in it runs later with the user's authority",
 				entries: [
-					...file(w(".envrc")),
-					...tree(w(".husky")),
+					...WORKSPACE_PROTECTED.runsLaterFiles.flatMap((f) => file(w(f))),
+					...WORKSPACE_PROTECTED.runsLaterTrees.flatMap((t) => tree(w(t))),
 					...file(h(".bashrc")),
 					...file(h(".bash_profile")),
 					...file(h(".bash_login")),
@@ -120,7 +158,10 @@ export class ProtectedPaths {
 					if (!isInside(gitDir, p) || p === gitDir) return false;
 					const parts = path.relative(gitDir, p).split(path.sep);
 					return (
-						parts.includes("hooks") || parts[parts.length - 1] === "config"
+						WORKSPACE_PROTECTED.gitTrees.some((t) => parts.includes(t)) ||
+						WORKSPACE_PROTECTED.gitFiles.includes(
+							parts[parts.length - 1] as never,
+						)
 					);
 				},
 				write: RiskLevel.HIGH,
@@ -130,7 +171,7 @@ export class ProtectedPaths {
 				reason: "configures the agent that runs the workers",
 				entries: [
 					...tree(h(".pi")),
-					...tree(w(".pi")),
+					...WORKSPACE_PROTECTED.agentTrees.flatMap((t) => tree(w(t))),
 					...(opts.providerDirs ?? []).flatMap(tree),
 				],
 				write: RiskLevel.HIGH,

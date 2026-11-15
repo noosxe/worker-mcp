@@ -277,7 +277,7 @@ export function createContext(
 				cwd: session.cwd,
 				model: session.model,
 				status: session.status,
-				sandbox: "none",
+				sandbox: session.sandbox,
 				capabilities: session.capabilities,
 				effectivePolicy: policyData(session.riskPolicy),
 				currentRunId: session.activeRun?.id ?? null,

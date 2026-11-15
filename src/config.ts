@@ -109,7 +109,25 @@ export interface Config {
 		/** The JSONL file; `<stateDir>/audit.jsonl` unless set. */
 		file: string;
 	};
+	/** Linux only: bubblewrap. macOS has no sandbox, so `minimum` must stay `none`. */
+	sandbox: {
+		/** The least a worker may run with; a spawn cannot ask for less. */
+		minimum: SandboxMode;
+		/**
+		 * What a spawn gets when it names none. Unset: `workspace` when the
+		 * sandbox is available, else `none`.
+		 */
+		default?: SandboxMode;
+		/** Extra read-only paths (absolute) mounted into the sandbox. */
+		extraRo: string[];
+		/** Extra read-write paths (absolute) mounted into the sandbox. */
+		extraRw: string[];
+		/** The bwrap binary. Unset: `WORKER_MCP_BWRAP`, else `bwrap` on PATH. */
+		bwrapPath?: string;
+	};
 }
+
+export type SandboxMode = "none" | "workspace";
 
 export interface HttpClassifierConfig {
 	/** Names the classifier in the gate log as `http:<name>`. */
@@ -274,6 +292,15 @@ const httpClassifier = z.strictObject({
 		})
 		.optional(),
 });
+/** A mount source for the sandbox: absolute, normalised, never the root. */
+const sandboxPath = absolutePath.refine(
+	(p) =>
+		!p.includes("\0") &&
+		!p.split("/").includes("..") &&
+		path.normalize(p).replace(/\/+$/, "") !== "",
+	"must be an absolute path without '..' segments, and not the root",
+);
+const sandboxMode = z.enum(["none", "workspace"]);
 const protectedPath = z
 	.string()
 	.min(1)
@@ -338,6 +365,15 @@ export const configFileSchema = z.strictObject({
 		.strictObject({
 			enabled: z.boolean().optional(),
 			file: absolutePath.optional(),
+		})
+		.optional(),
+	sandbox: z
+		.strictObject({
+			minimum: sandboxMode.optional(),
+			default: sandboxMode.optional(),
+			extraRo: z.array(sandboxPath).optional(),
+			extraRw: z.array(sandboxPath).optional(),
+			bwrapPath: z.string().min(1).optional(),
 		})
 		.optional(),
 });
@@ -513,6 +549,16 @@ const CHOICE_SETTINGS = {
 		flag: "--audit-file",
 		key: "audit.file",
 	},
+	sandboxMinimum: {
+		env: "WORKER_MCP_SANDBOX_MINIMUM",
+		flag: "--sandbox-minimum",
+		key: "sandbox.minimum",
+	},
+	sandboxDefault: {
+		env: "WORKER_MCP_SANDBOX_DEFAULT",
+		flag: "--sandbox-default",
+		key: "sandbox.default",
+	},
 } as const;
 type ChoiceName = keyof typeof CHOICE_SETTINGS;
 
@@ -558,6 +604,14 @@ function choiceLayer(source: string, name: ChoiceName, raw: string): FileLayer {
 				return { audit: { enabled: false } };
 			}
 			return fail(`${JSON.stringify(raw)} is not 0 or 1`);
+		case "sandboxMinimum":
+			return {
+				sandbox: { minimum: pick<SandboxMode>(["none", "workspace"], word) },
+			};
+		case "sandboxDefault":
+			return {
+				sandbox: { default: pick<SandboxMode>(["none", "workspace"], word) },
+			};
 		case "auditFile": {
 			const result = absolutePath.safeParse(raw);
 			return result.success
@@ -981,6 +1035,19 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 					base.providers?.pi?.startupTimeoutMs,
 			},
 		},
+		sandbox: {
+			minimum: over.sandbox?.minimum ?? base.sandbox?.minimum,
+			default: over.sandbox?.default ?? base.sandbox?.default,
+			extraRo: [
+				...(base.sandbox?.extraRo ?? []),
+				...(over.sandbox?.extraRo ?? []),
+			],
+			extraRw: [
+				...(base.sandbox?.extraRw ?? []),
+				...(over.sandbox?.extraRw ?? []),
+			],
+			bwrapPath: over.sandbox?.bwrapPath ?? base.sandbox?.bwrapPath,
+		},
 		gate: {
 			maxAutoApprove: over.gate?.maxAutoApprove ?? base.gate?.maxAutoApprove,
 			approvalTimeoutMs:
@@ -1187,6 +1254,13 @@ function applyDefaults(
 			"Invalid config: gate.mode is auto but gate.classifiers is empty; configure a classifier or use gate.mode manual",
 		);
 	}
+	const minimum = layer.sandbox?.minimum ?? "none";
+	if (minimum === "workspace" && layer.sandbox?.default === "none") {
+		throw new ConfigError(
+			"Invalid config: sandbox.default is none but sandbox.minimum is workspace; a worker may not run below the minimum",
+		);
+	}
+	const bwrapEnv = env.WORKER_MCP_BWRAP?.trim();
 	return {
 		stateDir,
 		runtimeDir:
@@ -1246,6 +1320,18 @@ function applyDefaults(
 		audit: {
 			enabled: layer.audit?.enabled ?? true,
 			file: layer.audit?.file ?? path.join(stateDir, "audit.jsonl"),
+		},
+		sandbox: {
+			minimum,
+			...(layer.sandbox?.default === undefined
+				? {}
+				: { default: layer.sandbox.default }),
+			extraRo: [...new Set(layer.sandbox?.extraRo ?? [])],
+			extraRw: [...new Set(layer.sandbox?.extraRw ?? [])],
+			// The file wins over the environment, which the Nix package sets.
+			...(layer.sandbox?.bwrapPath || bwrapEnv
+				? { bwrapPath: layer.sandbox?.bwrapPath || bwrapEnv }
+				: {}),
 		},
 	};
 }

@@ -110,6 +110,8 @@ export function createIsolation(): Isolation {
 			XDG_STATE_HOME: state,
 			XDG_RUNTIME_DIR: runtime,
 			WORKER_MCP_PI_PATH: FAKE_PI,
+			// Unit and integration tests run workers directly; sandbox tests opt in.
+			WORKER_MCP_SANDBOX_DEFAULT: "none",
 			// A worker that never acknowledges a prompt fails its run quickly.
 			WORKER_MCP_RUN_START_TIMEOUT_MS: "1000",
 			FAKE_PI_RECORD: recordFile,

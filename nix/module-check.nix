@@ -90,6 +90,11 @@ let
               defaultModel = "zai/test-model";
               allowedRoots = [ "/home/user/src" ];
               legacyTools = false;
+              sandbox = {
+                default = "workspace";
+                extraRo = [ "/opt/toolchain" ];
+                extraRw = [ "/var/cache/build" ];
+              };
               env.WORKER_MCP_RUN_TIMEOUT_MS = 600000;
               envFiles.TEST_API_KEY = config.sops.secrets.api_key.path;
               claude.enable = true;
@@ -123,6 +128,13 @@ let
   };
   moved = withConfigDir.config.home.file."/home/user/.config/claude/skills/worker-mcp".source;
 
+  # Bad sandbox settings are refused at evaluation: a relative path, and a
+  # required sandbox where there is none.
+  badSandbox = evaluate {
+    programs.worker-mcp.sandbox.extraRw = [ "cache" ];
+  };
+  badSandboxFailed = lib.filter (a: !a.assertion) badSandbox.config.assertions;
+
   # A secret file in the Nix store is refused.
   storeFile = evaluate {
     programs.worker-mcp.envFiles.OTHER_KEY = "${pkgs.writeText "secret" "x"}";
@@ -140,6 +152,9 @@ assert lib.assertMsg (
 assert lib.assertMsg (
   builtins.length relativeFailed == 1
 ) "a relative envFiles path must be refused";
+assert lib.assertMsg (
+  builtins.length badSandboxFailed == 1 && lib.hasInfix "sandbox" (builtins.head badSandboxFailed).message
+) "a relative sandbox path must be refused";
 assert lib.assertMsg (
   builtins.length (lib.filter (a: !a.assertion) withConfigDir.config.assertions) == 0
 ) "configDir of the claude-code module must be accepted";
@@ -170,6 +185,7 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .providers.pi.path == "/opt/pi/bin/pi"
           and .providers.pi.defaultModel == "zai/test-model"
           and .legacyTools == false
+          and .sandbox == { default: "workspace", extraRo: ["/opt/toolchain"], extraRw: ["/var/cache/build"] }
           and .env.allow == ["TEST_API_KEY"]
         ' ${file}
 
@@ -184,7 +200,18 @@ pkgs.runCommand "worker-mcp-module-eval"
                and .gate.classifiers[1].jev.denyScore == 2.5
                and .gate.classifiers[1].jev.userRequestedProbability == 0.9
                and .gate.classifiers[1].cacheTtlMs == 30000
-               and .providers.pi.defaultModel == "zai/test-model"' effective.json
+               and .providers.pi.defaultModel == "zai/test-model"
+               and .sandbox.minimum == "none"
+               and .sandbox.default == "workspace"
+               and .sandbox.extraRo == ["/opt/toolchain"]' effective.json
+
+        # On Linux the package finds its own bubblewrap.
+        ${lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+          grep -q "WORKER_MCP_BWRAP" ${self.packages.${pkgs.stdenv.hostPlatform.system}.worker-mcp}/bin/worker-mcp
+          WORKER_MCP_BWRAP= true
+          export HOME="$TMPDIR/home"
+          worker-mcp --print-config | jq -e '.sandbox.bwrapPath | endswith("/bin/bwrap")'
+        ''}
 
         # The package is installed alongside.
         test "${toString (builtins.length cfg.home.packages)}" = 1

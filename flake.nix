@@ -134,8 +134,11 @@ EOF
             cp -r dist node_modules package.json $out/lib/node_modules/worker-mcp/
 
             mkdir -p $out/bin
+            # bubblewrap is the Linux workspace sandbox. The config's
+            # sandbox.bwrapPath still wins over this default.
             makeWrapper ${pkgs.nodejs_24}/bin/node $out/bin/worker-mcp \
-              --add-flags "$out/lib/node_modules/worker-mcp/dist/index.js"
+              --add-flags "$out/lib/node_modules/worker-mcp/dist/index.js" \
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "--set-default WORKER_MCP_BWRAP ${pkgs.bubblewrap}/bin/bwrap"}
 
             runHook postInstall
           '';

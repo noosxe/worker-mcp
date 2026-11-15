@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Workspace sandbox
+
+- **`sandbox: "workspace"`** (Linux, bubblewrap) for `spawn_worker`: the
+  worker runs with a read-only filesystem, an empty `$HOME` and `/tmp`, and
+  only its workspace writable. It is killed with the server even on SIGKILL,
+  protected paths (`.git/hooks`, `.git/config`, `.claude`, `.mcp.json`,
+  `.envrc`, `.husky`, `.pi`, `.env*`) are read-only inside the workspace, and
+  a git worktree can still commit. The network is not restricted and the worker
+  can still read its own API key. macOS has no sandbox: `sandbox.minimum` must
+  stay `none` there. See docs/security.md.
+- **Config**: `sandbox.minimum` (default `none`), `sandbox.default` (default
+  `workspace` when it works), `sandbox.extraRo`, `sandbox.extraRw`,
+  `sandbox.bwrapPath` (else `WORKER_MCP_BWRAP`, else `PATH`); env vars
+  `WORKER_MCP_SANDBOX_MINIMUM` and `WORKER_MCP_SANDBOX_DEFAULT`, flags
+  `--sandbox-minimum` and `--sandbox-default`.
+- **Spawn**: the new `sandbox` argument is raised to the minimum and reported
+  in `clamped`. Without a working sandbox a `workspace` minimum fails the spawn
+  with the new error code `SANDBOX_UNAVAILABLE`; otherwise the worker runs
+  unsandboxed and `notes` says so. `list_providers` reports
+  `sandbox: {available, reason, minimum, default}`, and a worker's `sandbox`
+  field is now real. The default is `workspace` wherever bubblewrap and
+  unprivileged user namespaces work, so existing setups start sandboxed:
+  set `sandbox.default` to `none` to keep the old behaviour.
+- **Nix**: the package sets `WORKER_MCP_BWRAP` to its bubblewrap on Linux; the
+  Home Manager module has typed `sandbox.*` options, checked at build time.
+
 ### Jev classifier dialect
 
 - **Jev risk confidence**: with valid risk `probabilities`, the risk part of an

@@ -115,6 +115,10 @@ export interface SessionDeps {
 	gateServices?: GateServices;
 	/** Called once when the worker process is gone without being asked to. */
 	onGone?: (session: Session) => void;
+	/** The sandbox this worker runs in, as the manager decided. Default: none. */
+	sandbox?: "none" | "workspace";
+	/** What deciding the sandbox changed or warned about. */
+	sandboxReport?: { clamped: string[]; notes: string[] };
 }
 
 /** A failure with a stable code, so the MCP tools can name it. */
@@ -193,6 +197,10 @@ export class Session {
 	private readonly approvalGate: ApprovalGate;
 	/** What happened to the policy given at spawn: clamped, converted. */
 	public readonly policyReport: PolicyReport | null;
+	/** How the worker is confined; fixed at spawn. */
+	public readonly sandbox: "none" | "workspace";
+	/** What the server changed or warned about when it chose the sandbox. */
+	public readonly sandboxReport: { clamped: string[]; notes: string[] };
 
 	private worker: OpenedWorker | null = null;
 	private alive = false;
@@ -238,6 +246,8 @@ export class Session {
 		this.abortGraceMs = deps.abortGraceMs ?? 3000;
 		this.now = deps.now ?? Date.now;
 		this.onGone = deps.onGone;
+		this.sandbox = deps.sandbox ?? "none";
+		this.sandboxReport = deps.sandboxReport ?? { clamped: [], notes: [] };
 		this.lastActiveAt = this.now();
 		this.name = deps.name;
 		this.sessionId = sessionId;
@@ -372,7 +382,7 @@ export class Session {
 				},
 				children: this.children,
 				runtime: this.runtime,
-				policy: { sandbox: "none", allowUngatedInSandbox: false },
+				policy: { sandbox: this.sandbox, allowUngatedInSandbox: false },
 				emit: (event) => this.onEvent(event),
 				approve: (call, signal) => this.approve(call, signal),
 				log: {

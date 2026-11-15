@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { type Config } from "../config.js";
 import { ChildRegistry } from "../core/child.js";
 import { type RunStore } from "../core/run.js";
+import { SandboxService, type SandboxStatus } from "../core/sandbox.js";
 import { ToolError } from "../errors.js";
 import { isInside } from "../gate/paths.js";
 import { GateServices } from "../gate/services.js";
@@ -22,6 +23,8 @@ export interface ManagerOptions {
 	version?: string;
 	/** Replaces the classifiers, cache and audit file built from the config. */
 	gateServices?: GateServices;
+	/** Replaces the sandbox service built from the config (tests). */
+	sandbox?: SandboxService;
 }
 
 /** One line of an error message: no stack, no stderr dump. */
@@ -35,6 +38,8 @@ export class SessionManager {
 	private readonly runtime: RuntimeDir;
 	/** Every worker process of this server starts and ends here. */
 	readonly children: ChildRegistry;
+	/** Finds and checks bubblewrap; the check runs once. */
+	readonly sandbox: SandboxService;
 	private readonly providers: ProviderRegistry;
 	/** Every run of every worker, kept after the worker is gone. */
 	readonly runs: RunStore;
@@ -56,7 +61,12 @@ export class SessionManager {
 		options: ManagerOptions = {},
 	) {
 		this.runtime = runtime ?? new RuntimeDir(config.runtimeDir);
-		this.children = new ChildRegistry({ env, envConfig: config.env });
+		this.sandbox = options.sandbox ?? new SandboxService(config.sandbox, env);
+		this.children = new ChildRegistry({
+			env,
+			envConfig: config.env,
+			sandbox: this.sandbox,
+		});
 		this.runs = runStoreFor(config);
 		// Throws a ConfigError when a classifier's token file is unusable.
 		this.gate =
@@ -125,6 +135,7 @@ export class SessionManager {
 		systemPrompt?: string,
 		riskPolicy?: unknown,
 		providerId?: string,
+		sandbox?: "none" | "workspace",
 	): Promise<Session> {
 		if (name !== undefined && !WORKER_NAME_PATTERN.test(name)) {
 			throw new ToolError(
@@ -154,6 +165,17 @@ export class SessionManager {
 			provider = await this.providers.get(providerId);
 		} catch (e) {
 			throw new ToolError("PROVIDER_UNAVAILABLE", firstLine(e));
+		}
+
+		// The check runs once and is cached; it must be done before the worker
+		// is registered, so nothing below this line awaits.
+		const sandboxStatus = await this.sandbox.status();
+		const decided = this.sandbox.resolveMode(sandbox, sandboxStatus.available);
+		if (decided.mode === "workspace" && !sandboxStatus.available) {
+			throw new ToolError(
+				"SANDBOX_UNAVAILABLE",
+				`The workspace sandbox is required (sandbox.minimum is workspace) but ${sandboxStatus.reason ?? "is not available"}. Fix that, or lower sandbox.minimum to none if running without a sandbox is acceptable.`,
+			);
 		}
 
 		// Everything from here to `sessions.set` is synchronous: nothing can
@@ -195,6 +217,8 @@ export class SessionManager {
 				env: this.env,
 				children: this.children,
 				provider,
+				sandbox: decided.mode,
+				sandboxReport: { clamped: decided.clamped, notes: decided.notes },
 				runs: this.runs,
 				gateServices: this.gate,
 				name,
@@ -253,6 +277,11 @@ export class SessionManager {
 		return providerId === "pi"
 			? this.config.providers.pi.defaultModel
 			: undefined;
+	}
+
+	/** Whether the workspace sandbox works here, checked once. */
+	public sandboxStatus(): Promise<SandboxStatus> {
+		return this.sandbox.status();
 	}
 
 	/** Ids of the providers a spawn may name; the first is the default. */

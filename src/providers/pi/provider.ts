@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import type { Config } from "../../config.js";
 import type { ManagedChild } from "../../core/child.js";
+import type { SandboxProfile } from "../../core/sandbox.js";
 import type {
 	ApprovalDecision,
 	ProviderCapabilities,
@@ -41,6 +42,22 @@ export interface PiProviderOptions {
 	abortGraceMs?: number;
 }
 
+/**
+ * pi reads its auth, models and settings from `~/.pi` and writes nothing there
+ * that matters in a run. But even to read `settings.json` it takes a lock by
+ * creating `settings.json.lock` next to it: on a read-only directory that
+ * fails, pi reports an invalid settings file and ignores all of it (its
+ * default model, for one). A writable `~/.pi/agent` would let a worker rewrite
+ * `auth.json` and `settings.json`, which the user's own pi loads later, so the
+ * directory is a throwaway overlay instead: writable, with every existing file
+ * read-only, and discarded with the worker.
+ */
+export const PI_SANDBOX_PROFILE: SandboxProfile = {
+	roHome: [".pi"],
+	rwHome: [],
+	overlayHome: [".pi/agent"],
+};
+
 export const PI_CAPABILITIES: ProviderCapabilities = {
 	approvals: "per-tool-call",
 	mutateInput: true,
@@ -67,6 +84,7 @@ export function createPiProvider(
 		id: "pi",
 		displayName: "pi",
 		capabilities: PI_CAPABILITIES,
+		sandboxProfile: PI_SANDBOX_PROFILE,
 		toolMap: piToolMap,
 		optionsSchema: z.strictObject({}) as unknown as z.ZodType<
 			Record<string, unknown>
@@ -104,7 +122,6 @@ export function createPiProvider(
 				cwd: spec.cwd,
 				env: { [GATE_NONCE_ENV]: nonce },
 				stdio: "jsonl",
-				sandbox: "none",
 			});
 			try {
 				// A missing binary surfaces asynchronously: wait for the outcome.

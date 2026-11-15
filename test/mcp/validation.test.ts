@@ -264,7 +264,7 @@ describe("schemas: every tool is strict and bounded", () => {
 				"systemPrompt too long": { cwd: "/", systemPrompt: long(20_001) },
 				"policy extra key": { cwd: "/", policy: { bogus: 1 } },
 				"deprecated key not accepted": { cwd: "/", sessionId: "x" },
-				"sandbox not offered": { cwd: "/", sandbox: "none" },
+				"unknown sandbox mode": { cwd: "/", sandbox: "strict" },
 			},
 		},
 		{
