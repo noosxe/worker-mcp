@@ -27,6 +27,8 @@ const RETRY_BACKOFF_MS = 300;
 const MAX_ATTEMPTS = 3;
 /** The least time left that makes a retry worth sending. */
 const MIN_ATTEMPT_MS = 400;
+/** A queued call that gets its turn with less than this is not sent. */
+const queuedFloorMs = (timeoutMs: number) => Math.max(100, timeoutMs * 0.1);
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
@@ -413,6 +415,12 @@ export class HttpClassifier implements Classifier {
 		if (!this.dialect.singleFlight) return this.attempts(req, signal, deadline);
 		const release = await this.acquire(deadline, signal);
 		try {
+			// A request that cannot finish would only hold the one slot.
+			if (deadline - this.now() < queuedFloorMs(this.cfg.timeoutMs)) {
+				throw new QueueTimeout(
+					`no answer within ${this.cfg.timeoutMs} ms (waited for an earlier request)`,
+				);
+			}
 			return await this.attempts(req, signal, deadline);
 		} finally {
 			release();
