@@ -5,9 +5,20 @@ import * as path from "node:path";
 import { after, before, describe, test } from "node:test";
 
 import { type Config, defaultConfig } from "../config.js";
+import type { Run } from "../core/run.js";
 import { FakeProvider } from "../providers/fake/provider.js";
 import { RuntimeDir } from "../session/runtime-dir.js";
 import { RunError, Session } from "../session/session.js";
+import { unwrap } from "./unwrap.js";
+
+const wait = async (
+	s: Session,
+	run: Run,
+	opts?: { timeoutMs?: number; signal?: AbortSignal },
+) => {
+	const text = await s.waitText(run, opts);
+	return text === null ? null : unwrap(text);
+};
 
 const bash = (command: string) => `tool:bash:${JSON.stringify({ command })}`;
 
@@ -149,7 +160,8 @@ describe("Runs on a Session over the fake provider", () => {
 			assert.strictEqual(run.approvals.size, 1);
 			const [info] = [...run.approvals.values()];
 			assert.strictEqual(info.tool, "bash");
-			assert.strictEqual(info.summary, "rm f");
+			assert.strictEqual(info.command, "rm f");
+			assert.match(info.actionId, /^a_[a-z0-9]{10}$/);
 
 			// Answering returns at once and does not wait for the worker.
 			const answered = s.approveAction(info.actionId);
@@ -307,7 +319,7 @@ describe("Runs on a Session over the fake provider", () => {
 			const s = await start();
 			const run = await s.startRun("slow:1000");
 			const controller = new AbortController();
-			const waiting = s.waitText(run, { signal: controller.signal });
+			const waiting = wait(s, run, { signal: controller.signal });
 			setTimeout(() => controller.abort(), 20);
 			assert.strictEqual(await waiting, null);
 			assert.strictEqual(run.state, "running", "the run was not cancelled");
@@ -320,9 +332,9 @@ describe("Runs on a Session over the fake provider", () => {
 		test("a blocking wait with a timeout returns null and the run goes on", async () => {
 			const s = await start();
 			const run = await s.startRun("slow:1000");
-			assert.strictEqual(await s.waitText(run, { timeoutMs: 30 }), null);
+			assert.strictEqual(await wait(s, run, { timeoutMs: 30 }), null);
 			assert.strictEqual(run.state, "running");
-			assert.strictEqual(await s.waitText(run), "slow done");
+			assert.strictEqual(await wait(s, run), "slow done");
 			await s.terminate();
 		});
 	});

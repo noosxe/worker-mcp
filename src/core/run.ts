@@ -37,9 +37,12 @@ export const isTerminal = (state: RunState): state is TerminalState =>
 export interface PendingApprovalInfo {
 	actionId: string;
 	tool: string;
-	/** What the worker asked to do, one line. */
-	summary: string;
-	input: unknown;
+	/** The canonical kind of the call: shell, read, write, edit, ... */
+	kind: string;
+	/** The shell command, when the call runs one. */
+	command?: string;
+	/** Paths the call touches, resolved. */
+	paths: { path: string; inWorkspace: boolean; protected: boolean }[];
 	riskLevel?: number;
 	riskLabel?: string;
 	/** Why the gate sent it to the coordinator. */
@@ -451,15 +454,7 @@ export interface RunView {
 	state: RunState;
 	seq: number;
 	elapsedMs: number;
-	pendingApprovals: {
-		actionId: string;
-		tool: string;
-		summary: string;
-		riskLabel?: string;
-		reason?: string;
-		hardLimit?: boolean;
-		expiresInMs: number;
-	}[];
+	pendingApprovals: PendingApprovalInfo[];
 	/** Tool calls and notices since `sinceSeq`, at most the last 10. */
 	activity: string[];
 	output: {
@@ -497,15 +492,7 @@ export function runView(run: Run, opts: ViewOptions): RunView {
 		state: run.state,
 		seq: run.seq,
 		elapsedMs: Math.max(0, end - run.createdAt),
-		pendingApprovals: [...run.approvals.values()].map((a) => ({
-			actionId: a.actionId,
-			tool: a.tool,
-			summary: a.summary,
-			riskLabel: a.riskLabel,
-			reason: a.reason,
-			hardLimit: a.hardLimit,
-			expiresInMs: Math.max(0, a.expiresAt - now),
-		})),
+		pendingApprovals: [...run.approvals.values()],
 		activity: run.activity
 			.filter((a) => a.seq > since)
 			.slice(-10)

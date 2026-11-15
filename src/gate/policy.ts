@@ -74,14 +74,14 @@ const overrideV1 = z.strictObject({
 
 const policyV2 = z.strictObject({
 	autoApproveUpTo: level.optional(),
-	overrides: z.array(overrideV2).max(200).optional(),
+	overrides: z.array(overrideV2).max(50).optional(),
 	classifiers: z.enum(["on", "off"]).optional(),
 });
 
 const policyV1 = z.strictObject({
 	autoApproveUpTo: level.optional(),
 	notifyUpTo: level.optional(),
-	overrides: z.array(overrideV1).max(200).optional(),
+	overrides: z.array(overrideV1).max(50).optional(),
 });
 
 /** Tool names from earlier versions, and the pi tool that replaces each. */

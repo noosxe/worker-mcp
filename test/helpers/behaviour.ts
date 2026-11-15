@@ -6,6 +6,7 @@ import { after, before, describe, test } from "node:test";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ProgressNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 
+import { unwrap } from "../../src/__tests__/unwrap.js";
 import {
 	createIsolation,
 	type Isolation,
@@ -42,10 +43,16 @@ export async function call(
 	);
 }
 
-export function textOf(result: object): string {
+/** The text of a result as sent, wrappers and all. */
+export function rawTextOf(result: object): string {
 	const content = (result as { content: { type: string; text: string }[] })
 		.content;
 	return content.map((block) => block.text).join("\n");
+}
+
+/** The text of a result with `<worker_output>` wrappers removed. */
+export function textOf(result: object): string {
+	return unwrap(rawTextOf(result));
 }
 
 /** Call a tool and require a successful result; returns its text. */
@@ -61,10 +68,12 @@ export async function callOk(
 
 export async function sessionStatus(client: Client, sessionId: string) {
 	const list = JSON.parse(await callOk(client, TOOLS.list, {})) as {
-		sessionId: string;
+		workerId: string;
+		name: string | null;
 		status: string;
 	}[];
-	return list.find((s) => s.sessionId === sessionId)?.status;
+	return list.find((s) => s.name === sessionId || s.workerId === sessionId)
+		?.status;
 }
 
 const startView = (client: Client, sessionId: string, command: string) =>
@@ -96,7 +105,12 @@ export interface RunViewJson {
 	workerId: string;
 	state: string;
 	seq: number;
-	pendingApprovals: { actionId: string; tool: string }[];
+	pendingApprovals: {
+		approvalId: string;
+		actionId: string;
+		tool: string;
+		command?: string;
+	}[];
 	activity: string[];
 	output: { text: string; offset: number; nextOffset: number; more: boolean };
 	error?: string;
@@ -104,8 +118,14 @@ export interface RunViewJson {
 }
 
 export function viewOf(result: object): RunViewJson {
-	const t = textOf(result);
-	return JSON.parse(t.slice(t.indexOf("\n") + 1)) as RunViewJson;
+	const t = rawTextOf(result);
+	const view = JSON.parse(t.slice(t.indexOf("\n") + 1)) as RunViewJson;
+	view.output.text = unwrap(view.output.text);
+	view.activity = view.activity.map(unwrap);
+	for (const a of view.pendingApprovals) {
+		if (a.command !== undefined) a.command = unwrap(a.command);
+	}
+	return view;
 }
 
 /** Call a run tool (start_run, wait_run, ...) and parse its view. */
@@ -167,9 +187,10 @@ export function behaviourTests(name: string, layer: Layer) {
 				});
 				assert.notStrictEqual(result.isError, true);
 				assert.strictEqual("task" in result, false);
-				assert.deepStrictEqual(result.content, [
-					{ type: "text", text: "fake-pi reply: hello" },
-				]);
+				assert.match(
+					rawTextOf(result),
+					/^<worker_output run="r_\w+" trust="untrusted">fake-pi reply: hello<\/worker_output>$/,
+				);
 			});
 		});
 
@@ -208,7 +229,7 @@ export function behaviourTests(name: string, layer: Layer) {
 				);
 				const pending = JSON.parse(
 					await callOk(client, TOOLS.pending, { sessionId: "approve" }),
-				);
+				)[0];
 				assert.strictEqual(pending.actionId, actionId);
 
 				// Approving returns at once; the run is followed with wait_run.
@@ -334,7 +355,7 @@ export function behaviourTests(name: string, layer: Layer) {
 					);
 					const pending = JSON.parse(
 						await callOk(client, TOOLS.pending, { sessionId: "risky" }),
-					);
+					)[0];
 					assert.match(pending.riskLabel, /HIGH|CRITICAL/);
 				});
 			});
@@ -473,7 +494,14 @@ export function behaviourTests(name: string, layer: Layer) {
 					riskPolicy: { autoApproveUpTo: 9 },
 				});
 				assert.strictEqual(result.isError, true);
-				assert.match(textOf(result), /Invalid riskPolicy/);
+				assert.match(textOf(result), /^INVALID_ARGUMENT: .*autoApproveUpTo/);
+				// A shape the schema allows but the policy checker refuses.
+				const text = await call(client, TOOLS.setPolicy, {
+					sessionId: "invalid",
+					riskPolicy: { autoApproveUpTo: "BOGUS" },
+				});
+				assert.strictEqual(text.isError, true);
+				assert.match(textOf(text), /^INVALID_ARGUMENT: /);
 			});
 		});
 
@@ -502,7 +530,7 @@ export function behaviourTests(name: string, layer: Layer) {
 				);
 				const pending = JSON.parse(
 					await callOk(client, TOOLS.pending, { sessionId: "protected" }),
-				);
+				)[0];
 				assert.strictEqual(pending.hardLimit, true);
 				// Only the coordinator can let it through.
 				await callOk(client, TOOLS.approve, {
@@ -647,17 +675,20 @@ export function behaviourTests(name: string, layer: Layer) {
 				// An unexpected exit ends the run with an error; it is not a silent finish.
 				assert.strictEqual(output.isError, true);
 				assert.match(textOf(output), /worker exited unexpectedly \(code 1/);
+				// A dead worker is not kept in the list, and its slot is free again.
 				await waitUntil(
-					async () => (await sessionStatus(client, "crash")) === "CRASHED",
+					async () => (await sessionStatus(client, "crash")) === undefined,
 					5000,
-					"CRASHED",
+					"the crashed worker to be removed",
 				);
 				const again = await call(client, TOOLS.send, {
 					sessionId: "crash",
 					command: "hello",
 				});
 				assert.strictEqual(again.isError, true);
-				assert.match(textOf(again), /no running pi process/);
+				assert.match(textOf(again), /^WORKER_NOT_FOUND: /);
+				// Its name is free to use again.
+				await spawnSession(client, "crash");
 			});
 		});
 
@@ -863,7 +894,7 @@ export function behaviourTests(name: string, layer: Layer) {
 						"scenario:slow:300 hi",
 					);
 					assert.match(started.runId, /^r_[A-Za-z0-9]{10,32}$/);
-					assert.strictEqual(started.workerId, "run-basic");
+					assert.match(started.workerId, /^w_[a-z0-9]{8}$/);
 					assert.ok(["starting", "running"].includes(started.state));
 					const done = await callView(client, TOOLS.waitRun, {
 						runId: started.runId,
@@ -1079,7 +1110,7 @@ export function behaviourTests(name: string, layer: Layer) {
 						prompt: "hi",
 					});
 					assert.strictEqual(nobody.isError, true);
-					assert.match(textOf(nobody), /Session not found/);
+					assert.match(textOf(nobody), /^WORKER_NOT_FOUND: /);
 				});
 			});
 

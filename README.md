@@ -356,6 +356,9 @@ Lowest to highest:
 | `limits.maxRunMs`               | `WORKER_MCP_RUN_TIMEOUT_MS`        | `--run-timeout-ms`        | `1800000` (30 min)                        |
 | `limits.maxWaitMs`              | `WORKER_MCP_MAX_WAIT_MS`           | `--max-wait-ms`           | `50000`                                   |
 | `limits.runStartTimeoutMs`      | `WORKER_MCP_RUN_START_TIMEOUT_MS`  | `--run-start-timeout-ms`  | `15000`                                   |
+| `limits.maxWorkers`             | `WORKER_MCP_MAX_WORKERS`           | `--max-workers`           | `4`                                       |
+| `limits.idleTimeoutMs`          | `WORKER_MCP_IDLE_TIMEOUT_MS`       | `--idle-timeout-ms`       | `1800000` (30 min)                        |
+| `limits.allowedRoots`           | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                       |
 | `gate.approvalTimeoutMs`        | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                         |
 | `env.allow`                     | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                      |
 | `stateDir`                      | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`              |

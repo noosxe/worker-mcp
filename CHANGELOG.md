@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### Validation and limits
+
+- Every tool validates its input with a strict zod schema: unknown arguments
+  are rejected, and the bounds are enforced (`prompt` and `command` 200 000
+  characters, `systemPrompt` 20 000, `intent` and a rejection `reason` 500,
+  50 policy overrides, `waitMs` 0 to 50 000, `get_auto_approved_log` `limit`
+  200). Invalid input returns `INVALID_ARGUMENT`.
+- Errors are `isError` results whose text starts with a stable code
+  (`WORKER_NOT_FOUND`, `WORKER_BUSY`, `RUN_NOT_FOUND`, `APPROVAL_NOT_FOUND`,
+  `LIMIT_REACHED`, `INVALID_ARGUMENT`, `PROVIDER_UNAVAILABLE`,
+  `GATE_UNAVAILABLE`, `CWD_NOT_ALLOWED`) followed by what to do next. No stack
+  traces.
+- Workers get a server-generated id (`w_` and 8 lowercase letters or digits);
+  approvals get `a_…` ids. `spawn_pi_session` takes an optional `name`
+  (`A-Za-z0-9_-`, up to 64, unique among live workers), and every tool taking
+  a worker accepts its id or its name. Ids and names are never used in file
+  paths.
+- `cwd` must be an absolute path to an existing directory and is resolved to
+  its real path. New setting `limits.allowedRoots`
+  (`WORKER_MCP_ALLOWED_ROOTS`, comma-separated, `--allowed-roots`): when set,
+  the real `cwd` must lie inside one of the (real) roots, else
+  `CWD_NOT_ALLOWED`.
+- New limits `limits.maxWorkers` (default 4; a spawn past it is
+  `LIMIT_REACHED`) and `limits.idleTimeoutMs` (default 30 minutes: a worker
+  with no run for that long is closed; its runs stay readable). Both are
+  shown by `--print-config`.
+- Everything a worker wrote that reaches the coordinator (final text,
+  activity lines, tool commands and paths, progress messages) is wrapped as
+  `<worker_output run="r_…" trust="untrusted">…</worker_output>`, and any
+  `</worker_output` inside is escaped. A pending approval is shown as fields
+  (tool, kind, command, paths, risk, reason) instead of a free-text message.
+
+### Changed (breaking)
+
+- `spawn_pi_session`: `sessionId` is now an optional, deprecated spelling of
+  `name`. The worker's id is generated and returned in the result; the id (or
+  the name) is what the other tools take in `sessionId` / `workerId`.
+- `get_pending_actions` returns a JSON array of the approvals waiting (empty
+  when there are none, never `null`), and takes an optional `sessionId` and an
+  optional `runId`. Each entry has `approvalId`; `actionId` is kept as an
+  alias.
+- `approve_action` and `reject_action` take the server-generated `approvalId`
+  (`actionId` is still accepted); `sessionId` is optional. The provider's own
+  call id is no longer an approval id.
+- `list_pi_sessions` entries carry `workerId`, `name` and `pendingActions`
+  (a count) instead of `pendingAction`.
+- Results of `send_pi_command`, `start_run`, `wait_run` and `get_run` wrap
+  worker text as described above, so exact-match parsing of the output text
+  needs to strip the wrapper.
+- A worker whose process died is removed at once (it used to stay listed as
+  `CRASHED`); its runs stay readable and its name and slot are free again.
+- A `waitMs` above 50 000 is refused instead of clamped.
+
 ### Added
 
 - Configuration is one validated object (zod), built from an optional JSON

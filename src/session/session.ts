@@ -15,6 +15,7 @@ import {
 	type RiskPolicy,
 } from "../gate/policy.js";
 import { RISK_LABELS, RiskLevel } from "../gate/risk.js";
+import { newApprovalId } from "../ids.js";
 import type {
 	ApprovalDecision,
 	RawToolCall,
@@ -22,6 +23,7 @@ import type {
 	WorkerEvent,
 	WorkerProvider,
 } from "../providers/types.js";
+import { wrapUntrusted } from "../render.js";
 import { BoundedLog } from "./bounded-log.js";
 import type { RuntimeDir } from "./runtime-dir.js";
 
@@ -34,6 +36,8 @@ export type SessionStatus =
 
 export interface AutoApprovedAction {
 	actionId: string;
+	/** The run the call belonged to, when there was one. */
+	runId?: string;
 	toolName: string;
 	input: Record<string, unknown>;
 	riskLevel: RiskLevel;
@@ -55,10 +59,13 @@ export interface PolicyReport extends Pick<
 }
 
 export interface PendingAction {
+	/** The server-made approval id (`a_…`). */
 	actionId: string;
+	runId: string;
 	tool: string;
-	arguments: unknown;
-	context: string;
+	kind: string;
+	command?: string;
+	paths: { path: string; inWorkspace: boolean; protected: boolean }[];
 	riskLevel?: RiskLevel;
 	riskLabel?: string;
 	/** Why the gate sent this to the coordinator. */
@@ -99,6 +106,12 @@ export interface SessionDeps {
 	runs?: RunStore;
 	/** How long an aborted run may take to settle before it is forced. */
 	abortGraceMs?: number;
+	/** The caller's name for the worker; unique among live workers. */
+	name?: string;
+	/** The clock, for idle tracking. */
+	now?: () => number;
+	/** Called once when the worker process is gone without being asked to. */
+	onGone?: (session: Session) => void;
 }
 
 /** A failure with a stable code, so the MCP tools can name it. */
@@ -118,6 +131,8 @@ export class RunError extends Error {
 }
 
 interface PendingApproval {
+	/** The server-made id the coordinator answers with. */
+	id: string;
 	call: RawToolCall;
 	action: PendingAction;
 	run: Run;
@@ -155,7 +170,10 @@ export class Session {
 	private static readonly MAX_AUTO_APPROVED_LOG = 500;
 	private static readonly MAX_HISTORY = 500;
 
+	/** The server-made worker id (`w_…`). */
 	public sessionId: string;
+	/** The name the caller gave the worker, if any. */
+	public readonly name: string | undefined;
 	public cwd: string;
 	public model: string | undefined;
 	public systemPrompt: string | undefined;
@@ -189,6 +207,11 @@ export class Session {
 	private readonly provider: WorkerProvider | undefined;
 	readonly runs: RunStore;
 	private readonly abortGraceMs: number;
+	private readonly now: () => number;
+	private readonly onGone: ((session: Session) => void) | undefined;
+	/** When the worker last had nothing to do (epoch ms). */
+	private lastActiveAt: number;
+	private goneReported = false;
 
 	constructor(
 		sessionId: string,
@@ -207,6 +230,10 @@ export class Session {
 		this.provider = deps.provider;
 		this.runs = deps.runs ?? runStoreFor(this.config);
 		this.abortGraceMs = deps.abortGraceMs ?? 3000;
+		this.now = deps.now ?? Date.now;
+		this.onGone = deps.onGone;
+		this.lastActiveAt = this.now();
+		this.name = deps.name;
 		this.sessionId = sessionId;
 		this.cwd = cwd;
 		this.model = model;
@@ -250,10 +277,33 @@ export class Session {
 		return this.logBuffer.lines;
 	}
 
+	/** Approvals waiting for the coordinator, oldest first. Never null. */
+	public get pendingActions(): PendingAction[] {
+		return [...this.pending.values()].map((p) => p.action);
+	}
+
 	/** The first pending approval, which is the one the coordinator sees. */
 	public get pendingAction(): PendingAction | null {
-		for (const p of this.pending.values()) return p.action;
-		return null;
+		return this.pendingActions[0] ?? null;
+	}
+
+	public hasPendingApproval(approvalId: string): boolean {
+		return this.pending.has(approvalId);
+	}
+
+	/**
+	 * When the worker became idle, or null while it is busy: running, waiting
+	 * for an approval or not alive.
+	 */
+	public idleSince(): number | null {
+		if (!this.alive || this.currentRun || this.pending.size > 0) return null;
+		return this.lastActiveAt;
+	}
+
+	private reportGone(): void {
+		if (this.goneReported) return;
+		this.goneReported = true;
+		this.onGone?.(this);
 	}
 
 	/** The run in flight, if any. */
@@ -302,6 +352,7 @@ export class Session {
 		}
 		this.alive = true;
 		this.status = "IDLE";
+		this.lastActiveAt = this.now();
 	}
 
 	// ---- events from the provider ------------------------------------------------
@@ -437,6 +488,9 @@ export class Session {
 		}
 		this.dropPending("the worker ended before the call was answered");
 		this.runs.workerClosed(this.sessionId);
+		// A worker that is gone is not kept in the list or counted against the
+		// limit; its runs stay readable.
+		this.reportGone();
 	}
 
 	private describeExit(e: { code: number | null; signal: string | null }) {
@@ -460,6 +514,7 @@ export class Session {
 		if (this.currentRun === active) this.currentRun = null;
 		this.dropPending("the run ended before the call was answered");
 		if (this.alive && !this.terminating) this.status = "IDLE";
+		this.lastActiveAt = this.now();
 		return true;
 	}
 
@@ -497,6 +552,7 @@ export class Session {
 	private async closeWedged(): Promise<void> {
 		await this.terminate();
 		this.status = "CRASHED";
+		this.reportGone();
 	}
 
 	// ---- approvals ---------------------------------------------------------------
@@ -540,6 +596,7 @@ export class Session {
 			this.autoApprovedTotal++;
 			this.autoApprovedActions.push({
 				actionId: call.callId,
+				runId: run?.id,
 				toolName: outcome.call.rawName,
 				input: outcome.call.input,
 				riskLevel: outcome.level,
@@ -587,13 +644,20 @@ export class Session {
 		signal: AbortSignal,
 	): Promise<ApprovalDecision> {
 		const label = RISK_LABELS[outcome.level];
+		const id = newApprovalId();
 		return new Promise((resolve) => {
+			const paths = outcome.call.paths.map((p) => ({
+				path: p.abs,
+				inWorkspace: p.inWorkspace,
+				protected: p.protected !== undefined,
+			}));
 			const action: PendingAction = {
-				actionId: call.callId,
-				tool: "confirm",
-				arguments: { title: "worker-mcp-gate", message },
-				context:
-					"A tool execution or high-risk operation requires supervisor consent.",
+				actionId: id,
+				runId: run.id,
+				tool: call.toolName,
+				kind: outcome.call.kind,
+				command: outcome.call.command,
+				paths,
 				riskLevel: outcome.level,
 				riskLabel: label,
 				reason: outcome.reason,
@@ -601,6 +665,7 @@ export class Session {
 			};
 			const timeoutMs = this.config.gate.approvalTimeoutMs;
 			const entry: PendingApproval = {
+				id,
 				call,
 				action,
 				run,
@@ -612,25 +677,25 @@ export class Session {
 			entry.timer = setTimeout(
 				() =>
 					this.cancelPending(
-						call.callId,
+						id,
 						`approval timed out: the coordinator did not answer within ${Math.round(timeoutMs / 1000)} s`,
 						"timeout",
 					),
 				timeoutMs,
 			);
 			entry.timer.unref?.();
-			this.pending.set(call.callId, entry);
+			this.pending.set(id, entry);
 			signal.addEventListener(
 				"abort",
-				() => this.cancelPending(call.callId, "the run was aborted"),
+				() => this.cancelPending(id, "the run was aborted"),
 				{ once: true },
 			);
 			if (signal.aborted) {
-				this.cancelPending(call.callId, "the run was aborted");
+				this.cancelPending(id, "the run was aborted");
 				return;
 			}
 			this.log(
-				`[INTERCEPTED] [${label}] Action ${call.callId} awaiting coordinator approval: ${message}`,
+				`[INTERCEPTED] [${label}] Action ${id} (call ${call.callId}) awaiting coordinator approval: ${message}`,
 			);
 			run.noteGate(
 				"escalated",
@@ -640,17 +705,18 @@ export class Session {
 			this.runs.addApproval(
 				run,
 				{
-					actionId: call.callId,
+					actionId: id,
 					tool: call.toolName,
-					summary: summariseInput(call.input),
-					input: call.input,
+					kind: outcome.call.kind,
+					command: outcome.call.command,
+					paths,
 					riskLevel: outcome.level,
 					riskLabel: label,
 					reason: outcome.reason,
 					hardLimit: !outcome.autoAllowable,
 					expiresAt: Date.now() + timeoutMs,
 				},
-				`awaiting approval: ${call.toolName} ${summariseInput(call.input)}`.trim(),
+				`awaiting approval: ${call.toolName} [${label}]`,
 			);
 		});
 	}
@@ -666,7 +732,7 @@ export class Session {
 		entry.cancelled = true;
 		if (entry.timer) clearTimeout(entry.timer);
 		this.pending.delete(actionId);
-		this.approvalGate.recordResolution(actionId, "deny", by, reason);
+		this.approvalGate.recordResolution(entry.call.callId, "deny", by, reason);
 		this.runs.removeApproval(entry.run, actionId, by === "timeout");
 		entry.resolve({ kind: "deny", reason });
 		this.afterPendingChanged();
@@ -689,8 +755,8 @@ export class Session {
 	 * Append the actions auto-approved since the last result, so the caller sees
 	 * what ran without asking. Each action is reported once.
 	 */
-	private takeAutoApprovedNotes(): string {
-		const denied = this.takeAutoDeniedNotes();
+	private takeAutoApprovedNotes(runId: string): string {
+		const denied = this.takeAutoDeniedNotes(runId);
 		const unreported = this.autoApprovedTotal - this.autoApprovedReported;
 		this.autoApprovedReported = this.autoApprovedTotal;
 		if (unreported <= 0) return denied;
@@ -702,14 +768,14 @@ export class Session {
 		if (unreported > shown.length) {
 			lines.push(`- ... and ${unreported - shown.length} more`);
 		}
-		return `${denied}\n\nAuto-approved without asking (${unreported}):\n${lines.join("\n")}`;
+		return `${denied}\n\nAuto-approved without asking (${unreported}):\n${wrapUntrusted(runId, lines.join("\n"))}`;
 	}
 
-	private takeAutoDeniedNotes(): string {
+	private takeAutoDeniedNotes(runId: string): string {
 		if (this.autoDenied.length === 0) return "";
 		const lines = this.autoDenied.map((d) => `- ${d}`);
 		this.autoDenied = [];
-		return `\n\nDenied by the risk policy without asking (${lines.length}):\n${lines.join("\n")}`;
+		return `\n\nDenied by the risk policy without asking (${lines.length}):\n${wrapUntrusted(runId, lines.join("\n"))}`;
 	}
 
 	private takeSummarizeNote(): string {
@@ -871,11 +937,11 @@ export class Session {
 		if (!entry) {
 			throw new RunError(
 				"APPROVAL_NOT_FOUND",
-				`No pending action matching ID: ${actionId} currently awaiting approval`,
+				`No pending approval ${actionId}: it was already answered, expired or never existed. Call get_pending_actions to see what is waiting.`,
 			);
 		}
 		this.approvalGate.recordResolution(
-			actionId,
+			entry.call.callId,
 			resolution,
 			"coordinator",
 			note,
@@ -970,15 +1036,28 @@ export class Session {
 			}
 			if (run.state === "cancelled" && run.error) return "Process terminated";
 			this.log("Agent settled.");
-			const notes = this.takeAutoApprovedNotes();
+			const notes = this.takeAutoApprovedNotes(run.id);
 			const fullOutput = run.output.all;
-			return `${fullOutput || "Agent finished task run successfully."}${notes}${this.takeSummarizeNote()}`;
+			const body = fullOutput
+				? wrapUntrusted(run.id, fullOutput)
+				: "Agent finished task run successfully.";
+			return `${body}${notes}${this.takeSummarizeNote()}`;
 		}
 		const p = this.pendingAction;
 		if (!p) return `RUNNING: ${run.id} is still ${run.state}.`;
 		const hard = p.hardLimit ? " Hard limit: only you can allow this." : "";
-		const message = (p.arguments as { message: string }).message;
-		return `AWAITING_APPROVAL: [${p.riskLabel ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${p.actionId}. Message: ${message}${hard}${this.takeAutoApprovedNotes()}\n\nRun: ${run.id}. approve_action and reject_action return at once; call wait_run with this runId to follow the run.`;
+		const detail = [
+			`Tool: ${wrapUntrusted(run.id, p.tool)} (${p.kind})`,
+			p.command === undefined
+				? null
+				: `Command: ${wrapUntrusted(run.id, p.command)}`,
+			p.paths.length === 0
+				? null
+				: `Paths: ${p.paths.map((x) => `${wrapUntrusted(run.id, x.path)}${x.protected ? " (protected)" : x.inWorkspace ? "" : " (outside the workspace)"}`).join(", ")}`,
+		]
+			.filter((x) => x !== null)
+			.join(". ");
+		return `AWAITING_APPROVAL: [${p.riskLabel ?? "UNKNOWN"} RISK] Intercepted tool call. Action ID: ${p.actionId}. ${detail}.${hard}${this.takeAutoApprovedNotes(run.id)}\n\nRun: ${run.id}. approve_action and reject_action return at once; call wait_run with this runId to follow the run.`;
 	}
 
 	/**

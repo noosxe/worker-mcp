@@ -103,13 +103,28 @@ describe("SessionManager", () => {
 		const manager = managerFor();
 		await assert.rejects(
 			() => manager.createSession("wedged", "/nonexistent/path/xyz"),
-			/Workspace directory does not exist/,
+			/^ToolError: CWD_NOT_ALLOWED: .*does not exist/,
 		);
-		assert.strictEqual(
-			manager.listSessions().some((s) => s.sessionId === "wedged"),
-			false,
-		);
-		assert.throws(() => manager.getSession("wedged"), /Session not found/);
+		assert.throws(() => manager.getSession("wedged"), /WORKER_NOT_FOUND/);
+	});
+
+	test("a spawn that fails to start holds neither a slot nor its name", async () => {
+		const manager = managerFor({
+			...iso.env,
+			WORKER_MCP_PI_PATH: path.join(iso.root, "no-such-pi"),
+			WORKER_MCP_MAX_WORKERS: "1",
+		});
+		try {
+			for (let i = 0; i < 2; i++) {
+				await assert.rejects(
+					() => manager.createSession("broken", iso.cwd),
+					/PROVIDER_UNAVAILABLE|GATE_UNAVAILABLE/,
+				);
+				assert.strictEqual(manager.listSessions().length, 0);
+			}
+		} finally {
+			await manager.terminateAll();
+		}
 	});
 
 	test("a finished session's id can be reused", async () => {
@@ -129,7 +144,7 @@ describe("SessionManager", () => {
 		await manager.createSession("doomed", iso.cwd);
 		await manager.terminateSession("doomed");
 		assert.strictEqual(manager.listSessions().length, 0);
-		assert.throws(() => manager.getSession("doomed"), /Session not found/);
+		assert.throws(() => manager.getSession("doomed"), /WORKER_NOT_FOUND/);
 		await manager.terminateAll();
 	});
 
@@ -152,12 +167,15 @@ describe("SessionManager", () => {
 			// A long run stays in flight until cancelled, so the checks cannot race.
 			const run = await session.startRun("scenario:slow:60000");
 			assert.strictEqual(manager.listSessions()[0].currentRunId, run.id);
-			assert.strictEqual(manager.findSessionByWorker("keeps"), session);
+			assert.strictEqual(
+				manager.findSessionByWorker(session.sessionId),
+				session,
+			);
 			session.cancelRun();
 			await session.waitText(run);
 			assert.strictEqual(manager.runs.get(run.id)?.state, "cancelled");
 			await manager.terminateSession("keeps");
-			assert.strictEqual(manager.findSessionByWorker("keeps"), null);
+			assert.strictEqual(manager.findSessionByWorker(session.sessionId), null);
 			assert.strictEqual(manager.runs.get(run.id)?.state, "cancelled");
 		} finally {
 			await manager.terminateAll();
