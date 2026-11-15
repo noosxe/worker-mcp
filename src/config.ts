@@ -187,6 +187,11 @@ export interface JevThresholds {
 	untrustedProbability: number;
 	/** `user_requested` at or above this lets a risky call through. */
 	userRequestedProbability: number;
+	/**
+	 * An allow is refused when a probability or score it rests on is within
+	 * this distance of its threshold.
+	 */
+	thresholdMargin: number;
 }
 export const DEFAULT_JEV_THRESHOLDS: JevThresholds = {
 	denyScore: 2.5,
@@ -194,6 +199,7 @@ export const DEFAULT_JEV_THRESHOLDS: JevThresholds = {
 	askProbability: 0.75,
 	untrustedProbability: 0.7,
 	userRequestedProbability: 0.85,
+	thresholdMargin: 0.05,
 };
 export const DEFAULT_MIN_ALLOW_CONFIDENCE = 0.85;
 export const DEFAULT_MIN_DENY_CONFIDENCE = 0.6;
@@ -252,6 +258,7 @@ const httpClassifier = z.strictObject({
 			askProbability: confidence.optional(),
 			untrustedProbability: confidence.optional(),
 			userRequestedProbability: confidence.optional(),
+			thresholdMargin: z.number().min(0).max(1).optional(),
 		})
 		.optional(),
 	cacheTtlMs: positiveInt.optional(),

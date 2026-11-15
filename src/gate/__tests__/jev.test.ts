@@ -12,6 +12,7 @@ import { DecisionCache } from "../cache.js";
 import type { GateOutcome } from "../classifier.js";
 import { HttpClassifier } from "../http-classifier.js";
 import { QUESTION_IDS } from "../jev-questions.js";
+import { mapAnswers } from "../jev.js";
 import { decide, fixture, type Fixture } from "./helpers.js";
 
 const TOKEN = "jev-test-token-value";
@@ -249,9 +250,10 @@ describe("jev dialect: the mapping", () => {
 	test("an allow with a weak confidence escalates", async () => {
 		const low = await serve(reply({ confidence: 0.5 }));
 		assert.strictEqual((await run(classifier(low.url))).decision, "escalate");
-		// approval 0.3 is below the ask threshold but not certain enough to allow
+		// approval 0.3 is below the ask threshold: the probability does not
+		// lower the confidence, so a confident risk answer allows
 		const mid = await serve(reply({ approval: 0.3 }));
-		assert.strictEqual((await run(classifier(mid.url))).decision, "escalate");
+		assert.strictEqual((await run(classifier(mid.url))).decision, "allow");
 	});
 
 	test("thresholds are configurable", async () => {
@@ -263,15 +265,18 @@ describe("jev dialect: the mapping", () => {
 				jev: { ...DEFAULT_JEV_THRESHOLDS, userRequestedProbability: 0.6 },
 			}),
 		);
-		// confidence = min(0.95, 0.7, 0.99) = 0.7 < 0.85: still escalates
-		assert.strictEqual(loose.decision, "escalate");
-		const both = await run(
+		assert.strictEqual(loose.decision, "allow");
+		const margin = await run(
 			classifier(s.url, {
-				minAllowConfidence: 0.6,
-				jev: { ...DEFAULT_JEV_THRESHOLDS, userRequestedProbability: 0.6 },
+				jev: {
+					...DEFAULT_JEV_THRESHOLDS,
+					userRequestedProbability: 0.6,
+					thresholdMargin: 0.2,
+				},
 			}),
 		);
-		assert.strictEqual(both.decision, "allow");
+		// 0.7 is within 0.2 of 0.6
+		assert.strictEqual(margin.decision, "escalate");
 	});
 
 	test("CRITICAL is never allowed, whatever jev says", async () => {
@@ -388,6 +393,146 @@ describe("jev dialect: the mapping", () => {
 		const again = await decide(on, "bash", { command: "rm b" });
 		assert.strictEqual(s.seen.length, 3);
 		assert.strictEqual(again.consulted[1].cached, true);
+	});
+});
+
+describe("jev dialect: per-answer noul confidence", () => {
+	test("a noul confidence in the answer or in providerMetadata lowers an allow", async () => {
+		const inline: any = answers();
+		inline.answers.approval.confidence = 0.5;
+		const a = await serve((_r, res) => send(res, inline));
+		assert.strictEqual((await run(classifier(a.url))).decision, "escalate");
+		const meta: any = answers();
+		meta.providerMetadata = {
+			typesafe: { confidence: { from_untrusted: 0.4 } },
+		};
+		const b = await serve((_r, res) => send(res, meta));
+		assert.strictEqual((await run(classifier(b.url))).decision, "escalate");
+		const fine: any = answers();
+		fine.answers.approval.confidence = 0.95;
+		const c = await serve((_r, res) => send(res, fine));
+		assert.strictEqual((await run(classifier(c.url))).decision, "allow");
+	});
+
+	test("an unusable noul confidence escalates", async () => {
+		const bad: any = answers();
+		bad.answers.approval.confidence = 7;
+		const s = await serve((_r, res) => send(res, bad));
+		assert.strictEqual((await run(classifier(s.url))).decision, "escalate");
+	});
+});
+
+const ans = (
+	score: number,
+	confidence: number,
+	approval: number,
+	user_requested: number,
+	from_untrusted: number,
+	noul?: Record<string, number>,
+) => ({
+	risk: { score, confidence },
+	approval,
+	user_requested,
+	from_untrusted,
+	confidence: noul,
+});
+
+describe("jev dialect: mapAnswers", () => {
+	const th = { ...DEFAULT_JEV_THRESHOLDS };
+	for (const [name, a, verdict] of [
+		["python3 calc.py, confident", ans(0.14, 0.86, 0.61, 0.9, 0.05), "allow"],
+		[
+			"python3 calc.py, risk confidence 0.81",
+			ans(0.19, 0.81, 0.77, 0.86, 0.09),
+			"escalate",
+		],
+		[
+			"edit calc.py, risk confidence 0.82",
+			ans(0.82, 0.82, 0.57, 0.91, 0.05),
+			"escalate",
+		],
+		[
+			"rm -rf build, risk confidence 0.43",
+			ans(1.09, 0.43, 0.74, 0.84, 0.08),
+			"escalate",
+		],
+	] as const) {
+		test(`real answer: ${name}`, () => {
+			const r = mapAnswers(a, th);
+			assert.strictEqual(
+				r.verdict === "allow" && (r.confidence ?? 0) < 0.85
+					? "escalate"
+					: r.verdict,
+				verdict,
+			);
+			if (verdict === "allow") assert.strictEqual(r.confidence, 0.86);
+		});
+	}
+
+	test("deny rules and the risky-not-requested escalation are kept", () => {
+		const u = mapAnswers(ans(0.1, 0.9, 0.1, 0.9, 0.8), th);
+		assert.deepStrictEqual([u.verdict, u.confidence], ["deny", 0.8]);
+		const r = mapAnswers(ans(2.7, 0.88, 0.1, 0.9, 0.1), th);
+		assert.deepStrictEqual([r.verdict, r.confidence], ["deny", 0.88]);
+		assert.strictEqual(
+			mapAnswers(ans(1.8, 0.9, 0.1, 0.5, 0.1), th).verdict,
+			"escalate",
+		);
+		assert.strictEqual(
+			mapAnswers(ans(0.1, 0.9, 0.8, 0.5, 0.1), th).verdict,
+			"escalate",
+		);
+	});
+
+	test("risky but requested allows with the weakest reported confidence", () => {
+		const r = mapAnswers(
+			ans(1.8, 0.95, 0.9, 0.95, 0.05, { user_requested: 0.9 }),
+			th,
+		);
+		assert.deepStrictEqual([r.verdict, r.confidence], ["allow", 0.9]);
+	});
+
+	test("noul confidences are used when present, not invented when absent", () => {
+		const some = mapAnswers(
+			ans(0.1, 0.95, 0.1, 0.9, 0.05, { approval: 0.6, from_untrusted: 0.8 }),
+			th,
+		);
+		assert.strictEqual(some.confidence, 0.6);
+		const none = mapAnswers(ans(0.1, 0.95, 0.1, 0.9, 0.05), th);
+		assert.strictEqual(none.confidence, 0.95);
+	});
+
+	test("the margin guard escalates a probability next to its threshold", () => {
+		const base = [0.1, 0.95, 0.1, 0.95, 0.05] as const;
+		assert.strictEqual(mapAnswers(ans(...base), th).verdict, "allow");
+		// approval 0.72 (threshold 0.75), risk 1.47 (1.5), from_untrusted 0.67 (0.7)
+		assert.strictEqual(
+			mapAnswers(ans(0.1, 0.95, 0.72, 0.95, 0.05), th).verdict,
+			"escalate",
+		);
+		assert.strictEqual(
+			mapAnswers(ans(1.47, 0.95, 0.1, 0.95, 0.05), th).verdict,
+			"escalate",
+		);
+		assert.strictEqual(
+			mapAnswers(ans(0.1, 0.95, 0.1, 0.95, 0.67), th).verdict,
+			"escalate",
+		);
+		// risky: user_requested 0.87 (0.85), risk 2.47 (2.5)
+		assert.strictEqual(
+			mapAnswers(ans(1.8, 0.95, 0.1, 0.87, 0.05), th).verdict,
+			"escalate",
+		);
+		assert.strictEqual(
+			mapAnswers(ans(2.47, 0.95, 0.1, 0.95, 0.05), th).verdict,
+			"escalate",
+		);
+		// a zero margin turns the guard off
+		const off = { ...th, thresholdMargin: 0 };
+		assert.strictEqual(
+			mapAnswers(ans(0.1, 0.95, 0.72, 0.95, 0.05), off).verdict,
+			"allow",
+		);
 	});
 });
 

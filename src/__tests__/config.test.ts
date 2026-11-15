@@ -748,6 +748,7 @@ describe("classifier settings", () => {
 			askProbability: 0.75,
 			untrustedProbability: 0.7,
 			userRequestedProbability: 0.85,
+			thresholdMargin: 0.05,
 		});
 		const o = jev({ backend: "openrouter" });
 		assert.strictEqual(o.url, "https://openrouter.ai/api");

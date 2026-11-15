@@ -113,7 +113,10 @@ interface Answers {
 	approval: number;
 	user_requested: number;
 	from_untrusted: number;
+	/** Confidences jev reported for the noul answers, when it did. */
+	confidence?: Partial<Record<NoulId, number>>;
 }
+type NoulId = "approval" | "user_requested" | "from_untrusted";
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
 	typeof v === "object" && v !== null && !Array.isArray(v);
@@ -186,6 +189,17 @@ function readAnswers(json: unknown): Answers | string {
 		const p = a.noul ?? a.probability;
 		return inRange(p, 0, 1) ? p : `${id} is not a probability`;
 	};
+	/** A noul answer's own confidence, if jev sent one: absent, or a problem. */
+	const noulConfidence = (id: NoulId): number | undefined | string => {
+		const a = answers[id];
+		const c =
+			(isObject(a) ? a.confidence : undefined) ??
+			(isObject(meta) ? meta[id] : undefined);
+		if (c === undefined || c === null) return undefined;
+		return inRange(c, 0, 1)
+			? c
+			: `${id} confidence is not a number from 0 to 1`;
+	};
 	const score = answers.risk;
 	if (!isObject(score)) return "no answer for risk";
 	const position = riskPosition(score);
@@ -199,16 +213,25 @@ function readAnswers(json: unknown): Answers | string {
 	for (const v of [approval, requested, untrusted]) {
 		if (typeof v === "string") return v;
 	}
+	const reported: Partial<Record<NoulId, number>> = {};
+	for (const id of ["approval", "user_requested", "from_untrusted"] as const) {
+		const c = noulConfidence(id);
+		if (typeof c === "string") return c;
+		if (c !== undefined) reported[id] = c;
+	}
 	return {
 		risk: { score: position, confidence },
 		approval: approval as number,
 		user_requested: requested as number,
 		from_untrusted: untrusted as number,
+		confidence: reported,
 	};
 }
 
 /**
- * Answers to a verdict and a confidence:
+ * Answers to a verdict and a confidence. The probabilities (and the risk
+ * score) decide the verdict only, through their thresholds; the confidence
+ * comes from what jev itself reports.
  *
  * 1. `from_untrusted` >= untrustedProbability: deny, confidence = that probability.
  * 2. `risk` >= denyScore: deny, confidence = the risk answer's confidence.
@@ -216,11 +239,17 @@ function readAnswers(json: unknown): Answers | string {
  *    `user_requested` >= userRequestedProbability: allow, otherwise escalate.
  * 4. Otherwise: allow.
  *
- * The confidence of an allow is the weakest certainty among what it rests on:
- * the risk answer's confidence, `1 - approval` (not risky case) or
- * `user_requested` (risky case), and `1 - from_untrusted`. The chain then
- * applies `minAllowConfidence`, `minDenyConfidence`, the allow ceiling and the
- * CRITICAL and hard-limit exclusions.
+ * An allow is refused (escalated) when a probability or score it rests on lies
+ * within `thresholdMargin` of its threshold: not risky rests on `risk`,
+ * `approval` and `from_untrusted`; risky-but-requested on `user_requested`,
+ * `from_untrusted` and `risk` against denyScore.
+ *
+ * The confidence of an allow is the lowest confidence jev reported among the
+ * answers it rests on: always the risk answer's, plus a noul answer's own
+ * (`answers[id].confidence` or `providerMetadata.typesafe.confidence[id]`)
+ * when jev sent one. A probability is never used as a confidence. The chain
+ * then applies `minAllowConfidence`, `minDenyConfidence`, the allow ceiling
+ * and the CRITICAL and hard-limit exclusions.
  */
 export function mapAnswers(a: Answers, th: JevThresholds): ClassifierResult {
 	const summary = `risk ${f(a.risk.score)} (confidence ${f(a.risk.confidence)}), approval ${f(a.approval)}, user_requested ${f(a.user_requested)}, from_untrusted ${f(a.from_untrusted)}`;
@@ -239,23 +268,47 @@ export function mapAnswers(a: Answers, th: JevThresholds): ClassifierResult {
 		};
 	}
 	const risky = a.risk.score >= th.askScore || a.approval >= th.askProbability;
-	const notUntrusted = 1 - a.from_untrusted;
+	const m = th.thresholdMargin;
+	const near = (value: number, threshold: number) =>
+		Math.abs(value - threshold) < m;
+	const weakest = (ids: NoulId[]) =>
+		Math.min(a.risk.confidence, ...ids.map((id) => a.confidence?.[id] ?? 1));
 	if (risky) {
-		if (a.user_requested >= th.userRequestedProbability) {
+		if (a.user_requested < th.userRequestedProbability) {
 			return {
-				verdict: "allow",
-				confidence: Math.min(a.risk.confidence, a.user_requested, notUntrusted),
-				reason: `jev: risky but requested: ${summary}`,
+				verdict: "escalate",
+				reason: `jev: risky and not clearly requested: ${summary}`,
+			};
+		}
+		if (
+			near(a.user_requested, th.userRequestedProbability) ||
+			near(a.from_untrusted, th.untrustedProbability) ||
+			near(a.risk.score, th.denyScore)
+		) {
+			return {
+				verdict: "escalate",
+				reason: `jev: too close to a threshold to allow: ${summary}`,
 			};
 		}
 		return {
+			verdict: "allow",
+			confidence: weakest(["user_requested", "from_untrusted"]),
+			reason: `jev: risky but requested: ${summary}`,
+		};
+	}
+	if (
+		near(a.risk.score, th.askScore) ||
+		near(a.approval, th.askProbability) ||
+		near(a.from_untrusted, th.untrustedProbability)
+	) {
+		return {
 			verdict: "escalate",
-			reason: `jev: risky and not clearly requested: ${summary}`,
+			reason: `jev: too close to a threshold to allow: ${summary}`,
 		};
 	}
 	return {
 		verdict: "allow",
-		confidence: Math.min(a.risk.confidence, 1 - a.approval, notUntrusted),
+		confidence: weakest(["approval", "from_untrusted"]),
 		reason: `jev: low risk: ${summary}`,
 	};
 }

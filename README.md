@@ -613,7 +613,11 @@ only uncertain calls, or ones it cannot answer, reach the coordinator.
   `user_requested`, `from_untrusted`) and maps the answers to allow, deny or
   escalate. `backend` is `typesafe` (default), `openrouter` or `custom` (with
   `url`); `thresholds` tune the mapping, `cacheTtlMs` optionally caches
-  answers. **Commands and up to 8 KiB of arguments are sent to the backend**,
+  answers. The probabilities decide the verdict through their thresholds; the
+  confidence of an allow is the lowest confidence jev itself reports (the
+  `risk` answer's, and a noul answer's own when sent). An allow whose
+  probabilities or score lie within `thresholds.thresholdMargin` (default
+  0.05) of a threshold escalates instead. **Commands and up to 8 KiB of arguments are sent to the backend**,
   so it is off unless you configure it. Details in
   [docs/classifier-api.md](docs/classifier-api.md#dialect-jev-typesafe-system-one).
 
