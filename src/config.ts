@@ -122,6 +122,11 @@ export interface Config {
 		extraRo: string[];
 		/** Extra read-write paths (absolute) mounted into the sandbox. */
 		extraRw: string[];
+		/**
+		 * Absolute paths always hidden behind an empty tmpfs, for other ways to
+		 * the home directory's data that detection misses.
+		 */
+		hide: string[];
 		/** The bwrap binary. Unset: `WORKER_MCP_BWRAP`, else `bwrap` on PATH. */
 		bwrapPath?: string;
 	};
@@ -373,6 +378,7 @@ export const configFileSchema = z.strictObject({
 			default: sandboxMode.optional(),
 			extraRo: z.array(sandboxPath).optional(),
 			extraRw: z.array(sandboxPath).optional(),
+			hide: z.array(sandboxPath).optional(),
 			bwrapPath: z.string().min(1).optional(),
 		})
 		.optional(),
@@ -1046,6 +1052,7 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 				...(base.sandbox?.extraRw ?? []),
 				...(over.sandbox?.extraRw ?? []),
 			],
+			hide: [...(base.sandbox?.hide ?? []), ...(over.sandbox?.hide ?? [])],
 			bwrapPath: over.sandbox?.bwrapPath ?? base.sandbox?.bwrapPath,
 		},
 		gate: {
@@ -1328,6 +1335,7 @@ function applyDefaults(
 				: { default: layer.sandbox.default }),
 			extraRo: [...new Set(layer.sandbox?.extraRo ?? [])],
 			extraRw: [...new Set(layer.sandbox?.extraRw ?? [])],
+			hide: [...new Set(layer.sandbox?.hide ?? [])],
 			// The file wins over the environment, which the Nix package sets.
 			...(layer.sandbox?.bwrapPath || bwrapEnv
 				? { bwrapPath: layer.sandbox?.bwrapPath || bwrapEnv }

@@ -160,7 +160,8 @@ let
         inherit (cfg.sandbox) minimum default bwrapPath;
       }
       // lib.optionalAttrs (cfg.sandbox.extraRo != [ ]) { inherit (cfg.sandbox) extraRo; }
-      // lib.optionalAttrs (cfg.sandbox.extraRw != [ ]) { inherit (cfg.sandbox) extraRw; };
+      // lib.optionalAttrs (cfg.sandbox.extraRw != [ ]) { inherit (cfg.sandbox) extraRw; }
+      // lib.optionalAttrs (cfg.sandbox.hide != [ ]) { inherit (cfg.sandbox) hide; };
     env = lib.optionalAttrs (passthrough != [ ]) { allow = passthrough; };
     gate =
       lib.filterAttrs (_: v: v != null) {
@@ -474,6 +475,18 @@ in
         description = "Absolute paths mounted writable into the sandbox, such as a shared build cache.";
         example = [ "/var/cache/build" ];
       };
+      hide = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = ''
+          Absolute paths always hidden behind an empty directory in the
+          sandbox, besides the home directory and the other paths to it that
+          the server finds from the mounts (for example `/persistent/home/user`
+          on a system with impermanence). For ways to the home directory's
+          data that it misses.
+        '';
+        example = [ "/data/home-backup" ];
+      };
       bwrapPath = mkOption {
         type = types.nullOr types.str;
         default = null;
@@ -525,8 +538,8 @@ in
         message = "programs.worker-mcp.allowedRoots: each entry must be an absolute path.";
       }
       {
-        assertion = lib.all (p: lib.hasPrefix "/" p) (cfg.sandbox.extraRo ++ cfg.sandbox.extraRw);
-        message = "programs.worker-mcp.sandbox: each extraRo and extraRw entry must be an absolute path.";
+        assertion = lib.all (p: lib.hasPrefix "/" p) (cfg.sandbox.extraRo ++ cfg.sandbox.extraRw ++ cfg.sandbox.hide);
+        message = "programs.worker-mcp.sandbox: each extraRo, extraRw and hide entry must be an absolute path.";
       }
       {
         assertion = cfg.sandbox.bwrapPath == null || lib.hasPrefix "/" cfg.sandbox.bwrapPath;

@@ -110,7 +110,7 @@ on Linux:
 | The whole filesystem                                                     | read-only                                                                                                                                                    |
 | The workspace (`cwd`, by its real path)                                  | read-write                                                                                                                                                   |
 | `/tmp`                                                                   | an empty private tmpfs                                                                                                                                       |
-| `$HOME`                                                                  | an empty tmpfs: `~/.ssh`, `~/.gnupg`, `~/.aws`, browser profiles and other repositories are not there                                                        |
+| `$HOME` and other paths to the same data                                 | an empty tmpfs: `~/.ssh`, `~/.gnupg`, `~/.aws`, browser profiles and other repositories are not there (see below)                                            |
 | `$XDG_RUNTIME_DIR`                                                       | an empty tmpfs: the user's agent sockets (ssh, gpg) are not reachable                                                                                        |
 | The agent's own config (pi: `~/.pi`) and Nix profiles (`~/.nix-profile`) | read-only, put back over the empty home                                                                                                                      |
 | pi's `~/.pi/agent`                                                       | a throwaway writable layer over the read-only files (pi takes a lock file there even to read its settings); nothing written there reaches the real directory |
@@ -136,6 +136,17 @@ on Linux:
   the worker gets nothing. A subdirectory of a repository, and a submodule, get
   a read-only `.git`; the main checkout's files are never mounted.
 - **Symlinked workspaces** are mounted by their real path.
+- **Other paths to the home directory are hidden as well.** With the whole
+  filesystem mounted, hiding `$HOME` alone would leave its data reachable
+  wherever else it is mounted: `/persistent/home/<user>` behind a `/home` bind
+  on a system with impermanence, a bind of single directories such as `~/.ssh`,
+  a device mounted twice. The server reads `/proc/self/mountinfo`, finds every
+  other mount point that leads to the home directory's data, keeps those that
+  are really the same directory (device and inode) and puts an empty tmpfs on
+  them, before the workspace and the other mounts, so a workspace below one is
+  still mounted. If the mounts cannot be read, the sandbox counts as
+  unavailable rather than risk leaving the home exposed. Anything the
+  detection misses can be listed in `sandbox.hide`.
 
 ### What it does not do
 
@@ -147,6 +158,12 @@ on Linux:
 - **The workspace is writable**, and so is everything in it that is not
   protected: build scripts, `package.json` scripts and git history can be
   changed. Review what a worker leaves behind before running it.
+- **Everything outside `$HOME` and the runtime directory stays readable**
+  (read-only) through the root mount: other directories on persistent storage
+  (`/persistent` beyond the home), `/etc`, `/var`, other users' files the
+  server user can read. Only the home directory, its other paths and
+  `sandbox.hide` are hidden. Put data that must stay out of reach under
+  `$HOME` or list it in `sandbox.hide`.
 - System sockets that are not in the user's runtime directory (a container
   runtime's socket, the system D-Bus) are reachable, because the root is
   mounted read-only, not hidden. A read-only bind does not stop a worker from
@@ -169,6 +186,9 @@ on Linux:
   reason, minimum, default}`.
 - `sandbox.extraRo`, `sandbox.extraRw`: absolute paths to mount, for tools or
   caches the worker needs. Paths that do not exist are skipped.
+- `sandbox.hide`: absolute paths always hidden behind an empty tmpfs, for
+  other ways to the home directory's data that detection misses (skipped when
+  they do not exist).
 - `sandbox.bwrapPath`, else `WORKER_MCP_BWRAP`, else `bwrap` on `PATH`. The Nix
   package sets `WORKER_MCP_BWRAP` to its own bubblewrap.
 - At startup the server runs bubblewrap once with a trivial command to check that
