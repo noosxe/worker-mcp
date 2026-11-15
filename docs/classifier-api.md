@@ -316,6 +316,13 @@ defaults an allow needs `approval` <= 0.15 and `from_untrusted` <= 0.15, which
 is stricter than the rules alone. `gate.httpAllowCeiling` still applies, and
 CRITICAL calls and hard limits are never sent.
 
+The `risk` position is computed from the answer's `probabilities` (level
+number times probability, summed) when they are present; they must be four
+values in 0..1 that sum to 1 (within 0.02). A `score` that differs from that
+by more than 0.25 is not believed and the call escalates ("unknown scale"). A
+`score` alone is read on the 0-3 scale, **which is unverified** until a real
+response has been checked.
+
 A `noul` answer has no confidence in System One (its probability is the
 certainty); `score` answers do. A response where an answer is missing, out of
 range (probabilities outside 0..1, `risk` outside 0..3) or a `risk` has no
