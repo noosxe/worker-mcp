@@ -172,7 +172,16 @@ export const GateLogOut = z.object({
 		z.object({
 			ts: z.string(),
 			requestId: z.string(),
-			actionId: z.string().optional(),
+			approvalId: z
+				.string()
+				.optional()
+				.describe(
+					"For a call that was sent to you: the approvalId you answered it with.",
+				),
+			providerCallId: z
+				.string()
+				.optional()
+				.describe("The provider's own id for the call."),
 			provider: z.string(),
 			tool: z.string(),
 			kind: z.string(),

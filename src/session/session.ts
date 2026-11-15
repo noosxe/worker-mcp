@@ -195,6 +195,8 @@ export class Session {
 	private alive = false;
 	/** Approvals waiting for the coordinator, oldest first. */
 	private readonly pending = new Map<string, PendingApproval>();
+	/** Provider call id to approval id, for the gate log (bounded). */
+	private readonly approvalByCall = new Map<string, string>();
 	private currentRun: ActiveRun | null = null;
 	private terminating = false;
 	/** Set when a call asked for `summarize`, which is deprecated and ignored. */
@@ -660,6 +662,11 @@ export class Session {
 	): Promise<ApprovalDecision> {
 		const label = RISK_LABELS[outcome.level];
 		const id = newApprovalId();
+		this.approvalByCall.set(call.callId, id);
+		if (this.approvalByCall.size > 500) {
+			const oldest = this.approvalByCall.keys().next().value;
+			if (oldest !== undefined) this.approvalByCall.delete(oldest);
+		}
 		return new Promise((resolve) => {
 			const paths = outcome.call.paths.map((p) => ({
 				path: p.abs,
@@ -806,6 +813,13 @@ export class Session {
 	/** Every gate decision for this worker, newest last (a bounded ring). */
 	public getGateLog() {
 		return this.approvalGate.log.entries();
+	}
+
+	/** The `a_…` approval id for a provider call id, when it was escalated. */
+	public approvalIdFor(providerCallId: string | undefined): string | undefined {
+		return providerCallId === undefined
+			? undefined
+			: this.approvalByCall.get(providerCallId);
 	}
 
 	/** The policy in force, after any ceiling clamp. */

@@ -36,7 +36,9 @@ for one minor release.
   default on in 0.5.x, shown by `--print-config`); with `0` a call to one
   returns an error that names the replacement. `send_pi_command` waits at most
   `limits.maxWaitMs` and then returns the run id; `get_auto_approved_log`
-  matches `pattern` against the preview. The old argument keys `sessionId`
+  matches `pattern` against the preview. The aliases carry the annotations of
+  the tools they map to. Gate log entries name the `approvalId` of a call that
+  was sent to the coordinator, and the provider's own id as `providerCallId`. The old argument keys `sessionId`
   (on `spawn_pi_session`, and on the neutral tools that kept their names),
   `riskPolicy` and `actionId` are still accepted, deprecated.
 - **Resources v2**, for people and debugging: templates
