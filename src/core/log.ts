@@ -23,15 +23,19 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 
-/** The level from `WORKER_MCP_LOG_LEVEL`; anything unknown means `info`. */
-export function logLevelFrom(env: NodeJS.ProcessEnv = process.env): LogLevel {
-	const raw = env.WORKER_MCP_LOG_LEVEL?.trim().toLowerCase();
-	return LEVELS.find((l) => l === raw) ?? "info";
+let current: LogLevel = "info";
+
+/**
+ * Set once at startup from the resolved config (`logLevel`, which
+ * `WORKER_MCP_LOG_LEVEL` and `--log-level` override). The one source of truth
+ * for the stderr logger and `debugEnabled()`.
+ */
+export function setLogLevel(level: LogLevel): void {
+	current = level;
 }
 
 /** Whether payload-carrying (debug) messages may be written. */
-export const debugEnabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
-	logLevelFrom(env) === "debug";
+export const debugEnabled = (): boolean => current === "debug";
 
 /** First line of an error message, capped: enough to diagnose, never a dump. */
 export function describeError(e: unknown, max = 200): string {
@@ -49,19 +53,15 @@ export function shortDigest(payload: unknown): string {
 }
 
 /** Writes to stderr, which MCP clients keep apart from the protocol stream. */
-export function createStderrLogger(
-	env: NodeJS.ProcessEnv = process.env,
-): Logger {
-	const rank = LEVELS.indexOf(logLevelFrom(env));
-	const at = (level: LogLevel, m: string) => {
-		if (LEVELS.indexOf(level) >= rank) console.error(`[${level}] ${m}`);
-	};
-	return {
-		debug: (m) => at("debug", m),
-		info: (m) => at("info", m),
-		warn: (m) => at("warn", m),
-		error: (m) => at("error", m),
-	};
+function at(level: LogLevel, m: string): void {
+	if (LEVELS.indexOf(level) >= LEVELS.indexOf(current)) {
+		console.error(`[${level}] ${m}`);
+	}
 }
 
-export const stderrLogger: Logger = createStderrLogger();
+export const stderrLogger: Logger = {
+	debug: (m) => at("debug", m),
+	info: (m) => at("info", m),
+	warn: (m) => at("warn", m),
+	error: (m) => at("error", m),
+};

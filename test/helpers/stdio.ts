@@ -52,8 +52,8 @@ export class RawServer {
 	private buffer = "";
 	exited: Promise<{ code: number | null; signal: string | null }>;
 
-	constructor(iso: Isolation) {
-		this.child = spawn(RUNTIME, [DIST_ENTRY], {
+	constructor(iso: Isolation, args: string[] = []) {
+		this.child = spawn(RUNTIME, [DIST_ENTRY, ...args], {
 			env: iso.env,
 			stdio: ["pipe", "pipe", "pipe"],
 		});

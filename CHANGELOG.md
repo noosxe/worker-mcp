@@ -11,9 +11,14 @@
   short digest of the input. Worker notices, run error text and the reason of a
   rejection are logged by size only, and unhandled-error logs print the first
   line of the message instead of the whole error object.
-- **New `WORKER_MCP_LOG_LEVEL`** (`debug`, `info`, `warn`, `error`; default
-  `info`). The payloads above, and the worker's own stderr lines, are written
-  only at `debug`; before, the worker's stderr lines were always written.
+- **New `logLevel` setting** (`debug`, `info`, `warn`, `error`; default
+  `info`), also `WORKER_MCP_LOG_LEVEL` and `--log-level`, and the Home Manager
+  option `programs.worker-mcp.logLevel`. The payloads above, and the worker's
+  own stderr lines, are written only at `debug`; before, the worker's stderr
+  lines were always written.
+- A worker notice is logged by size only unless the provider marks it
+  `trusted` (a fixed server string), so a provider that forgets the flag cannot
+  leak.
 - The audit file was checked and is unchanged: a digest of the arguments and a
   preview of at most 200 characters, never full arguments.
 

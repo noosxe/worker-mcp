@@ -150,6 +150,7 @@ let
 
   # What the typed options say; `settings` is merged over it and wins.
   typed = {
+    inherit (cfg) logLevel;
     providers.pi = lib.filterAttrs (_: v: v != null) {
       path = cfg.piPath;
       inherit (cfg) defaultModel;
@@ -281,6 +282,22 @@ in
         (`providers.pi.defaultModel`). An explicit `model` always wins.
       '';
       example = "zai/glm-5.3";
+    };
+
+    logLevel = mkOption {
+      type = types.enum [
+        "debug"
+        "info"
+        "warn"
+        "error"
+      ];
+      default = "info";
+      description = ''
+        How much the server writes to stderr (`logLevel`). Tool inputs, file
+        contents and worker output are written only at `debug`; every other
+        level carries metadata only. `WORKER_MCP_LOG_LEVEL` in the server's
+        environment overrides it.
+      '';
     };
 
     allowedRoots = mkOption {

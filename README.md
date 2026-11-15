@@ -530,6 +530,7 @@ Lowest to highest:
 | `limits.allowedRoots`                  | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                         |
 | `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                           |
 | `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                        |
+| `logLevel`                             | `WORKER_MCP_LOG_LEVEL`             | `--log-level`             | `info`                                      |
 | `stateDir`                             | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`                |
 | `runtimeDir`                           | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`   |
 | `gate.maxAutoApprove`                  | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                    |
@@ -579,9 +580,11 @@ Lowest to highest:
   writes metadata only to stderr: tool names, risk labels, approval and call
   ids, counts, and a short digest of a tool input for correlation. Tool inputs
   (commands, file contents), worker output and stderr lines, reject reasons and
-  classifier reasons appear only when `WORKER_MCP_LOG_LEVEL=debug`. The levels
-  are `debug`, `info` (the default), `warn` and `error`; an unknown value means
-  `info`. This is an environment variable only, not a config key.
+  classifier reasons appear only at level `debug`. The levels are `debug`,
+  `info` (the default), `warn` and `error`, set with `logLevel`,
+  `WORKER_MCP_LOG_LEVEL` or `--log-level` (the usual precedence). Notice text
+  from a worker is logged by size only unless the provider marks it as a fixed
+  server string.
 - `stateDir` holds the audit log (see [Auto mode](#auto-mode-and-the-audit-log)); it is a protected path.
 - `gate.maxAutoApprove` (`LOW`, `MEDIUM` or `HIGH`, never `CRITICAL`) is the
   highest risk level a coordinator's policy may auto-approve. Policies given to

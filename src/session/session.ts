@@ -444,14 +444,14 @@ export class Session {
 				}
 				return;
 			case "notice":
-				if (event.untrusted) {
-					// The text is the worker's own: its size at info, the text at debug.
+				if (event.trusted) {
+					this.log(`[${event.level}] ${event.text}`);
+				} else {
+					// Not marked trusted, so it may hold the worker's words: its size at info, the text at debug.
 					this.log(
 						`[${event.level}] notice from the worker (${event.text.length} characters)`,
 					);
 					this.debug(`[${event.level}] ${event.text}`);
-				} else {
-					this.log(`[${event.level}] ${event.text}`);
 				}
 				return;
 			case "run_finished":

@@ -13,6 +13,8 @@ import { classifierUrlProblem } from "./gate/http-classifier.js";
  * passed down explicitly: nothing else reads `process.env` for settings.
  */
 export interface Config {
+	/** Verbosity of stderr; payloads (tool inputs, worker output) only at `debug`. */
+	logLevel: "debug" | "info" | "warn" | "error";
 	/** Where the server keeps state (reserved; nothing is written there yet). */
 	stateDir: string;
 	/** Directory holding the per-instance private runtime directory. */
@@ -311,6 +313,7 @@ const protectedPath = z
 
 /** The JSON file: every key optional, unknown keys rejected. */
 export const configFileSchema = z.strictObject({
+	logLevel: z.enum(["debug", "info", "warn", "error"]).optional(),
 	stateDir: absolutePath.optional(),
 	runtimeDir: absolutePath.optional(),
 	/** No longer used: accepted so existing config files keep loading. */
@@ -527,6 +530,11 @@ const VALUE_FLAGS = {
  * environment and on the command line.
  */
 const CHOICE_SETTINGS = {
+	logLevel: {
+		env: "WORKER_MCP_LOG_LEVEL",
+		flag: "--log-level",
+		key: "logLevel",
+	},
 	gateMode: {
 		env: "WORKER_MCP_GATE_MODE",
 		flag: "--gate-mode",
@@ -577,6 +585,13 @@ function choiceLayer(source: string, name: ChoiceName, raw: string): FileLayer {
 			? (value as T)
 			: fail(`${JSON.stringify(raw)} is not one of ${allowed.join(", ")}`);
 	switch (name) {
+		case "logLevel":
+			return {
+				logLevel: pick<"debug" | "info" | "warn" | "error">(
+					["debug", "info", "warn", "error"],
+					word,
+				),
+			};
 		case "gateMode":
 			return {
 				gate: { mode: pick<"manual" | "auto">(["manual", "auto"], word) },
@@ -1008,6 +1023,7 @@ function flagLayer(flags: CliFlags): FileLayer {
 function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 	const allow = [...(base.env?.allow ?? []), ...(over.env?.allow ?? [])];
 	return {
+		logLevel: over.logLevel ?? base.logLevel,
 		stateDir: over.stateDir ?? base.stateDir,
 		runtimeDir: over.runtimeDir ?? base.runtimeDir,
 		legacyTools: over.legacyTools ?? base.legacyTools,
@@ -1255,6 +1271,7 @@ function applyDefaults(
 	}
 	const bwrapEnv = env.WORKER_MCP_BWRAP?.trim();
 	return {
+		logLevel: layer.logLevel ?? "info",
 		stateDir,
 		runtimeDir:
 			layer.runtimeDir ??
