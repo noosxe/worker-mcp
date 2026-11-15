@@ -1,12 +1,21 @@
 {
-	"providers": { "pi": { "path": "pi" } },
+	"providers": {
+		"pi": {
+			"path": "pi"
+		}
+	},
 	"limits": {
 		"commandTimeoutMs": 600000,
 		"maxOutputChars": 64000,
 		"maxRunMs": 1800000,
-		"maxWaitMs": 50000
+		"maxWaitMs": 50000,
+		"maxWorkers": 4,
+		"idleTimeoutMs": 1800000,
+		"allowedRoots": ["/path/to/projects"]
 	},
-	"env": { "allow": ["ANTHROPIC_API_KEY", "HTTPS_PROXY"] },
+	"env": {
+		"allow": ["ANTHROPIC_API_KEY", "HTTPS_PROXY"]
+	},
 	"gate": {
 		"maxAutoApprove": "MEDIUM",
 		"approvalTimeoutMs": 600000,

@@ -57,6 +57,9 @@ Options:
       --run-timeout-ms <n>    Wall-clock limit for one run (default 1800000)
       --max-wait-ms <n>       Longest a wait_run call blocks (default 50000)
       --run-start-timeout-ms <n>  How long a worker may take to accept a prompt (default 15000)
+      --max-workers <n>       Most workers alive at once (default 4)
+      --idle-timeout-ms <n>   Close a worker with no run for this long (default 1800000)
+      --allowed-roots <paths> Comma-separated directories a worker's cwd must lie in (default: any)
       --approval-timeout-ms <n>  How long an approval waits before it is denied (default 600000)
       --max-output-chars <n>  Output size cap
       --env-passthrough <names>  Extra worker env names, comma-separated

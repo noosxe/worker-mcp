@@ -99,6 +99,62 @@ describe("run limits", () => {
 	});
 });
 
+describe("worker limits", () => {
+	test("default to 4 workers, a 30 minute idle timeout and no roots", () => {
+		const { limits } = load();
+		assert.strictEqual(limits.maxWorkers, 4);
+		assert.strictEqual(limits.idleTimeoutMs, 30 * 60_000);
+		assert.deepStrictEqual(limits.allowedRoots, []);
+	});
+
+	test("come from the file, the environment and flags, and are printed", () => {
+		const file = writeFile({
+			limits: { maxWorkers: 2, idleTimeoutMs: 1000, allowedRoots: ["/a"] },
+		});
+		const fromFile = load([`--config=${file}`]);
+		assert.strictEqual(fromFile.limits.maxWorkers, 2);
+		assert.strictEqual(fromFile.limits.idleTimeoutMs, 1000);
+		assert.deepStrictEqual(fromFile.limits.allowedRoots, ["/a"]);
+
+		const fromEnv = load([`--config=${file}`], {
+			...env,
+			WORKER_MCP_MAX_WORKERS: "3",
+			WORKER_MCP_IDLE_TIMEOUT_MS: "2000",
+			WORKER_MCP_ALLOWED_ROOTS: "/b, /c",
+		});
+		assert.strictEqual(fromEnv.limits.maxWorkers, 3);
+		assert.strictEqual(fromEnv.limits.idleTimeoutMs, 2000);
+		assert.deepStrictEqual(fromEnv.limits.allowedRoots, ["/b", "/c"]);
+
+		const fromFlag = load(
+			["--max-workers=5", "--idle-timeout-ms", "3000", "--allowed-roots=/d"],
+			{ ...env, WORKER_MCP_MAX_WORKERS: "3" },
+		);
+		assert.strictEqual(fromFlag.limits.maxWorkers, 5);
+		assert.strictEqual(fromFlag.limits.idleTimeoutMs, 3000);
+		assert.deepStrictEqual(fromFlag.limits.allowedRoots, ["/d"]);
+
+		const printed = JSON.parse(formatConfig(fromFlag));
+		assert.strictEqual(printed.limits.maxWorkers, 5);
+		assert.deepStrictEqual(printed.limits.allowedRoots, ["/d"]);
+	});
+
+	test("bad values fail and name their source", () => {
+		assert.match(
+			failure(() => load([], { ...env, WORKER_MCP_MAX_WORKERS: "0" })),
+			/WORKER_MCP_MAX_WORKERS.*limits\.maxWorkers/,
+		);
+		assert.match(
+			failure(() => load([], { ...env, WORKER_MCP_ALLOWED_ROOTS: "rel/dir" })),
+			/WORKER_MCP_ALLOWED_ROOTS.*limits\.allowedRoots/,
+		);
+		assert.match(
+			failure(() => load(["--max-workers", "many"])),
+			/--max-workers/,
+		);
+	});
+});
+
 describe("defaults", () => {
 	test("need no file and no environment", () => {
 		const config = load();

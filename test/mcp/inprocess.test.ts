@@ -90,7 +90,7 @@ describe("MCP in-process: schemas and errors", () => {
 				arguments: { sessionId: "../escape", cwd: iso.cwd },
 			});
 			assert.strictEqual(result.isError, true);
-			assert.match(textOf(result), /Invalid sessionId/);
+			assert.match(textOf(result), /^INVALID_ARGUMENT: /);
 		} finally {
 			await close();
 		}
@@ -104,7 +104,7 @@ describe("MCP in-process: schemas and errors", () => {
 				arguments: { sessionId: "nope", command: "hi" },
 			});
 			assert.strictEqual(result.isError, true);
-			assert.match(textOf(result), /Session not found/);
+			assert.match(textOf(result), /^WORKER_NOT_FOUND: /);
 			await callOk(client, TOOLS.list, {});
 		} finally {
 			await close();
@@ -119,7 +119,7 @@ describe("MCP in-process: schemas and errors", () => {
 				arguments: { sessionId: "nodir", cwd: `${iso.cwd}/missing` },
 			});
 			assert.strictEqual(result.isError, true);
-			assert.match(textOf(result), /does not exist/);
+			assert.match(textOf(result), /^CWD_NOT_ALLOWED: .*does not exist/);
 		} finally {
 			await close();
 		}
@@ -154,7 +154,7 @@ describe("MCP in-process: schemas and errors", () => {
 			const t0 = Date.now();
 			const view = await callView(client, TOOLS.waitRun, {
 				runId: started.runId,
-				waitMs: 600_000,
+				waitMs: 50_000,
 			});
 			assert.ok(Date.now() - t0 < 5000, "returned near the 300 ms bound");
 			assert.strictEqual(view.state, "running");

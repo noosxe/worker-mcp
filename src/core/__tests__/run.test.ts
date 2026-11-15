@@ -26,8 +26,9 @@ function storeWith(
 const approval = (id: string) => ({
 	actionId: id,
 	tool: "bash",
-	summary: "rm f",
-	input: {},
+	kind: "shell",
+	command: "rm f",
+	paths: [],
 	expiresAt: Date.now() + 60_000,
 });
 

@@ -4,11 +4,24 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, afterEach, before, describe, test } from "node:test";
 
+import type { Run } from "../core/run.js";
 import { RiskLevel } from "../gate/risk.js";
 import { FakeProvider } from "../providers/fake/provider.js";
 import { BoundedLog } from "../session/bounded-log.js";
 import { RuntimeDir } from "../session/runtime-dir.js";
 import { Session } from "../session/session.js";
+import { unwrap } from "./unwrap.js";
+
+const send = async (s: Session, command: string, summarize?: boolean) =>
+	unwrap(await s.sendCommand(command, summarize));
+const wait = async (
+	s: Session,
+	run: Run,
+	opts?: { timeoutMs?: number; signal?: AbortSignal },
+) => {
+	const text = await s.waitText(run, opts);
+	return text === null ? null : unwrap(text);
+};
 
 describe("BoundedLog", () => {
 	test("keeps the most recent lines", () => {
@@ -65,7 +78,7 @@ describe("Session over the fake provider", () => {
 	test("a plain command returns the assistant's text and the session is idle again", async () => {
 		const s = await start();
 		assert.strictEqual(s.status, "IDLE");
-		assert.strictEqual(await s.sendCommand("hi"), "fake reply: hi");
+		assert.strictEqual(await send(s, "hi"), "fake reply: hi");
 		assert.strictEqual(s.status, "IDLE");
 		assert.strictEqual(s.isAlive(), true);
 		await s.terminate();
@@ -73,7 +86,7 @@ describe("Session over the fake provider", () => {
 
 	test("summarize is ignored and noted", async () => {
 		const s = await start();
-		const out = await s.sendCommand("hi", true);
+		const out = await send(s, "hi", true);
 		assert.match(out, /^fake reply: hi\n\nNote: `summarize` is deprecated/);
 		await s.terminate();
 	});
@@ -100,7 +113,7 @@ describe("Session over the fake provider", () => {
 		await s.terminate();
 		assert.strictEqual(s.isAlive(), false);
 		await assert.rejects(
-			s.sendCommand("hi"),
+			send(s, "hi"),
 			/no running pi process.*Respawn it with spawn_pi_session/s,
 		);
 		assert.notStrictEqual(s.status, "IDLE");
@@ -108,7 +121,7 @@ describe("Session over the fake provider", () => {
 
 	test("history holds the prompt and the reply", async () => {
 		const s = await start();
-		await s.sendCommand("hi");
+		await send(s, "hi");
 		const roles = s.history.map(
 			(e) => (e as { message: { role: string } }).message.role,
 		);
@@ -118,10 +131,10 @@ describe("Session over the fake provider", () => {
 
 	test("a command while another runs is refused", async () => {
 		const s = await start();
-		const first = s.sendCommand("hang");
+		const first = send(s, "hang");
 		await new Promise((r) => setTimeout(r, 10));
 		await assert.rejects(
-			s.sendCommand("x"),
+			send(s, "x"),
 			/Cannot send command when session status is RUNNING/,
 		);
 		s.abortCommand();
@@ -131,7 +144,7 @@ describe("Session over the fake provider", () => {
 
 	test("abort ends a running command and returns to idle; a second abort is harmless", async () => {
 		const s = await start();
-		const running = s.sendCommand("hang");
+		const running = send(s, "hang");
 		s.abortCommand();
 		s.abortCommand();
 		await running;
@@ -141,14 +154,14 @@ describe("Session over the fake provider", () => {
 
 	test("a run that fails rejects, and the session is idle again", async () => {
 		const s = await start();
-		await assert.rejects(s.sendCommand("crash"), /fake worker crashed/);
+		await assert.rejects(send(s, "crash"), /fake worker crashed/);
 		assert.strictEqual(s.status, "IDLE");
 		await s.terminate();
 	});
 
 	test("a worker that exits by itself rejects the command and is crashed", async () => {
 		const s = await start();
-		const running = s.sendCommand("hang");
+		const running = send(s, "hang");
 		provider.opened[0].crash(1);
 		await assert.rejects(running, /exited unexpectedly \(code 1\)/);
 		assert.strictEqual(s.status, "CRASHED");
@@ -165,21 +178,22 @@ describe("Session over the fake provider", () => {
 	describe("the approval gate", () => {
 		test("LOW risk is approved without asking and listed once", async () => {
 			const s = await start();
-			const out = await s.sendCommand(tool("bash", { command: "ls" }));
+			const out = await send(s, tool("bash", { command: "ls" }));
 			assert.match(out, /^bash ran with /);
 			assert.match(
 				out,
 				/Auto-approved without asking \(1\):\n- bash \[LOW\] ls/,
 			);
 			assert.strictEqual(s.getAutoApprovedLog().length, 1);
-			const again = await s.sendCommand("hi");
+			const again = await send(s, "hi");
 			assert.ok(!again.includes("Auto-approved"), "reported only once");
 			await s.terminate();
 		});
 
 		test("MEDIUM waits by default and runs when the policy allows it", async () => {
 			const strict = await start();
-			const waiting = await strict.sendCommand(
+			const waiting = await send(
+				strict,
 				tool("write", { path: "notes.txt", content: "x" }),
 			);
 			assert.match(waiting, /^AWAITING_APPROVAL: \[MEDIUM RISK\]/);
@@ -189,7 +203,8 @@ describe("Session over the fake provider", () => {
 				autoApproveUpTo: RiskLevel.MEDIUM,
 				overrides: [],
 			});
-			const out = await lenient.sendCommand(
+			const out = await send(
+				lenient,
 				tool("write", { path: "notes.txt", content: "x" }),
 			);
 			assert.match(out, /^write ran with /);
@@ -199,13 +214,13 @@ describe("Session over the fake provider", () => {
 
 		test("HIGH waits; approve lets it run", async () => {
 			const s = await start();
-			const waiting = await s.sendCommand(confirmBash);
+			const waiting = await send(s, confirmBash);
 			const id = waiting.match(/Action ID: (\S+)\./)?.[1] as string;
 			assert.strictEqual(s.status, "AWAITING_APPROVAL");
 			assert.strictEqual(s.pendingAction?.actionId, id);
 			assert.strictEqual(s.pendingAction?.riskLevel, RiskLevel.HIGH);
 			const run = s.approveAction(id);
-			assert.match((await s.waitText(run)) as string, /^bash ran with /);
+			assert.match((await wait(s, run)) as string, /^bash ran with /);
 			assert.strictEqual(s.status, "IDLE");
 			assert.strictEqual(s.pendingAction, null);
 			await s.terminate();
@@ -213,27 +228,21 @@ describe("Session over the fake provider", () => {
 
 		test("reject sends the reason to the worker", async () => {
 			const s = await start();
-			const waiting = await s.sendCommand(confirmBash);
+			const waiting = await send(s, confirmBash);
 			const id = waiting.match(/Action ID: (\S+)\./)?.[1] as string;
 			const run = s.rejectAction(id, "too risky");
-			assert.strictEqual(await s.waitText(run), "bash blocked: too risky");
+			assert.strictEqual(await wait(s, run), "bash blocked: too risky");
 			await s.terminate();
 		});
 
 		test("approving an unknown or stale action is refused", async () => {
 			const s = await start();
-			assert.throws(
-				() => s.approveAction("nope"),
-				/No pending action matching ID: nope/,
-			);
-			const waiting = await s.sendCommand(confirmBash);
+			assert.throws(() => s.approveAction("nope"), /No pending approval nope/);
+			const waiting = await send(s, confirmBash);
 			const id = waiting.match(/Action ID: (\S+)\./)?.[1] as string;
-			assert.throws(
-				() => s.rejectAction("other"),
-				/No pending action matching ID/,
-			);
+			assert.throws(() => s.rejectAction("other"), /No pending approval/);
 			s.rejectAction(id);
-			assert.throws(() => s.approveAction(id), /No pending action matching ID/);
+			assert.throws(() => s.approveAction(id), /No pending approval/);
 			await s.terminate();
 		});
 
@@ -248,7 +257,8 @@ describe("Session over the fake provider", () => {
 					},
 				],
 			});
-			const waiting = await s.sendCommand(
+			const waiting = await send(
+				s,
 				tool("write", { path: ".mcp.json", content: "{}" }),
 			);
 			assert.match(waiting, /^AWAITING_APPROVAL/);
@@ -261,7 +271,7 @@ describe("Session over the fake provider", () => {
 			const s = await start({ autoApproveUpTo: RiskLevel.HIGH, overrides: [] });
 			assert.strictEqual(s.riskPolicy.autoApproveUpTo, RiskLevel.MEDIUM);
 			assert.ok(s.policyReport?.clamped.length);
-			const waiting = await s.sendCommand(confirmBash);
+			const waiting = await send(s, confirmBash);
 			assert.match(waiting, /^AWAITING_APPROVAL/);
 			await s.terminate();
 		});
@@ -271,13 +281,11 @@ describe("Session over the fake provider", () => {
 				autoApproveUpTo: RiskLevel.LOW,
 				overrides: [{ match: { command: "rm *" }, action: "deny" }],
 			});
-			const out = await s.sendCommand(confirmBash);
+			const out = await send(s, confirmBash);
 			assert.match(out, /^bash blocked: Denied by override/);
 			assert.match(out, /Denied by the risk policy without asking \(1\)/);
 			assert.strictEqual(s.pendingAction, null);
-			assert.ok(
-				!(await s.sendCommand("hi")).includes("Denied by the risk policy"),
-			);
+			assert.ok(!(await send(s, "hi")).includes("Denied by the risk policy"));
 			await s.terminate();
 		});
 
@@ -288,7 +296,7 @@ describe("Session over the fake provider", () => {
 				overrides: [],
 			});
 			assert.strictEqual(s.policyReport?.converted, true);
-			const out = await s.sendCommand(tool("bash", { command: "mkdir b" }));
+			const out = await send(s, tool("bash", { command: "mkdir b" }));
 			assert.match(out, /^bash ran with /);
 			await s.terminate();
 		});
@@ -305,10 +313,10 @@ describe("Session over the fake provider", () => {
 
 		test("every decision lands in the gate log, including the coordinator's", async () => {
 			const s = await start();
-			await s.sendCommand(tool("bash", { command: "ls" }));
-			const waiting = await s.sendCommand(confirmBash);
+			await send(s, tool("bash", { command: "ls" }));
+			const waiting = await send(s, confirmBash);
 			const id = waiting.match(/Action ID: (\S+)\./)?.[1] as string;
-			await s.waitText(s.approveAction(id));
+			await wait(s, s.approveAction(id));
 			const log = s.getGateLog();
 			assert.deepStrictEqual(
 				log.map((e) => [e.decision, e.decidedBy]),
@@ -323,7 +331,7 @@ describe("Session over the fake provider", () => {
 
 		test("a worker that ends with a call pending is logged as cancelled", async () => {
 			const s = await start();
-			await s.sendCommand(confirmBash);
+			await send(s, confirmBash);
 			await s.terminate();
 			const last = s.getGateLog().at(-1);
 			assert.strictEqual(last?.decidedBy, "cancel");
@@ -333,7 +341,7 @@ describe("Session over the fake provider", () => {
 
 		test("an abort while a call is pending cancels it", async () => {
 			const s = await start();
-			const first = await s.sendCommand(confirmBash);
+			const first = await send(s, confirmBash);
 			assert.match(first, /^AWAITING_APPROVAL/);
 			// The session is waiting on the coordinator, not running.
 			assert.strictEqual(s.status, "AWAITING_APPROVAL");
@@ -343,7 +351,8 @@ describe("Session over the fake provider", () => {
 
 		test("two calls at once can be answered in any order", async () => {
 			const s = await start();
-			const first = await s.sendCommand(
+			const first = await send(
+				s,
 				`parallel:bash:${JSON.stringify({ command: "rm f" })}`,
 			);
 			const id1 = first.match(/Action ID: (\S+)\./)?.[1] as string;
@@ -355,7 +364,7 @@ describe("Session over the fake provider", () => {
 			s.rejectAction(id2, "second no");
 			assert.strictEqual(s.status, "AWAITING_APPROVAL");
 			s.approveAction(id1);
-			const done = (await s.waitText(run)) as string;
+			const done = (await wait(s, run)) as string;
 			assert.match(done, /ran with/);
 			assert.match(done, /second no/);
 			assert.strictEqual(s.status, "IDLE");

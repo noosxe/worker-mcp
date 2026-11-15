@@ -36,6 +36,15 @@ export interface Config {
 		pageChars: number;
 		/** How long a worker may take to accept a prompt before the run fails. */
 		runStartTimeoutMs: number;
+		/** Most workers alive at once; a spawn past it fails with LIMIT_REACHED. */
+		maxWorkers: number;
+		/** A worker with no run for this long is closed; its runs stay readable. */
+		idleTimeoutMs: number;
+		/**
+		 * When not empty, a worker's `cwd` must lie inside one of these
+		 * directories (absolute; compared by real path).
+		 */
+		allowedRoots: string[];
 	};
 	env: {
 		/** Extra worker env names or `PREFIX_*` patterns, from every source. */
@@ -76,6 +85,8 @@ export const DEFAULT_MAX_RETAINED_RUNS = 100;
 export const DEFAULT_OUTPUT_BUFFER_CHARS = 1_048_576;
 export const DEFAULT_PAGE_CHARS = 16_000;
 export const DEFAULT_RUN_START_TIMEOUT_MS = 15_000;
+export const DEFAULT_MAX_WORKERS = 4;
+export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 10 * 60_000;
 
 /** An npx-wrapped pi can take most of a minute to start the first time. */
@@ -125,6 +136,9 @@ export const configFileSchema = z.strictObject({
 			outputBufferChars: positiveInt.optional(),
 			pageChars: positiveInt.optional(),
 			runStartTimeoutMs: positiveInt.optional(),
+			maxWorkers: positiveInt.optional(),
+			idleTimeoutMs: positiveInt.optional(),
+			allowedRoots: z.array(absolutePath).optional(),
 		})
 		.optional(),
 	env: z.strictObject({ allow: z.array(envName).optional() }).optional(),
@@ -191,6 +205,15 @@ export const ENV_VARS = {
 		name: "WORKER_MCP_RUN_START_TIMEOUT_MS",
 		key: "limits.runStartTimeoutMs",
 	},
+	maxWorkers: { name: "WORKER_MCP_MAX_WORKERS", key: "limits.maxWorkers" },
+	idleTimeout: {
+		name: "WORKER_MCP_IDLE_TIMEOUT_MS",
+		key: "limits.idleTimeoutMs",
+	},
+	allowedRoots: {
+		name: "WORKER_MCP_ALLOWED_ROOTS",
+		key: "limits.allowedRoots",
+	},
 	approvalTimeout: {
 		name: "WORKER_MCP_APPROVAL_TIMEOUT_MS",
 		key: "gate.approvalTimeoutMs",
@@ -238,6 +261,17 @@ const VALUE_FLAGS = {
 		flag: "--run-start-timeout-ms",
 		key: "limits.runStartTimeoutMs",
 		kind: "int",
+	},
+	maxWorkers: { flag: "--max-workers", key: "limits.maxWorkers", kind: "int" },
+	idleTimeout: {
+		flag: "--idle-timeout-ms",
+		key: "limits.idleTimeoutMs",
+		kind: "int",
+	},
+	allowedRoots: {
+		flag: "--allowed-roots",
+		key: "limits.allowedRoots",
+		kind: "list",
 	},
 	approvalTimeout: {
 		flag: "--approval-timeout-ms",
@@ -322,6 +356,9 @@ function stringLayer(
 		maxWait?: { key: string; raw: string };
 		runStartTimeout?: { key: string; raw: string };
 		approvalTimeout?: { key: string; raw: string };
+		maxWorkers?: { key: string; raw: string };
+		idleTimeout?: { key: string; raw: string };
+		allowedRoots?: { key: string; raw: string };
 		passthrough?: { key: string; raw: string };
 		stateDir?: string;
 		runtimeDir?: string;
@@ -383,6 +420,8 @@ function stringLayer(
 		["runTimeout", "maxRunMs"],
 		["maxWait", "maxWaitMs"],
 		["runStartTimeout", "runStartTimeoutMs"],
+		["maxWorkers", "maxWorkers"],
+		["idleTimeout", "idleTimeoutMs"],
 	] as const) {
 		const entry = values[name];
 		if (!entry) continue;
@@ -407,6 +446,20 @@ function stringLayer(
 				values.maxOutputChars.raw,
 			);
 		}
+	}
+	if (values.allowedRoots) {
+		const roots = values.allowedRoots.raw
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean);
+		layer.limits = {
+			...layer.limits,
+			allowedRoots: check(
+				values.allowedRoots.key,
+				z.array(absolutePath),
+				roots,
+			),
+		};
 	}
 	if (values.passthrough) {
 		const names = values.passthrough.raw
@@ -466,6 +519,21 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 		stringLayer(
 			label(ENV_VARS.runStartTimeout),
 			{ runStartTimeout: num(ENV_VARS.runStartTimeout) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.maxWorkers),
+			{ maxWorkers: num(ENV_VARS.maxWorkers) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.idleTimeout),
+			{ idleTimeout: num(ENV_VARS.idleTimeout) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.allowedRoots),
+			{ allowedRoots: num(ENV_VARS.allowedRoots) },
 			keysOf(),
 		),
 		stringLayer(
@@ -533,6 +601,9 @@ function flagLayer(flags: CliFlags): FileLayer {
 			case "maxWait":
 			case "runStartTimeout":
 			case "approvalTimeout":
+			case "maxWorkers":
+			case "idleTimeout":
+			case "allowedRoots":
 				parts.push(stringLayer(source, { [name]: entry }, keys));
 				break;
 			case "envPassthrough":
@@ -706,6 +777,9 @@ function applyDefaults(
 			pageChars: layer.limits?.pageChars ?? DEFAULT_PAGE_CHARS,
 			runStartTimeoutMs:
 				layer.limits?.runStartTimeoutMs ?? DEFAULT_RUN_START_TIMEOUT_MS,
+			maxWorkers: layer.limits?.maxWorkers ?? DEFAULT_MAX_WORKERS,
+			idleTimeoutMs: layer.limits?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+			allowedRoots: [...new Set(layer.limits?.allowedRoots ?? [])],
 		},
 		env: {
 			allow: [...new Set(layer.env?.allow ?? [])],
