@@ -23,7 +23,7 @@ const plan = planSandbox({
 	extraRo: [],
 	extraRw: [],
 });
-const script = `echo "via-home: $(ls -A ${home}/.ssh 2>&1 | tr '\\n' ' ')"; echo "via-alias: $(ls -A ${alias}/.ssh 2>&1 | tr '\\n' ' ')"`;
+const script = `echo probe-ran; echo "via-home: $(ls -A ${home}/.ssh 2>&1 | tr '\\n' ' ')"; echo "via-alias: $(ls -A ${alias}/.ssh 2>&1 | tr '\\n' ' ')"`;
 const r = spawnSync(
 	bwrap,
 	[...buildBwrapArgs(plan), "--", "sh", "-c", script],
@@ -32,5 +32,10 @@ const r = spawnSync(
 	},
 );
 console.log(
-	JSON.stringify({ hidden: plan.hidden, out: r.stdout, err: r.stderr }),
+	JSON.stringify({
+		hidden: plan.hidden,
+		status: r.status,
+		out: r.stdout,
+		err: r.stderr,
+	}),
 );

@@ -102,6 +102,9 @@ const BASE_FLAGS = [
 	"/tmp",
 ];
 
+/** What every real spawn adds after the shared flags and the mounts. */
+const PROBE_EXTRA = ["--setenv", "TMPDIR", "/tmp", "--chdir", "/"];
+
 /**
  * Run bwrap once with the same isolation as a worker gets and a trivial
  * command. Many systems install bwrap but forbid unprivileged user
@@ -116,7 +119,7 @@ export function probeBwrap(
 		execFile(
 			bwrap,
 			// The runtime's own binary exists on every system this runs on.
-			[...BASE_FLAGS, "--", process.execPath, "--version"],
+			[...BASE_FLAGS, ...PROBE_EXTRA, "--", process.execPath, "--version"],
 			{ timeout: timeoutMs, env: { PATH: process.env.PATH ?? "" } },
 			(err, _stdout, stderr) => {
 				if (!err) {
