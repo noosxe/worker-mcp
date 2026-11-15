@@ -91,10 +91,11 @@ for the coordinator.
   or is terminated.
 - If the gate cannot be written, or is missing right before the spawn, the
   spawn is refused. pi is never started without it.
-- pi is started with `--no-extensions --no-mcp --no-approve`: no discovered
+- pi is started with `--no-extensions --no-mcp --no-approve --no-session`: no discovered
   extensions, no MCP servers and no project-local files are loaded, so a
   repository cannot give the worker extra tools or code. The explicit `-e` gate
-  still loads.
+  still loads. `--no-session` keeps pi from saving the worker's conversation
+  under its own session directory.
 - The server does not read or write anything under `~/.pi`.
 
 ## What it does not protect

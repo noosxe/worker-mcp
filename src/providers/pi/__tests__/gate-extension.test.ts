@@ -236,6 +236,7 @@ describe("pi argv", () => {
 		});
 		assert.deepStrictEqual(args.slice(0, 2), ["--mode", "rpc"]);
 		for (const flag of PI_HARDENING_FLAGS) assert.ok(args.includes(flag));
+		assert.ok(args.includes("--no-session"));
 		assert.strictEqual(args[args.indexOf("-e") + 1], "/g/gate.ts");
 		assert.strictEqual(args[args.indexOf("--system-prompt") + 1], "be brief");
 		assert.ok(!buildPiArgs({ gateFile: "/g" }).includes("--system-prompt"));
