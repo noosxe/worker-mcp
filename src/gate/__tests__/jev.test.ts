@@ -559,7 +559,13 @@ const serveProbs = (probabilities: number[]) =>
 	serve((_r, res) =>
 		send(res, {
 			answers: {
-				risk: { type: "score", confidence: 0.83, probabilities },
+				risk: {
+					type: "score",
+					confidence: 0.83,
+					probabilities: Object.fromEntries(
+						probabilities.map((p, i) => [String(i), p]),
+					),
+				},
 				approval: { type: "noul", noul: 0.56 },
 				user_requested: { type: "noul", noul: 0.89 },
 				from_untrusted: { type: "noul", noul: 0.06 },

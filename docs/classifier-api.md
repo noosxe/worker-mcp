@@ -317,8 +317,10 @@ for them.
 
 The **risk side confidence** says how sure jev is that the risk is on the right
 side of the threshold the verdict depends on. jev's own risk `confidence`
-looks like the probability of the single most likely level, which says little
-about that side, so when the answer has valid `probabilities` it is the total
+is, per TypeSafe's docs, `1 - Σ p_i·|i - m|` for four levels (`m` the most
+likely level): the spread around the top level, not which side of a threshold
+the call is on. TypeSafe advises using it to see whether an answer is settled
+and deciding on the probability of the level that drives the decision. So when the answer has valid `probabilities` it is the total
 probability of the levels on the side: P(level < `askScore`) for a not-risky
 allow (p0 + p1 by default), P(level < `denyScore`) for a risky-but-requested
 allow (p0 + p1 + p2), P(level > `denyScore`) for a risk deny (p3). With a
@@ -340,11 +342,13 @@ The `risk` position is computed from the answer's `probabilities` (level
 number times probability, summed) when they are present; they must be four
 values in 0..1 that sum to 1 (within 0.02). A `score` that differs from that
 by more than 0.25 is not believed and the call escalates ("unknown scale"). A
-`score` alone is read on the 0-3 scale, **which is unverified** until a real
-response has been checked.
+`score` alone is read on the 0-3 scale. TypeSafe documents `score` as the
+probability-weighted mean of the level numbers and `probabilities` as an object
+keyed `"0"`..`"3"` that sums to 1 (an array is accepted too).
 
-A `noul` answer may carry its own confidence, in `answers[id].confidence` or
-`providerMetadata.typesafe.confidence[id]`; it is used when present (a value
+TypeSafe's `noul` answers carry no confidence: the probability is the whole
+answer. For compatible servers that do send one, in `answers[id].confidence`
+or `providerMetadata.typesafe.confidence[id]`, it is used when present (a value
 outside 0..1 makes the call escalate) and never made up from the probability.
 `score` answers have one. A response where an answer is missing, out of
 range (probabilities outside 0..1, `risk` outside 0..3) or a `risk` has no

@@ -617,7 +617,9 @@ only uncertain calls, or ones it cannot answer, reach the coordinator.
   confidence of an allow is the lowest of the probability that the risk is on
   the right side of the threshold (from the risk `probabilities`; jev's own risk
   `confidence` when there are none) and a noul answer's own confidence when
-  sent. The gate log shows the raw risk probabilities. An allow whose
+  sent. The gate log shows the raw risk probabilities. For tuning the noul
+  thresholds, TypeSafe suggests starting at 0.7 for yes and 0.3 for no, with
+  the middle band getting its own outcome. An allow whose
   probabilities or score lie within `thresholds.thresholdMargin` (default
   0.05) of a threshold escalates instead. **Commands and up to 8 KiB of arguments are sent to the backend**,
   so it is off unless you configure it. Details in

@@ -8,7 +8,7 @@
   allow or deny confidence is now the probability of the levels on the right
   side of the threshold (below `askScore` for a not-risky allow, below
   `denyScore` for a risky-but-requested allow, above `denyScore` for a deny),
-  not jev's own risk `confidence`, which tracks the single most likely level.
+  not jev's own risk `confidence`, which measures the spread around the top level.
   A score alone still uses jev's confidence. The raw probabilities and jev's
   risk confidence are now in the reason in the gate log.
 
