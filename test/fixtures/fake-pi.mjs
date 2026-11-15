@@ -37,6 +37,12 @@
 //                               it) with bash, report exit code and output
 //   read:<path>                 like pi's read tool: propose it, then read the
 //                               file in this process and report its content
+//   race:<json>                 a batch like pi's: [{"tool":"read"|"bash","input":{}},...]
+//                               pi rates every call first and then runs them
+//                               at once, unless a tool was registered with
+//                               executionMode "sequential" (then one at a time,
+//                               rated just before it runs); FAKE_PI_PARALLEL=1
+//                               ignores that. A read takes 400 ms, like I/O.
 //   dialog:<method>             send a non-gate select/input/editor/confirm and
 //                               report how it was answered
 // Startup scenarios, chosen with FAKE_PI_SCENARIO (they act before any prompt):
@@ -48,6 +54,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
+import { register } from "node:module";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -102,8 +109,24 @@ for (let i = 0; i < argv.length; i++) {
 	}
 }
 
+// The gate imports pi's tool definitions from pi's package: point that at a stub.
+register(
+	`data:text/javascript,${encodeURIComponent(`export async function resolve(specifier, context, next) {
+		if (specifier === "@earendil-works/pi-coding-agent") {
+			return { url: ${JSON.stringify(new URL("./pi-package-stub.mjs", import.meta.url).href)}, shortCircuit: true };
+		}
+		return next(specifier, context);
+	}`)}`,
+	import.meta.url,
+);
+
+const registeredTools = new Map();
 const handlers = new Map();
 const pi = {
+	getActiveTools: () => ["read", "bash", "edit", "write"],
+	registerTool(tool) {
+		registeredTools.set(tool.name, tool);
+	},
 	on(event, handler) {
 		if (!handlers.has(event)) handlers.set(event, []);
 		handlers.get(event).push(handler);
@@ -259,6 +282,63 @@ async function startPrompt(message) {
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		finishRun(`exit=${r.status}\n${r.stdout}${r.stderr}`);
+	} else if ((m = spec.match(/^race:([\s\S]+)$/))) {
+		run = { timer: null };
+		const calls = JSON.parse(m[1]);
+		const sequential =
+			!process.env.FAKE_PI_PARALLEL &&
+			calls.some(
+				(c) => registeredTools.get(c.tool)?.executionMode === "sequential",
+			);
+		// oxlint-disable-next-line unicorn/consistent-function-scoping -- kept next to its use
+		const exec = async (c) => {
+			if (c.tool === "read") {
+				await new Promise((r) => setTimeout(r, 400));
+				try {
+					return `content=${readFileSync(c.input.path, "utf8")}`;
+				} catch (e) {
+					return `error=${e.code}`;
+				}
+			}
+			const out = [];
+			await new Promise((resolve) => {
+				const child = spawn("bash", ["-c", c.input.command], {
+					stdio: ["ignore", "pipe", "pipe"],
+				});
+				child.stdout.on("data", (d) => out.push(d));
+				child.stderr.on("data", (d) => out.push(d));
+				child.on("close", resolve);
+			});
+			return `exit-ok\n${Buffer.concat(out)}`;
+		};
+		const results = [];
+		if (sequential) {
+			for (const c of calls) {
+				const r = await gate(c.tool, c.input);
+				if (!run) return;
+				results.push(
+					r.blocked
+						? `blocked: ${r.reason}`
+						: await exec({ ...c, input: r.input }),
+				);
+			}
+		} else {
+			// Every call is rated before any of them runs.
+			const rated = [];
+			for (const c of calls) {
+				const r = await gate(c.tool, c.input);
+				if (!run) return;
+				rated.push(
+					r.blocked ? { blocked: r.reason } : { ...c, input: r.input },
+				);
+			}
+			results.push(
+				...(await Promise.all(
+					rated.map((c) => (c.blocked ? `blocked: ${c.blocked}` : exec(c))),
+				)),
+			);
+		}
+		finishRun(results.join("\n---\n"));
 	} else if ((m = spec.match(/^read:([\s\S]+)$/))) {
 		run = { timer: null };
 		const result = await gate("read", { path: m[1] });

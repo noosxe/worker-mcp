@@ -213,6 +213,28 @@ give it credentials are an environment variable, `--api-key` (visible in
 user's processes can read it, unless they are kept out of pi's process table,
 which is what the second sandbox does.
 
+**Parallel calls.** pi 1.4.0 runs the tool calls of one assistant message in
+parallel by default, and rates all of them (the `tool_call` event, where the
+gate decides) before it runs any. Without more, a `read x` rated while `x` is
+a harmless file could run after a concurrent command turned `x` into a link to
+the credential file (or a directory link, or a `/proc/self/...` link): a
+check-then-use race. The gate extension therefore registers pi's own `read`,
+`bash`, `edit`, `write`, `grep`, `find` and `ls` implementations again with
+`executionMode: "sequential"` (a batch with one such call runs one call at a
+time, each rated just before it runs; checked against pi's agent loop and with
+a local model endpoint, no LLM). If that cannot be done (pi renamed the
+definitions) the gate never reports ready and the worker does not open. A
+command's processes all end with the command (the second sandbox's pid
+namespace; checked with a background job, `setsid` and `nohup`), so none is
+left to race the next call. Tools the gate does not know (an MCP or codemode
+tool, both off here) are not made sequential, and the re-registered tools
+are pi's defaults for the working directory: pi settings that change how
+`bash` starts (`shellPath`, `shellCommandPrefix`) do not apply to them. Calls
+of one message no longer run at the same time, so a slow command delays the
+next call and a pending approval holds the rest of the batch. What pi would
+need to remove the cost: a hook between rating and running, or a per-call
+check in its file tools.
+
 Left open:
 
 - **When the second sandbox cannot start** (many systems that allow the first
@@ -226,7 +248,11 @@ Left open:
   every command, so a command can read it with `env`. Use pi's auth file.
 - **The `read` tool runs inside pi** and can read the file; only the gate stops
   it, and a coordinator that approves it hands the key over. The approval says
-  it is a protected path.
+  it is a protected path. This includes a link: a command can create
+  `x -> ~/.pi/agent/auth.json` in the workspace, and pi's `read`, `edit` or
+  `write` of `x` follows it from the first sandbox. The gate resolves real
+  paths, so it catches the link when the call is rated after the link exists
+  (a hard limit, as above).
 - **The key can be sent out**: the network is open and pi's own process is
   allowed to use the key. A `bash` or `write` call that did not touch the file
   cannot read it; a prompt-injected worker can still make pi call its model

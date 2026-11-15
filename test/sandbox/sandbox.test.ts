@@ -491,6 +491,7 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 			server: RawServer,
 			workerId: string,
 			scenario: string,
+			rejectHardLimits = false,
 		): Promise<string> {
 			let res = await server.callTool("start_run", {
 				workerId,
@@ -500,9 +501,17 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 			});
 			let view = viewOf(res.result);
 			for (let i = 0; i < 5 && view.state === "awaiting_approval"; i++) {
-				await server.callTool("approve_action", {
-					approvalId: view.pendingApprovals[0].approvalId,
-				});
+				const pending = view.pendingApprovals[0];
+				if (rejectHardLimits && pending.hardLimit) {
+					await server.callTool("reject_action", {
+						approvalId: pending.approvalId,
+						reason: "hard limit",
+					});
+				} else {
+					await server.callTool("approve_action", {
+						approvalId: pending.approvalId,
+					});
+				}
 				res = await server.callTool("wait_run", {
 					runId: view.runId,
 					waitMs: 10_000,
@@ -632,6 +641,89 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 				}
 			},
 		);
+
+		describe("parallel tool calls", () => {
+			/** pi's batch: a shell command that swaps a link in, and a read of that path. */
+			// oxlint-disable-next-line unicorn/consistent-function-scoping -- kept next to its use
+			async function race(server: RawServer, id: string) {
+				const target = path.join(iso.cwd, "swapped");
+				fs.rmSync(target, { force: true });
+				fs.writeFileSync(target, "harmless\n");
+				return await viaGate(
+					server,
+					id,
+					`race:${JSON.stringify([
+						{
+							tool: "bash",
+							input: { command: 'ln -sfn "$HOME/.pi/agent/auth.json" swapped' },
+						},
+						{ tool: "read", input: { path: target } },
+					])}`,
+					true,
+				);
+			}
+
+			test(
+				"a read cannot follow a link a concurrent command swapped in: pi's tools run one at a time",
+				{ skip: toolSkip },
+				async () => {
+					const server = await start();
+					const { worker } = await spawnWorker(server, iso.cwd);
+					const out = await race(server, worker.workerId);
+					assert.ok(!leaked(out), out);
+					// The read was rated after the command ran: it saw the link.
+					assert.match(out, /blocked/);
+					await server.callTool("terminate_worker", {
+						workerId: worker.workerId,
+					});
+				},
+			);
+
+			test(
+				"the race is real: if pi rates every call first and then runs them at once, the link is followed",
+				{ skip: toolSkip },
+				async () => {
+					iso.env.FAKE_PI_PARALLEL = "1";
+					try {
+						const server = await start();
+						const { worker } = await spawnWorker(server, iso.cwd);
+						const out = await race(server, worker.workerId);
+						assert.ok(out.includes(FILE_MARKER), out);
+						await server.callTool("terminate_worker", {
+							workerId: worker.workerId,
+						});
+					} finally {
+						delete iso.env.FAKE_PI_PARALLEL;
+					}
+				},
+			);
+
+			test(
+				"nothing a command started outlives it, so the next call never races a leftover process",
+				{ skip: toolSkip },
+				async () => {
+					const server = await start();
+					const { worker } = await spawnWorker(server, iso.cwd);
+					const id = worker.workerId;
+					const out = await viaGate(
+						server,
+						id,
+						"bash:(sleep 41 &) ; setsid -f sleep 42; nohup sleep 43 >/dev/null 2>&1 & echo started",
+					);
+					assert.match(out, /started/);
+					await sleep(300);
+					const left = spawnSync("pgrep", ["-f", "^sleep 4[123]$"], {
+						encoding: "utf8",
+					});
+					assert.strictEqual(
+						left.stdout.trim(),
+						"",
+						"a process outlived its command",
+					);
+					await server.callTool("terminate_worker", { workerId: id });
+				},
+			);
+		});
 
 		test("the read tool and /proc paths are hard limits at the gate", async () => {
 			const server = await start();

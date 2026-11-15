@@ -13,6 +13,7 @@ import {
 	GATE_NONCE_ENV,
 	GateError,
 	parseGateRequest,
+	PI_PACKAGE,
 	writeGateFile,
 } from "../gate-extension.js";
 
@@ -21,19 +22,57 @@ const NONCE = "00112233445566778899aabbccddeeff";
 describe("gate extension source", () => {
 	let dir: string;
 	let file: string;
+	/** A gate in a directory where pi's package cannot be found. */
+	let bareDir: string;
+	let bareFile: string;
 	before(() => {
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-gatesrc-"));
 		file = writeGateFile(dir);
+		// pi's package, as far as the gate uses it: tool definitions.
+		const pkg = path.join(
+			dir,
+			"node_modules",
+			"@earendil-works",
+			"pi-coding-agent",
+		);
+		fs.mkdirSync(pkg, { recursive: true });
+		fs.writeFileSync(
+			path.join(pkg, "package.json"),
+			JSON.stringify({
+				name: PI_PACKAGE,
+				type: "module",
+				exports: "./index.js",
+			}),
+		);
+		fs.writeFileSync(
+			path.join(pkg, "index.js"),
+			["Read", "Bash", "Edit", "Write", "Grep", "Find", "Ls"]
+				.map(
+					(n) =>
+						`export const create${n}ToolDefinition = (cwd) => ({ name: "${n.toLowerCase()}", cwd });`,
+				)
+				.join("\n"),
+		);
+		bareDir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-gatesrc-"));
+		bareFile = writeGateFile(bareDir);
 	});
-	after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	after(() => {
+		fs.rmSync(dir, { recursive: true, force: true });
+		fs.rmSync(bareDir, { recursive: true, force: true });
+	});
 
 	/** Load the gate as pi would, with a stand-in for pi's extension API. */
-	async function load(nonce: string | null = NONCE) {
+	async function load(nonce: string | null = NONCE, gate = file) {
 		if (nonce === null) delete process.env[GATE_NONCE_ENV];
 		else process.env[GATE_NONCE_ENV] = nonce;
 		const handlers = new Map<string, (e: any, ctx: any) => any>();
-		const mod = await import(`${pathToFileURL(file).href}?${Math.random()}`);
-		mod.default({ on: (name: string, h: any) => handlers.set(name, h) });
+		const mod = await import(`${pathToFileURL(gate).href}?${Math.random()}`);
+		const registered: any[] = [];
+		mod.default({
+			on: (name: string, h: any) => handlers.set(name, h),
+			getActiveTools: () => ["read", "bash", "edit", "write"],
+			registerTool: (t: any) => registered.push(t),
+		});
 		const statuses: [string, string][] = [];
 		const inputs: { title: string; placeholder: string }[] = [];
 		const replyFn: { current: (placeholder: string) => unknown } = {
@@ -49,6 +88,7 @@ describe("gate extension source", () => {
 			},
 		};
 		return {
+			registered,
 			statuses,
 			inputs,
 			setReply: (f: (placeholder: string) => unknown) => {
@@ -73,6 +113,27 @@ describe("gate extension source", () => {
 		const g = await load();
 		await g.start();
 		assert.deepStrictEqual(g.statuses, [["worker-mcp-gate", `ready:${NONCE}`]]);
+	});
+
+	test("makes pi's file and shell tools sequential before it reports ready", async () => {
+		const g = await load();
+		await g.start();
+		assert.deepStrictEqual(
+			g.registered.map((t) => [t.name, t.executionMode]),
+			[
+				["read", "sequential"],
+				["bash", "sequential"],
+				["edit", "sequential"],
+				["write", "sequential"],
+			],
+		);
+	});
+
+	test("without pi's tool definitions it never reports ready", async () => {
+		const g = await load(NONCE, bareFile);
+		await g.start();
+		assert.deepStrictEqual(g.statuses, []);
+		assert.deepStrictEqual(g.registered, []);
 	});
 
 	test("removes the nonce from the environment so tools do not inherit it", async () => {

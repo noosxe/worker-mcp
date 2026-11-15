@@ -21,6 +21,12 @@
   coordinator's approval, a key passed in the environment, the open network)
   and what pi would have to offer are written up in
   [docs/security.md](docs/security.md#the-agents-credentials).
+- **pi's tool calls run one at a time.** pi rates all calls of a message first and
+  then runs them in parallel, so a `read` rated while a workspace path was
+  harmless could follow a symlink a concurrent command made to the credential
+  file. The gate extension now re-registers pi's file and shell tools as
+  sequential, so each call is rated just before it runs, and the worker does
+  not open if that fails. Calls of one message no longer overlap.
 
 - **stderr is metadata only.** The `[INTERCEPTED]`, `[AUTO-APPROVED]` and
   `[AUTO-DENIED]` lines used to carry the whole tool input (a full shell
