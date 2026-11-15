@@ -382,6 +382,33 @@ describe("ids and names", () => {
 		});
 	});
 
+	test("two concurrent spawns of one name: one wins, the other is INVALID_ARGUMENT", async () => {
+		await withIso(async ({ client, iso }) => {
+			const results = await Promise.all(
+				[1, 2, 3].map(() =>
+					call(client, TOOLS.spawn, { name: "race", cwd: iso.cwd }),
+				),
+			);
+			const won = results.filter((r) => !r.isError);
+			assert.strictEqual(won.length, 1);
+			for (const r of results.filter((x) => x.isError)) {
+				assert.strictEqual(code(r), "INVALID_ARGUMENT");
+			}
+			const id = textOf(won[0]).match(/worker (w_[a-z0-9]{8})/)?.[1];
+			const list = JSON.parse(await callOk(client, TOOLS.list, {}));
+			assert.deepStrictEqual(
+				list.map((w: { workerId: string }) => w.workerId),
+				[id],
+			);
+			const run = await callView(client, TOOLS.startRun, {
+				workerId: id as string,
+				prompt: "still usable",
+				waitMs: 5000,
+			});
+			assert.strictEqual(run.state, "completed");
+		});
+	});
+
 	test("names that look like paths or like ids are refused", async () => {
 		await withIso(async ({ client, iso }) => {
 			for (const name of [
