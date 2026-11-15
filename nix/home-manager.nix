@@ -30,9 +30,72 @@ let
         example = "local";
       };
       url = mkOption {
-        type = types.str;
-        description = "https, or http only for localhost, 127.0.0.1 and [::1].";
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          https, or http only for localhost, 127.0.0.1 and [::1]. Required for
+          dialect `worker-mcp-v1` and for `backend = "custom"`; for the
+          `jev` dialect it is the base URL, and `/v1/systemone` is appended.
+          Leave it out for the `typesafe` and `openrouter` backends.
+        '';
         example = "http://127.0.0.1:8787/classify";
+      };
+      dialect = mkOption {
+        type = types.nullOr (
+          types.enum [
+            "worker-mcp-v1"
+            "jev"
+          ]
+        );
+        default = null;
+        description = ''
+          The wire format. `jev` is TypeSafe's System One API; commands and up
+          to 8 KiB of arguments are sent to the backend. Server default:
+          `worker-mcp-v1`.
+        '';
+      };
+      backend = mkOption {
+        type = types.nullOr (
+          types.enum [
+            "typesafe"
+            "openrouter"
+            "custom"
+          ]
+        );
+        default = null;
+        description = ''
+          Dialect `jev` only: `typesafe` (https://api.typesafe.ai, model
+          `jev-latest`), `openrouter` (https://openrouter.ai/api, model
+          `jev-1.13`) or `custom` (any compatible server, needs `url`).
+          Server default: `typesafe`, or `custom` when `url` is set.
+        '';
+      };
+      model = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Dialect `jev` only: overrides the backend's default model.";
+        example = "jev-latest";
+      };
+      thresholds = mkOption {
+        type = types.attrsOf types.float;
+        default = { };
+        description = ''
+          Dialect `jev` only: how answers map to a verdict. Keys:
+          `denyScore` (2.5), `askScore` (1.5), `askProbability` (0.75),
+          `untrustedProbability` (0.7), `userRequestedProbability` (0.85).
+          Unset keys keep the server default.
+        '';
+        example = {
+          userRequestedProbability = 0.9;
+        };
+      };
+      cacheTtlMs = mkOption {
+        type = types.nullOr types.ints.positive;
+        default = null;
+        description = ''
+          Dialect `jev` only: reuse an allow or deny for the same call of the
+          same worker for this long. Default (null): off.
+        '';
       };
       tokenFile = mkOption {
         type = types.nullOr types.str;
@@ -49,7 +112,7 @@ let
         type = json.type;
         default = { };
         description = ''
-          Other keys of this classifier (`dialect`, `timeoutMs`,
+          Other keys of this classifier (`timeoutMs`,
           `minAllowConfidence`, `minDenyConfidence`, `maxArgumentBytes`,
           `sendIntent`, `breaker`).
         '';
@@ -64,9 +127,19 @@ let
   classifierSettings =
     c:
     {
-      inherit (c) name url;
+      inherit (c) name;
     }
-    // lib.optionalAttrs (c.tokenFile != null) { inherit (c) tokenFile; }
+    // lib.filterAttrs (_: v: v != null) {
+      inherit (c)
+        url
+        dialect
+        backend
+        model
+        cacheTtlMs
+        tokenFile
+        ;
+    }
+    // lib.optionalAttrs (c.thresholds != { }) { inherit (c) thresholds; }
     // c.settings;
 
   # Names of env files go to the workers too: they are only given to the
@@ -361,6 +434,12 @@ in
             name = "local";
             url = "http://127.0.0.1:8787/classify";
             tokenFile = config.sops.secrets.classifier_key.path;
+          }
+          {
+            name = "jev";
+            dialect = "jev";
+            backend = "typesafe";
+            tokenFile = config.sops.secrets.jev_key.path;
           }
         ]
       '';

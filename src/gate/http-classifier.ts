@@ -4,7 +4,7 @@ import * as https from "node:https";
 import { z } from "zod";
 
 import type { HttpClassifierConfig } from "../config.js";
-import { canonicalJson } from "./audit.js";
+import { capArguments } from "./cap-arguments.js";
 import {
 	ClassifierFailure,
 	type Classifier,
@@ -12,6 +12,9 @@ import {
 	type ClassifyRequest,
 	type Thresholds,
 } from "./classifier.js";
+import { jev } from "./jev.js";
+
+export { capArguments };
 import { RISK_LABELS, RiskLevel } from "./risk.js";
 
 /** The version string of the provisional request and response format. */
@@ -20,6 +23,10 @@ export const CLASSIFIER_API_HEADER = "X-Worker-MCP-Classifier-API";
 /** A response larger than this is a failure. */
 export const MAX_RESPONSE_BYTES = 16 * 1024;
 const MAX_PATHS = 50;
+const RETRY_BACKOFF_MS = 300;
+const MAX_ATTEMPTS = 3;
+/** The least time left that makes a retry worth sending. */
+const MIN_ATTEMPT_MS = 400;
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
@@ -49,49 +56,35 @@ export function classifierUrlProblem(raw: string): string | null {
  */
 export interface Dialect {
 	readonly name: string;
+	/** Appended to the configured URL's path to form the endpoint. */
+	readonly path?: string;
+	/** At most one request in flight per classifier; later calls queue. */
+	readonly singleFlight?: boolean;
+	/** Retry 429, 5xx and network errors while the call's deadline allows. */
+	readonly retry?: boolean;
 	/** The JSON body and extra headers of a request. */
 	request(
 		req: ClassifyRequest,
 		cfg: HttpClassifierConfig,
 	): { body: unknown; headers: Record<string, string> };
 	/** Throws on anything that is not a valid answer to `req`. */
-	response(json: unknown, req: ClassifyRequest): ClassifierResult;
+	response(
+		json: unknown,
+		req: ClassifyRequest,
+		cfg: HttpClassifierConfig,
+	): ClassifierResult;
+}
+
+/** A failure that another attempt may cure (429, 5xx, network). */
+export class RetryableFailure extends ClassifierFailure {
+	override name = "RetryableFailure";
+}
+/** The call's deadline ran out while it waited for its turn. */
+export class QueueTimeout extends ClassifierFailure {
+	override name = "QueueTimeout";
 }
 
 // ---- dialect worker-mcp-v1 ---------------------------------------------------
-
-const size = (v: unknown) => Buffer.byteLength(canonicalJson(v));
-
-/** Arguments no bigger than `maxBytes` of JSON; long strings are cut first. */
-export function capArguments(
-	input: Record<string, unknown>,
-	maxBytes: number,
-): { arguments: unknown; truncated: boolean } {
-	if (size(input) <= maxBytes) return { arguments: input, truncated: false };
-	let leaves = 0;
-	const count = (v: unknown): void => {
-		if (typeof v === "string") leaves++;
-		else if (Array.isArray(v)) v.forEach(count);
-		else if (v && typeof v === "object") Object.values(v).forEach(count);
-	};
-	count(input);
-	const each = Math.max(32, Math.floor(maxBytes / Math.max(1, leaves) / 2));
-	const cut = (v: unknown): unknown => {
-		if (typeof v === "string") return v.length > each ? v.slice(0, each) : v;
-		if (Array.isArray(v)) return v.map(cut);
-		if (v && typeof v === "object") {
-			return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, cut(x)]));
-		}
-		return v;
-	};
-	const shrunk = cut(input);
-	if (size(shrunk) <= maxBytes) return { arguments: shrunk, truncated: true };
-	// Still too big (many keys or deep): keep a prefix of the JSON as text.
-	return {
-		arguments: { _truncated: canonicalJson(input).slice(0, maxBytes) },
-		truncated: true,
-	};
-}
 
 const riskLabel = (level: RiskLevel | undefined) =>
 	level === undefined ? undefined : RISK_LABELS[level];
@@ -193,6 +186,7 @@ export const workerMcpV1: Dialect = {
 
 export const DIALECTS: Record<string, Dialect> = {
 	[workerMcpV1.name]: workerMcpV1,
+	[jev.name]: jev,
 };
 
 // ---- transport ---------------------------------------------------------------
@@ -312,6 +306,8 @@ export class HttpClassifier implements Classifier {
 	private readonly url: URL;
 	private readonly dialect: Dialect;
 	private readonly now: () => number;
+	private busy = false;
+	private readonly waiting: (() => void)[] = [];
 	private consecutiveFailures = 0;
 	private openUntil = 0;
 
@@ -336,6 +332,9 @@ export class HttpClassifier implements Classifier {
 			);
 		}
 		this.dialect = dialect;
+		if (dialect.path) {
+			this.url.pathname = `${this.url.pathname.replace(/\/+$/, "")}${dialect.path}`;
+		}
 		this.now = opts.now ?? Date.now;
 	}
 
@@ -354,6 +353,7 @@ export class HttpClassifier implements Classifier {
 			this.consecutiveFailures = 0;
 			return result;
 		} catch (e) {
+			if (e instanceof QueueTimeout) throw e; // load, not a sick server
 			this.consecutiveFailures++;
 			if (this.consecutiveFailures >= this.cfg.breaker.failures) {
 				this.openUntil = this.now() + this.cfg.breaker.coolDownMs;
@@ -362,9 +362,102 @@ export class HttpClassifier implements Classifier {
 		}
 	}
 
+	/** Wait for this classifier's turn; gives up when `deadline` passes. */
+	private acquire(deadline: number, signal: AbortSignal): Promise<() => void> {
+		const release = () => {
+			const next = this.waiting.shift();
+			if (next) next();
+			else this.busy = false;
+		};
+		if (!this.busy) {
+			this.busy = true;
+			return Promise.resolve(release);
+		}
+		return new Promise((resolve, reject) => {
+			const cleanup = () => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", onAbort);
+			};
+			const turn = () => {
+				cleanup();
+				resolve(release);
+			};
+			const leave = (e: Error) => {
+				const at = this.waiting.indexOf(turn);
+				if (at >= 0) this.waiting.splice(at, 1);
+				cleanup();
+				reject(e);
+			};
+			const timer = setTimeout(
+				() =>
+					leave(
+						new QueueTimeout(
+							`no answer within ${this.cfg.timeoutMs} ms (waited for an earlier request)`,
+						),
+					),
+				Math.max(0, deadline - this.now()),
+			);
+			const onAbort = () => leave(new ClassifierFailure("request aborted"));
+			if (signal.aborted) return onAbort();
+			signal.addEventListener("abort", onAbort, { once: true });
+			this.waiting.push(turn);
+		});
+	}
+
 	private async ask(
 		req: ClassifyRequest,
 		signal: AbortSignal,
+	): Promise<ClassifierResult> {
+		// One deadline for the whole call: waiting, requests and retries.
+		const deadline = this.now() + this.cfg.timeoutMs;
+		if (!this.dialect.singleFlight) return this.attempts(req, signal, deadline);
+		const release = await this.acquire(deadline, signal);
+		try {
+			return await this.attempts(req, signal, deadline);
+		} finally {
+			release();
+		}
+	}
+
+	private async attempts(
+		req: ClassifyRequest,
+		signal: AbortSignal,
+		deadline: number,
+	): Promise<ClassifierResult> {
+		let backoff = RETRY_BACKOFF_MS;
+		for (let attempt = 1; ; attempt++) {
+			try {
+				return await this.once(req, signal, deadline);
+			} catch (e) {
+				const wait = backoff;
+				if (
+					!this.dialect.retry ||
+					!(e instanceof RetryableFailure) ||
+					attempt >= MAX_ATTEMPTS ||
+					signal.aborted ||
+					// Not worth another request unless there is time to answer it.
+					this.now() + wait + MIN_ATTEMPT_MS > deadline
+				) {
+					throw e;
+				}
+				await new Promise<void>((resolve) => {
+					const t = setTimeout(done, wait);
+					function done() {
+						clearTimeout(t);
+						signal.removeEventListener("abort", done);
+						resolve();
+					}
+					signal.addEventListener("abort", done, { once: true });
+				});
+				backoff *= 2;
+			}
+		}
+	}
+
+	private async once(
+		req: ClassifyRequest,
+		signal: AbortSignal,
+		deadline: number,
 	): Promise<ClassifierResult> {
 		const { body, headers: extra } = this.dialect.request(req, this.cfg);
 		const headers: Record<string, string> = {
@@ -380,11 +473,14 @@ export class HttpClassifier implements Classifier {
 			url: this.url,
 			headers,
 			body: JSON.stringify(body),
-			timeoutMs: this.cfg.timeoutMs,
+			timeoutMs: Math.max(1, deadline - this.now()),
 			signal,
 		});
 		if (res.status < 200 || res.status > 299) {
-			throw new ClassifierFailure(`HTTP status ${res.status}`);
+			const msg = `HTTP status ${res.status}`;
+			throw res.status === 429 || res.status >= 500
+				? new RetryableFailure(msg)
+				: new ClassifierFailure(msg);
 		}
 		let json: unknown;
 		try {
@@ -392,6 +488,6 @@ export class HttpClassifier implements Classifier {
 		} catch {
 			throw new ClassifierFailure("invalid response: not JSON");
 		}
-		return this.dialect.response(json, req);
+		return this.dialect.response(json, req, this.cfg);
 	}
 }

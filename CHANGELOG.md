@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Jev classifier dialect
+
+- **`dialect: "jev"`** for `gate.classifiers`: asks TypeSafe's System One API
+  (`POST <base>/v1/systemone`) four typed questions about a call (`risk`,
+  `approval`, `user_requested`, `from_untrusted`) and maps the answers to
+  allow, deny or escalate, with confidence, on top of the existing thresholds,
+  `gate.httpAllowCeiling` and the CRITICAL and hard-limit exclusions. Backends:
+  `typesafe` (default, `jev-latest`), `openrouter` (`jev-1.13`) and `custom`
+  (`url`); `model`, `thresholds` and `cacheTtlMs` are new classifier keys.
+  One request in flight per classifier, retries on 429, 5xx and network errors
+  within the call's deadline. Commands and up to 8 KiB of arguments leave the
+  machine, so it stays off unless configured; see `docs/classifier-api.md`.
+- **Nix**: classifier options `dialect`, `backend`, `model`, `thresholds` and
+  `cacheTtlMs`; `url` is optional.
+
 ### Claude Code plugin, default model and module options
 
 - **Default model**: `providers.pi.defaultModel` (`WORKER_MCP_PI_DEFAULT_MODEL`,

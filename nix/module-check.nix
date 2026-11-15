@@ -63,6 +63,7 @@ let
             _module.args.pkgs = pkgs;
             sops.secrets.classifier_key.path = "/run/secrets/classifier_key";
             sops.secrets.api_key.path = "/run/secrets/api_key";
+            sops.secrets.jev_key.path = "/run/secrets/jev_key";
             programs.worker-mcp = {
               enable = true;
               gate = {
@@ -75,6 +76,14 @@ let
                   url = "http://127.0.0.1:8787/classify";
                   tokenFile = config.sops.secrets.classifier_key.path;
                   settings.timeoutMs = 2000;
+                }
+                {
+                  name = "jev";
+                  dialect = "jev";
+                  backend = "typesafe";
+                  tokenFile = config.sops.secrets.jev_key.path;
+                  thresholds.userRequestedProbability = 0.9;
+                  cacheTtlMs = 30000;
                 }
               ];
               piPath = "/opt/pi/bin/pi";
@@ -151,6 +160,11 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .gate.classifiers[0].name == "local"
           and .gate.classifiers[0].timeoutMs == 2000
           and .gate.classifiers[0].tokenFile == "/run/secrets/classifier_key"
+          and .gate.classifiers[1].dialect == "jev"
+          and .gate.classifiers[1].backend == "typesafe"
+          and (.gate.classifiers[1] | has("url") | not)
+          and .gate.classifiers[1].tokenFile == "/run/secrets/jev_key"
+          and .gate.classifiers[1].thresholds == { userRequestedProbability: 0.9 }
           and .limits.allowedRoots == ["/home/user/src"]
           and .limits.maxWorkers == 2
           and .providers.pi.path == "/opt/pi/bin/pi"
@@ -164,6 +178,12 @@ pkgs.runCommand "worker-mcp-module-eval"
         worker-mcp --config ${file} --print-config > effective.json
         jq -e '.gate.classifiers[0].tokenFile == "/run/secrets/classifier_key"
                and .gate.classifiers[0].dialect == "worker-mcp-v1"
+               and .gate.classifiers[1].tokenFile == "/run/secrets/jev_key"
+               and .gate.classifiers[1].url == "https://api.typesafe.ai"
+               and .gate.classifiers[1].model == "jev-latest"
+               and .gate.classifiers[1].jev.denyScore == 2.5
+               and .gate.classifiers[1].jev.userRequestedProbability == 0.9
+               and .gate.classifiers[1].cacheTtlMs == 30000
                and .providers.pi.defaultModel == "zai/test-model"' effective.json
 
         # The package is installed alongside.
