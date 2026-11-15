@@ -14,6 +14,7 @@ import {
 	callOk,
 	callView,
 	gatedBash,
+	pendingList,
 	rawTextOf,
 	textOf,
 	viewOf,
@@ -243,6 +244,67 @@ describe("schemas: every tool is strict and bounded", () => {
 				"limit too big": { sessionId: id, limit: 201 },
 				"limit zero": { sessionId: id, limit: 0 },
 				"extra key": { sessionId: id, x: 1 },
+			},
+		},
+		{
+			tool: "list_providers",
+			valid: {},
+			invalid: { "extra key": { x: 1 } },
+		},
+		{
+			tool: "spawn_worker",
+			valid: { cwd: "/definitely/not/here", name: "ok-name_1", provider: "pi" },
+			invalid: {
+				missing: { name: "x" },
+				"relative cwd": { cwd: "relative/dir" },
+				"bad provider": { cwd: "/", provider: "Not A Provider" },
+				"unknown provider": { cwd: "/", provider: "nope" },
+				"name with a slash": { cwd: "/", name: "a/b" },
+				"systemPrompt too long": { cwd: "/", systemPrompt: long(20_001) },
+				"policy extra key": { cwd: "/", policy: { bogus: 1 } },
+				"deprecated key not accepted": { cwd: "/", sessionId: "x" },
+				"sandbox not offered": { cwd: "/", sandbox: "none" },
+			},
+		},
+		{
+			tool: "list_workers",
+			valid: {},
+			invalid: { "extra key": { x: 1 } },
+		},
+		{
+			tool: "get_gate_log",
+			valid: { workerId: id, limit: 200, decidedBy: "rules" },
+			invalid: {
+				missing: {},
+				"limit too big": { workerId: id, limit: 201 },
+				"bad worker": { workerId: "../x" },
+				"extra key": { workerId: id, x: 1 },
+			},
+		},
+		{
+			tool: "terminate_worker",
+			valid: { workerId: id },
+			invalid: {
+				missing: {},
+				"bad worker": { workerId: "../x" },
+				"old key": { sessionId: id },
+			},
+		},
+		{
+			tool: "get_pending_actions",
+			valid: { workerId: id },
+			invalid: {
+				"bad run id": { runId: "nope" },
+				"bad worker": { workerId: "../x" },
+			},
+		},
+		{
+			tool: "set_risk_policy",
+			valid: { workerId: id, policy: { autoApproveUpTo: 0 } },
+			invalid: {
+				"missing policy": { workerId: id },
+				"missing worker": { policy: {} },
+				"policy extra key": { workerId: id, policy: { x: 1 } },
 			},
 		},
 	];
@@ -475,13 +537,10 @@ describe("ids and names", () => {
 describe("get_pending_actions", () => {
 	test("returns a list, empty when nothing waits", async () => {
 		await withIso(async ({ client, iso }) => {
-			assert.deepStrictEqual(
-				JSON.parse(await callOk(client, TOOLS.pending, {})),
-				[],
-			);
+			assert.deepStrictEqual(await pendingList(client, {}), []);
 			await callOk(client, TOOLS.spawn, { name: "pend", cwd: iso.cwd });
 			assert.deepStrictEqual(
-				JSON.parse(await callOk(client, TOOLS.pending, { sessionId: "pend" })),
+				await pendingList(client, { sessionId: "pend" }),
 				[],
 			);
 			const started = await callView(client, TOOLS.startRun, {
@@ -494,7 +553,7 @@ describe("get_pending_actions", () => {
 				{ sessionId: "pend" },
 				{ runId: started.runId },
 			]) {
-				const list = JSON.parse(await callOk(client, TOOLS.pending, args));
+				const list = await pendingList(client, args);
 				assert.strictEqual(list.length, 1);
 				assert.strictEqual(list[0].tool, "bash");
 				assert.strictEqual(list[0].kind, "shell");
@@ -502,7 +561,7 @@ describe("get_pending_actions", () => {
 			}
 			await callView(client, TOOLS.cancelRun, { runId: started.runId });
 			assert.deepStrictEqual(
-				JSON.parse(await callOk(client, TOOLS.pending, { sessionId: "pend" })),
+				await pendingList(client, { sessionId: "pend" }),
 				[],
 			);
 		});
@@ -702,11 +761,11 @@ describe("untrusted output", () => {
 			const raw = rawTextOf(result);
 			const view = viewOf(result);
 			assert.match(
-				JSON.parse(raw.slice(raw.indexOf("\n") + 1)).output.text,
+				JSON.parse(raw.slice(raw.indexOf("\n") + 1)).untrustedFinalText,
 				/^<worker_output run="r_\w+" trust="untrusted">/,
 			);
-			const text = JSON.parse(raw.slice(raw.indexOf("\n") + 1)).output
-				.text as string;
+			const text = JSON.parse(raw.slice(raw.indexOf("\n") + 1))
+				.untrustedFinalText as string;
 			assert.strictEqual(
 				(text.match(/<\/worker_output/gi) ?? []).length,
 				1,
@@ -746,12 +805,15 @@ describe("untrusted output", () => {
 			assert.strictEqual(a.kind, "shell");
 			assert.ok(a.riskLabel);
 			assert.strictEqual("summary" in a, false, "no free-text summary");
-			assert.match(a.command, /^<worker_output run="r_\w+" trust="untrusted">/);
+			assert.match(
+				a.untrustedCommand,
+				/^<worker_output run="r_\w+" trust="untrusted">/,
+			);
 			assert.strictEqual(
-				(a.command.match(/<\/worker_output/gi) ?? []).length,
+				(a.untrustedCommand.match(/<\/worker_output/gi) ?? []).length,
 				1,
 			);
-			assert.ok(a.command.includes("rm -rf build"));
+			assert.ok(a.untrustedCommand.includes("rm -rf build"));
 			// The legacy text shows the same fields.
 			await callView(client, TOOLS.cancelRun, { runId: view.runId });
 		});
@@ -767,8 +829,8 @@ describe("untrusted output", () => {
 			});
 			const raw = rawTextOf(result);
 			const view = JSON.parse(raw.slice(raw.indexOf("\n") + 1));
-			assert.ok(view.activity.length > 0);
-			for (const line of view.activity) {
+			assert.ok(view.untrustedActivity.length > 0);
+			for (const line of view.untrustedActivity) {
 				assert.match(line, /^<worker_output run="r_\w+" trust="untrusted">/);
 				assert.strictEqual((line.match(/<\/worker_output/gi) ?? []).length, 1);
 			}

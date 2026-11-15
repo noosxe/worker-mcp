@@ -8,6 +8,7 @@ import { ToolError } from "../errors.js";
 import { isInside } from "../gate/paths.js";
 import { newWorkerId, WORKER_ID_PATTERN, WORKER_NAME_PATTERN } from "../ids.js";
 import { ProviderRegistry } from "../providers/registry.js";
+import type { ProviderCheck, WorkerProvider } from "../providers/types.js";
 import { RuntimeDir } from "./runtime-dir.js";
 import { type PolicyReport, Session, runStoreFor } from "./session.js";
 
@@ -34,6 +35,7 @@ export class SessionManager {
 	readonly runs: RunStore;
 	private readonly now: () => number;
 	private reaper: ReturnType<typeof setInterval> | null = null;
+	private readonly changeListeners = new Set<() => void>();
 	private readonly reaperIntervalMs: number;
 
 	/**
@@ -111,6 +113,7 @@ export class SessionManager {
 		model?: string,
 		systemPrompt?: string,
 		riskPolicy?: unknown,
+		providerId?: string,
 	): Promise<Session> {
 		if (name !== undefined && !WORKER_NAME_PATTERN.test(name)) {
 			throw new ToolError(
@@ -126,9 +129,18 @@ export class SessionManager {
 		}
 		const realCwd = this.resolveCwd(cwd);
 
+		if (
+			providerId !== undefined &&
+			!this.providers.ids().includes(providerId)
+		) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				`provider ${providerId} is not available. Use one of: ${this.providers.ids().join(", ")} (list_providers shows them).`,
+			);
+		}
 		let provider;
 		try {
-			provider = await this.providers.get("pi");
+			provider = await this.providers.get(providerId);
 		} catch (e) {
 			throw new ToolError("PROVIDER_UNAVAILABLE", firstLine(e));
 		}
@@ -172,6 +184,7 @@ export class SessionManager {
 			onGone: (s) => {
 				if (this.sessions.get(s.sessionId) === s) {
 					this.sessions.delete(s.sessionId);
+					this.changed();
 				}
 			},
 		});
@@ -185,6 +198,7 @@ export class SessionManager {
 			// A session that never started must not hold a slot or a name.
 			this.sessions.delete(id);
 			const message = firstLine(e);
+			this.changed();
 			throw new ToolError(
 				/approval gate|gate/i.test(message)
 					? "GATE_UNAVAILABLE"
@@ -193,7 +207,52 @@ export class SessionManager {
 			);
 		}
 
+		this.changed();
 		return session;
+	}
+
+	/** Called when a worker is added or removed (resource list changes). */
+	public onWorkersChanged(listener: () => void): () => void {
+		this.changeListeners.add(listener);
+		return () => {
+			this.changeListeners.delete(listener);
+		};
+	}
+
+	private changed(): void {
+		for (const l of this.changeListeners) {
+			try {
+				l();
+			} catch {
+				// a listener must never break the manager
+			}
+		}
+	}
+
+	/** Ids of the providers a spawn may name; the first is the default. */
+	public providerIds(): string[] {
+		return this.providers.ids();
+	}
+
+	/** Whether each enabled provider can be used now. No model calls. */
+	public async checkProviders(): Promise<
+		{ id: string; provider: WorkerProvider | null; check: ProviderCheck }[]
+	> {
+		return await Promise.all(
+			this.providers.ids().map(async (id) => {
+				try {
+					const provider = await this.providers.get(id);
+					const check = await provider.check(this.config);
+					return { id, provider, check };
+				} catch (e) {
+					return {
+						id,
+						provider: null,
+						check: { available: false, reason: firstLine(e) },
+					};
+				}
+			}),
+		);
 	}
 
 	private findByName(name: string): Session | undefined {
@@ -209,7 +268,7 @@ export class SessionManager {
 		if (!session) {
 			throw new ToolError(
 				"WORKER_NOT_FOUND",
-				`No live worker ${ref}; call list_pi_sessions to see the workers, or spawn one.`,
+				`No live worker ${ref}; call list_workers to see the workers, or spawn one.`,
 			);
 		}
 		return session;
@@ -253,6 +312,7 @@ export class SessionManager {
 	public async terminateSession(ref: string): Promise<void> {
 		const session = this.getSession(ref);
 		this.sessions.delete(session.sessionId);
+		this.changed();
 		await session.terminate();
 	}
 
@@ -268,6 +328,7 @@ export class SessionManager {
 			return since !== null && now - since >= limit;
 		});
 		for (const s of idle) this.sessions.delete(s.sessionId);
+		if (idle.length > 0) this.changed();
 		await Promise.all(idle.map((s) => s.terminate()));
 		return idle.map((s) => s.sessionId);
 	}

@@ -237,6 +237,12 @@ export class RunStore {
 		return [...this.runs.values()].filter((r) => r.workerId === workerId);
 	}
 
+	/** Every run held, oldest first. */
+	all(): Run[] {
+		this.prune();
+		return [...this.runs.values()];
+	}
+
 	/** Number of runs held, finished or not. */
 	get size(): number {
 		return this.runs.size;
