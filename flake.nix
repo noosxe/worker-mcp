@@ -167,6 +167,20 @@ EOF
         };
       });
 
+      # Home Manager module: `programs.worker-mcp`. See the README.
+      homeManagerModules = {
+        worker-mcp = import ./nix/home-manager.nix self;
+        default = self.homeManagerModules.worker-mcp;
+      };
+
+      checks = eachSystem (
+        system: pkgs: {
+          # Evaluates the module with a sample config, builds the checked
+          # config file with the package, and inspects both.
+          home-manager-module = import ./nix/module-check.nix { inherit self pkgs; };
+        }
+      );
+
       devShells = eachSystem (_: pkgs: {
         default = pkgs.mkShell {
           buildInputs = with pkgs; [

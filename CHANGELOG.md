@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### Auto mode, classifiers and a Home Manager module
+
+- **Auto mode** (`gate.mode: auto`, default `manual`): calls the rules
+  escalate are first sent to the configured HTTP classifiers; only uncertain
+  ones, or ones a classifier cannot answer, reach the coordinator. A classifier
+  `allow` needs confidence 0.85 (`deny` 0.6), is limited by the new
+  `gate.httpAllowCeiling` (default `HIGH`, separate from `gate.maxAutoApprove`)
+  and can never allow a hard limit or CRITICAL. `gate.onClassifierFailure` is
+  `escalate` (default) or `deny`, never allow. Auto mode needs at least one
+  classifier. A worker can opt out with `policy.classifiers: "off"`. Settings:
+  `gate.mode`, `gate.httpAllowCeiling`, `gate.onClassifierFailure`,
+  `gate.classifiers`, `gate.cache`, `gate.recentActions`, with
+  `WORKER_MCP_GATE_MODE`, `WORKER_MCP_HTTP_ALLOW_CEILING`,
+  `WORKER_MCP_ON_CLASSIFIER_FAILURE` and matching flags.
+- **HTTP classifier, dialect `worker-mcp-v1`** (provisional, version
+  `1-provisional`; see `docs/classifier-api.md`): https or loopback http, no
+  redirects, no proxy, 3 s timeout, 16 KiB response cap, strict response
+  validation (confidence required), 8 KiB argument cap, a circuit breaker and a
+  per-worker verdict cache (LRU, 10 min at most), cleared on `set_risk_policy`
+  and when the worker closes.
+- **Token from a file**: `tokenFile` per classifier (mode 0600 or stricter,
+  owned by the server's user, symlinks judged by their target, so a sops-nix
+  secret works). Read at startup (a missing or insecure file is a clear
+  startup error) and again on `SIGHUP`. Never in env, tool arguments, logs,
+  the audit file or `--print-config`, which shows only the path.
+- **`approve_action` `remember: "worker"`**: allows identical calls from that
+  worker until it closes or its policy changes; never for hard limits, protected
+  paths or CRITICAL. Reuse shows as `decidedBy: "cache"`. The result has
+  `remembered`.
+- **Audit file**: every gate decision is appended to
+  `<stateDir>/audit.jsonl` (JSONL, `O_APPEND`, mode 0600, rotated at 10 MiB,
+  three kept; `audit.enabled`, `audit.file`). Metadata only: no full arguments
+  or tokens. The state directory and token files are protected paths. A write
+  failure is logged once and `list_workers` reports `auditDegraded: true`.
+- `get_gate_log` entries and pending approvals carry `consulted` and
+  `escalatedBecause`; `decidedBy` filters `rules`, `cache`, `http:<name>`,
+  `coordinator`, `timeout` and `cancel`.
+- **Home Manager module** `homeManagerModules.default` (`programs.worker-mcp`):
+  installs the package and writes `config.json` from a freeform `settings`
+  plus typed options, running `--print-config` on it at build time so invalid
+  settings fail the build. Secrets are file paths only. The flake has a
+  `checks` entry that evaluates the module.
+
 ### Fixed
 
 - pi workers run with `--no-session`, so pi no longer saves worker

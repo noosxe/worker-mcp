@@ -143,6 +143,54 @@ outputs = { self, nixpkgs, worker-mcp, ... }@inputs: {
 };
 ```
 
+##### Option C: The Home Manager module
+
+The flake also exports a Home Manager module, `homeManagerModules.default`
+(also `homeManagerModules.worker-mcp`). It installs the package and writes
+`~/.config/worker-mcp/config.json`, and **checks the generated config at build
+time** by running the package with `--print-config`, so invalid settings fail
+the build instead of the first start. It needs no overlay.
+
+```nix
+{ config, inputs, ... }:
+{
+  imports = [ inputs.worker-mcp.homeManagerModules.default ];
+
+  programs.worker-mcp = {
+    enable = true;
+
+    # Typed options for the common keys...
+    gate.mode = "auto";
+    gate.maxAutoApprove = "MEDIUM";
+    classifiers = [
+      {
+        name = "local";
+        url = "http://127.0.0.1:8787/classify";
+        # A path, never the token: a sops-nix secret owned by this user.
+        tokenFile = config.sops.secrets.classifier_key.path;
+      }
+    ];
+
+    # ...and `settings` for any key of the config file (it wins over the
+    # typed options).
+    settings = {
+      limits.allowedRoots = [ "${config.home.homeDirectory}/src" ];
+      gate.onClassifierFailure = "deny";
+    };
+  };
+
+  sops.secrets.classifier_key = { };
+}
+```
+
+`settings` mirrors the whole config schema (see [Settings](#settings)).
+Secrets are file paths only; the module refuses a path in the Nix store, which
+is world-readable. A sops-nix secret works as `tokenFile` because it is a
+symlink to a mode 0400 file owned by you; give the secret the right `owner` if
+sops-nix runs as another user. pi is not in the package's closure; to use a Nix-built pi,
+set `settings.providers.pi.path = "${pkgs.some-pi}/bin/pi"` or export
+`WORKER_MCP_PI_PATH`.
+
 ---
 
 ## Harness Integration (Antigravity CLI / `agy`)
@@ -377,26 +425,33 @@ Lowest to highest:
 
 ### Settings
 
-| Config key                      | Environment variable               | Flag                      | Default                                      |
-| ------------------------------- | ---------------------------------- | ------------------------- | -------------------------------------------- |
-| (file location)                 | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json`    |
-| `providers.pi.path`             | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                       |
-| `providers.pi.startupTimeoutMs` | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                      |
-| `legacyTools`                   | `WORKER_MCP_LEGACY_TOOLS`          |                           | `true` (`0` hides the deprecated tools)      |
-| `limits.commandTimeoutMs`       | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | unset: the deprecated send waits `maxWaitMs` |
-| `limits.maxOutputChars`         | `WORKER_MCP_MAX_OUTPUT_CHARS`      | `--max-output-chars`      | `64000`                                      |
-| `limits.maxRunMs`               | `WORKER_MCP_RUN_TIMEOUT_MS`        | `--run-timeout-ms`        | `1800000` (30 min)                           |
-| `limits.maxWaitMs`              | `WORKER_MCP_MAX_WAIT_MS`           | `--max-wait-ms`           | `50000`                                      |
-| `limits.runStartTimeoutMs`      | `WORKER_MCP_RUN_START_TIMEOUT_MS`  | `--run-start-timeout-ms`  | `15000`                                      |
-| `limits.maxWorkers`             | `WORKER_MCP_MAX_WORKERS`           | `--max-workers`           | `4`                                          |
-| `limits.idleTimeoutMs`          | `WORKER_MCP_IDLE_TIMEOUT_MS`       | `--idle-timeout-ms`       | `1800000` (30 min)                           |
-| `limits.allowedRoots`           | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                          |
-| `gate.approvalTimeoutMs`        | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                            |
-| `env.allow`                     | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                         |
-| `stateDir`                      | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`                 |
-| `runtimeDir`                    | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`    |
-| `gate.maxAutoApprove`           | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                     |
-| `gate.protectedPaths`           | (file only)                        |                           | none                                         |
+| Config key                         | Environment variable               | Flag                      | Default                                      |
+| ---------------------------------- | ---------------------------------- | ------------------------- | -------------------------------------------- |
+| (file location)                    | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json`    |
+| `providers.pi.path`                | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                       |
+| `providers.pi.startupTimeoutMs`    | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                      |
+| `legacyTools`                      | `WORKER_MCP_LEGACY_TOOLS`          |                           | `true` (`0` hides the deprecated tools)      |
+| `limits.commandTimeoutMs`          | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | unset: the deprecated send waits `maxWaitMs` |
+| `limits.maxOutputChars`            | `WORKER_MCP_MAX_OUTPUT_CHARS`      | `--max-output-chars`      | `64000`                                      |
+| `limits.maxRunMs`                  | `WORKER_MCP_RUN_TIMEOUT_MS`        | `--run-timeout-ms`        | `1800000` (30 min)                           |
+| `limits.maxWaitMs`                 | `WORKER_MCP_MAX_WAIT_MS`           | `--max-wait-ms`           | `50000`                                      |
+| `limits.runStartTimeoutMs`         | `WORKER_MCP_RUN_START_TIMEOUT_MS`  | `--run-start-timeout-ms`  | `15000`                                      |
+| `limits.maxWorkers`                | `WORKER_MCP_MAX_WORKERS`           | `--max-workers`           | `4`                                          |
+| `limits.idleTimeoutMs`             | `WORKER_MCP_IDLE_TIMEOUT_MS`       | `--idle-timeout-ms`       | `1800000` (30 min)                           |
+| `limits.allowedRoots`              | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                          |
+| `gate.approvalTimeoutMs`           | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                            |
+| `env.allow`                        | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                         |
+| `stateDir`                         | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`                 |
+| `runtimeDir`                       | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`    |
+| `gate.maxAutoApprove`              | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                     |
+| `gate.protectedPaths`              | (file only)                        |                           | none                                         |
+| `gate.mode`                        | `WORKER_MCP_GATE_MODE`             | `--gate-mode`             | `manual` (`auto` needs a classifier)         |
+| `gate.httpAllowCeiling`            | `WORKER_MCP_HTTP_ALLOW_CEILING`    | `--http-allow-ceiling`    | `HIGH`                                       |
+| `gate.onClassifierFailure`         | `WORKER_MCP_ON_CLASSIFIER_FAILURE` | `--on-classifier-failure` | `escalate` (or `deny`; never allow)          |
+| `gate.classifiers`                 | (file only)                        |                           | none                                         |
+| `gate.cache`, `gate.recentActions` | (file only)                        |                           | 1000 entries, 10 min; 10 actions             |
+| `audit.enabled`                    | `WORKER_MCP_AUDIT`                 | `--audit`                 | `true`                                       |
+| `audit.file`                       | `WORKER_MCP_AUDIT_FILE`            | `--audit-file`            | `<stateDir>/audit.jsonl`                     |
 
 - Numbers are positive integers; directories are absolute paths.
 - Also in the config file only (`limits.*`): `defaultWaitMs` (25000, never more
@@ -419,7 +474,7 @@ Lowest to highest:
   gate, is created when the first worker starts, and is removed on shutdown.
   Directories left by a killed server are removed at the next start only when
   their pid is no longer running.
-- `stateDir` is reserved; nothing is written there yet.
+- `stateDir` holds the audit log (see [Auto mode](#auto-mode-and-the-audit-log)); it is a protected path.
 - `gate.maxAutoApprove` (`LOW`, `MEDIUM` or `HIGH`, never `CRITICAL`) is the
   highest risk level a coordinator's policy may auto-approve. Policies given to
   `spawn_worker` and `set_risk_policy` are lowered to it, and the result
@@ -433,6 +488,56 @@ an earlier version is ignored and can be deleted.
 `summarize` arguments are deprecated and ignored: the full output is always returned, with a note.
 
 See [docs/security.md](docs/security.md) for the trust model and what the gate does and does not protect.
+
+### Auto mode and the audit log
+
+By default (`gate.mode: manual`) a call the rules rate above the worker's policy
+waits for the coordinator. In `auto` mode those calls go to an external HTTP
+classifier first. It allows or denies on its own when it is confident, and
+only uncertain calls, or ones it cannot answer, reach the coordinator.
+
+```json
+{
+	"gate": {
+		"mode": "auto",
+		"classifiers": [
+			{
+				"name": "local",
+				"url": "http://127.0.0.1:8787/classify",
+				"tokenFile": "/run/secrets/classifier_key"
+			}
+		]
+	}
+}
+```
+
+- The rules still decide first. LOW calls run; hard limits (protected paths)
+  and CRITICAL calls always go to the coordinator and are never sent to the
+  classifier. A classifier's `allow` needs confidence of 0.85 and a risk level
+  up to `gate.httpAllowCeiling` (default `HIGH`, separate from
+  `gate.maxAutoApprove`, which only bounds the coordinator's own policy); a
+  `deny` needs 0.6. If it fails (timeout, bad answer, breaker open), the call
+  goes to the coordinator, or is denied with `gate.onClassifierFailure: deny`.
+- A coordinator can switch classifiers off for one worker with
+  `policy.classifiers: "off"` in `spawn_worker` or `set_risk_policy`.
+- `auto` with no classifier is a configuration error. Commands, paths and up to
+  8 KiB of arguments are sent to the classifier: use a local or self-hosted
+  service. The protocol is in [docs/classifier-api.md](docs/classifier-api.md)
+  and is **provisional**.
+- The token is only ever a file path (`tokenFile`: mode 0600 or stricter, owned
+  by you; a symlink such as a sops-nix secret is judged by its target). It is
+  read at startup and again on `SIGHUP`, and is never in the environment, the
+  tool arguments, the logs or `--print-config`.
+- `get_gate_log` shows who decided each call (`decidedBy`: `rules`,
+  `http:<name>`, `cache`, `coordinator`, `timeout`, `cancel`; filter with
+  `decidedBy`) and every classifier consulted. A call that reaches you says
+  why (`escalatedBecause`) and what the classifiers answered.
+- Every decision is appended to a JSONL audit file (`audit.file`, default
+  `<stateDir>/audit.jsonl`, mode 0600, rotated at 10 MiB, three kept). It holds
+  metadata only: a digest of the arguments and a short preview, never full
+  arguments, file contents or tokens. If it cannot be written, decisions go on,
+  the problem is logged once and `list_workers` reports `auditDegraded: true`.
+  Set `audit.enabled: false` to turn it off.
 
 ### Pre-requisites
 
@@ -468,7 +573,7 @@ The full reference (inputs, results, errors, aliases) is in [docs/mcp-api.md](do
 | `get_gate_log`        | Every decision of the approval gate for a worker.                                        |
 | `terminate_worker`    | Stops a worker and frees its name and slot.                                              |
 
-`approve_action` has no `remember` option in this release: every call is decided on its own.
+`approve_action` takes `remember: "worker"` to also allow identical calls from that worker without asking, until it is terminated or its policy changes. It is ignored for hard limits, protected paths and CRITICAL calls, and the result says whether it applied (`remembered`).
 
 The deprecated 0.4 names stay for 0.5.x while `WORKER_MCP_LEGACY_TOOLS` is not `0`:
 `spawn_pi_session` (`spawn_worker`), `send_pi_command` (`start_run` and `wait_run`),
