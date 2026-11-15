@@ -29,7 +29,7 @@ R = read-only, D = destructive, I = idempotent, O = open world (the annotations;
 | `reject_action`       | `approvalId`, `reason?` (≤ 500, reaches the worker)                                  | `approvalId`, `runId`, `run`                                                       |     |  ✗  |  ✓  |     |
 | `list_workers`        | none                                                                                 | `workers[]`                                                                        |  ✓  |     |  ✓  |     |
 | `set_risk_policy`     | `workerId`, `policy`                                                                 | `effectivePolicy`, `clamped[]`, `notes[]`                                          |     |  ✗  |  ✓  |     |
-| `get_gate_log`        | `workerId`, `limit?` (≤ 200), `decidedBy?`                                           | `entries[]`                                                                        |  ✓  |     |  ✓  |     |
+| `get_gate_log`        | `workerId`, `limit?` (≤ 200), `decidedBy?`                                           | `entries[]` (each has `approvalId` for a call sent to you, and `providerCallId`)   |  ✓  |     |  ✓  |     |
 | `terminate_worker`    | `workerId`                                                                           | `workerId`, `closedRuns[]`                                                         |     |  ✓  |  ✓  |     |
 
 Notes:

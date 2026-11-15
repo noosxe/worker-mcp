@@ -68,6 +68,15 @@ const ALIASES = [
 	"get_auto_approved_log",
 ];
 
+const ALIAS_OF: Record<string, string> = {
+	spawn_pi_session: "spawn_worker",
+	send_pi_command: "start_run",
+	cancel_pi_command: "cancel_run",
+	terminate_pi_session: "terminate_worker",
+	list_pi_sessions: "list_workers",
+	get_auto_approved_log: "get_gate_log",
+};
+
 // readOnly, destructive, idempotent, openWorld; undefined where it is moot.
 const DESIGN: Record<string, [boolean, boolean | undefined, boolean, boolean]> =
 	{
@@ -134,6 +143,13 @@ describe("tool surface", () => {
 					t.outputSchema,
 					undefined,
 					`${name} keeps its text result`,
+				);
+				const target = tools.find((x) => x.name === ALIAS_OF[name])!;
+				assert.ok(t.annotations?.title, `${name} has a title`);
+				assert.deepStrictEqual(
+					{ ...t.annotations, title: undefined },
+					{ ...target.annotations, title: undefined },
+					`${name} has the annotations of ${ALIAS_OF[name]}`,
 				);
 			}
 		});
@@ -249,6 +265,13 @@ describe("tool surface", () => {
 			const entries = (log.structuredContent as any).entries;
 			assert.ok(entries.length > 0);
 			assert.ok(entries.some((e: any) => e.decidedBy === "coordinator"));
+			// The escalated call and the answer both name the approval.
+			const answered = entries.filter(
+				(e: any) => e.decidedBy === "coordinator",
+			);
+			assert.strictEqual(answered[0].approvalId, approval.approvalId);
+			assert.ok(answered[0].providerCallId);
+			assert.strictEqual("actionId" in answered[0], false);
 			assert.match(rawTextOf(log), /"untrustedPreview": "<worker_output /);
 			const only = await call(client, "get_gate_log", {
 				workerId: "flow",
