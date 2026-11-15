@@ -197,7 +197,10 @@ interface PostOptions {
 	url: URL;
 	headers: Record<string, string>;
 	body: string;
+	/** The time left until the deadline: what the timer runs on. */
 	timeoutMs: number;
+	/** The configured timeout, named in the error. */
+	reportedTimeoutMs: number;
 	signal: AbortSignal;
 }
 
@@ -264,7 +267,9 @@ function post(o: PostOptions): Promise<{ status: number; body: string }> {
 		const timer = setTimeout(() => {
 			req.destroy();
 			finish(() =>
-				reject(new ClassifierFailure(`no answer within ${o.timeoutMs} ms`)),
+				reject(
+					new ClassifierFailure(`no answer within ${o.reportedTimeoutMs} ms`),
+				),
 			);
 		}, o.timeoutMs);
 		const onAbort = () => {
@@ -482,6 +487,7 @@ export class HttpClassifier implements Classifier {
 			headers,
 			body: JSON.stringify(body),
 			timeoutMs: Math.max(1, deadline - this.now()),
+			reportedTimeoutMs: this.cfg.timeoutMs,
 			signal,
 		});
 		if (res.status < 200 || res.status > 299) {
