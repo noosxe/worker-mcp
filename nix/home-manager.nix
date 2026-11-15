@@ -2,10 +2,12 @@
 # config file, checked at build time. Used as
 #   imports = [ inputs.worker-mcp.homeManagerModules.default ];
 #   programs.worker-mcp.enable = true;
-# Secrets are file paths only (`tokenFile`); a token never enters the store.
+# Secrets are file paths only (`tokenFile`, `envFiles`); a secret never enters
+# the store.
 self:
 {
   config,
+  options,
   lib,
   pkgs,
   ...
@@ -59,14 +61,26 @@ let
     };
   };
 
-  classifierSettings = c: {
-    inherit (c) name url;
-  }
-  // lib.optionalAttrs (c.tokenFile != null) { inherit (c) tokenFile; }
-  // c.settings;
+  classifierSettings =
+    c:
+    {
+      inherit (c) name url;
+    }
+    // lib.optionalAttrs (c.tokenFile != null) { inherit (c) tokenFile; }
+    // c.settings;
+
+  # Names of env files go to the workers too: they are only given to the
+  # server so that the worker agent can use them.
+  passthrough = lib.unique (cfg.envPassthrough ++ lib.attrNames cfg.envFiles);
 
   # What the typed options say; `settings` is merged over it and wins.
-  typed = {
+  typed = lib.optionalAttrs (cfg.legacyTools != null) { inherit (cfg) legacyTools; } // {
+    providers.pi = lib.filterAttrs (_: v: v != null) {
+      path = cfg.piPath;
+      inherit (cfg) defaultModel;
+    };
+    limits = lib.optionalAttrs (cfg.allowedRoots != [ ]) { inherit (cfg) allowedRoots; };
+    env = lib.optionalAttrs (passthrough != [ ]) { allow = passthrough; };
     gate =
       lib.filterAttrs (_: v: v != null) {
         inherit (cfg.gate)
@@ -98,6 +112,44 @@ let
       '';
 
   inStore = path: lib.hasPrefix builtins.storeDir path;
+
+  # Starts the server with the env files read into the environment. Its
+  # stdout is the MCP channel, so it prints nothing before the exec; problems
+  # go to stderr and never include a value.
+  launcher = pkgs.writeShellScript "worker-mcp-launcher" ''
+    set -eu
+    ${lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg (toString value)}") cfg.env
+    )}
+    ${lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (name: file: ''
+        if ! _v=$(${pkgs.coreutils}/bin/cat ${lib.escapeShellArg file} 2>/dev/null && printf x); then
+          echo "worker-mcp: cannot read the file for ${name}" >&2
+          exit 1
+        fi
+        _v=''${_v%x}
+        export ${name}="''${_v%$'\n'}"
+      '') cfg.envFiles
+    )}
+    unset _v
+    exec ${lib.getExe cfg.package} "$@"
+  '';
+
+  server = if cfg.claude.command != null then cfg.claude.command else toString launcher;
+  plugin = self.lib.mkClaudePlugin {
+    inherit pkgs;
+    command = server;
+  };
+
+  claudeDir =
+    if
+      options ? programs && options.programs ? claude-code && options.programs.claude-code ? configDir
+    then
+      config.programs.claude-code.configDir
+    else
+      "${config.home.homeDirectory}/.claude";
+
+  envName = n: builtins.match "[A-Za-z_][A-Za-z0-9_]*" n != null;
   tokenFiles =
     (map (c: c.tokenFile) (lib.filter (c: c.tokenFile != null) cfg.classifiers))
     ++ lib.concatMap (c: lib.optional (c ? tokenFile) c.tokenFile) (effective.gate.classifiers or [ ]);
@@ -130,6 +182,124 @@ in
           limits.allowedRoots = [ "''${config.home.homeDirectory}/src" ];
         }
       '';
+    };
+
+    piPath = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "The pi binary (`providers.pi.path`). Default (null): `pi` from the PATH.";
+      example = lib.literalExpression "lib.getExe pkgs.pi";
+    };
+
+    defaultModel = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        Model for pi workers spawned without `model`, as `<provider>/<model>`
+        (`providers.pi.defaultModel`). An explicit `model` always wins.
+      '';
+      example = "zai/glm-5.3";
+    };
+
+    allowedRoots = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = ''
+        Absolute directories a worker's `cwd` must lie in
+        (`limits.allowedRoots`). Default: no restriction.
+      '';
+      example = [ "/home/user/src" ];
+    };
+
+    legacyTools = mkOption {
+      type = types.nullOr types.bool;
+      default = null;
+      description = "Whether the deprecated pi-named tools are listed. Server default: yes. `false` hides them.";
+    };
+
+    envPassthrough = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = ''
+        Extra environment names (or `PREFIX_*` patterns) workers receive
+        (`env.allow`). The names in `envFiles` are added automatically.
+      '';
+    };
+
+    env = mkOption {
+      type = types.attrsOf (
+        types.oneOf [
+          types.str
+          types.int
+          types.bool
+        ]
+      );
+      default = { };
+      description = ''
+        Plain environment variables the launcher sets for the server. The
+        values end up in the Nix store: never put a secret here, use
+        `envFiles`.
+      '';
+      example = {
+        WORKER_MCP_RUN_TIMEOUT_MS = 600000;
+      };
+    };
+
+    envFiles = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      description = ''
+        Environment variables read from files when the server starts: the
+        name is the variable, the value is an absolute path outside the Nix
+        store, for example a sops-nix secret. The launcher strips one
+        trailing newline, never prints a value, and writes nothing to stdout.
+        The server starts with an error on stderr when a file is unreadable.
+        These names are also added to `envPassthrough`, so the worker agent
+        (for example pi, which needs its provider's API key) gets them; use
+        `tokenFile` on a classifier for a secret only the server needs.
+      '';
+      example = lib.literalExpression ''
+        { ZAI_API_KEY = config.sops.secrets.zai_api_key.path; }
+      '';
+    };
+
+    launcher = mkOption {
+      type = types.package;
+      readOnly = true;
+      internal = true;
+      default = launcher;
+      description = "The generated launcher script (reads `envFiles`, then runs the server).";
+    };
+
+    claude = {
+      enable = mkEnableOption ''
+        the worker-mcp plugin for Claude Code (terminal and desktop app), linked
+        as one symlink to the whole plugin folder in the skills directory.
+        It does not use `programs.claude-code.plugins`, whose per-entry
+        symlinks Claude Code rejects ("Path escapes plugin directory"), and
+        does not need `programs.claude-code` to be enabled'';
+      name = mkOption {
+        type = types.strMatching "[A-Za-z0-9._-]+";
+        default = "worker-mcp";
+        description = "Name of the link in the skills directory.";
+      };
+      command = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Absolute path of the command the plugin runs as the server, in
+          place of the generated launcher (a wrapper of your own). Its
+          environment, `env` and `envFiles` are then yours to handle.
+        '';
+        example = lib.literalExpression ''"''${myLauncher}/bin/my-launcher"'';
+      };
+      package = mkOption {
+        type = types.package;
+        readOnly = true;
+        internal = true;
+        default = plugin;
+        description = "The plugin folder.";
+      };
     };
 
     gate = {
@@ -203,9 +373,34 @@ in
         assertion = lib.all (p: lib.hasPrefix "/" p && !inStore p) tokenFiles;
         message = "programs.worker-mcp: a tokenFile must be an absolute path outside the Nix store (for example a sops-nix secret path); the store is world-readable.";
       }
+      {
+        assertion = lib.all (p: lib.hasPrefix "/" p && !inStore p) (lib.attrValues cfg.envFiles);
+        message = "programs.worker-mcp.envFiles: each value must be an absolute path outside the Nix store (for example a sops-nix secret path); the store is world-readable.";
+      }
+      {
+        assertion = lib.all envName (lib.attrNames cfg.env ++ lib.attrNames cfg.envFiles);
+        message = "programs.worker-mcp: names in env and envFiles must be valid environment variable names.";
+      }
+      {
+        assertion = lib.all (p: lib.hasPrefix "/" p) cfg.allowedRoots;
+        message = "programs.worker-mcp.allowedRoots: each entry must be an absolute path.";
+      }
+      {
+        assertion = cfg.claude.command == null || lib.hasPrefix "/" cfg.claude.command;
+        message = "programs.worker-mcp.claude.command must be an absolute path.";
+      }
+      {
+        assertion = !cfg.claude.enable || lib.hasPrefix "${config.home.homeDirectory}/" claudeDir;
+        message = "programs.worker-mcp.claude: the Claude Code config directory (${claudeDir}) must be inside the home directory.";
+      }
     ];
 
     home.packages = [ cfg.package ];
     xdg.configFile."worker-mcp/config.json".source = checked;
+
+    # One symlink to the whole plugin folder.
+    home.file = mkIf cfg.claude.enable {
+      "${claudeDir}/skills/${cfg.claude.name}".source = plugin;
+    };
   };
 }

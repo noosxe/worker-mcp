@@ -36,6 +36,12 @@ describe(`config CLI (${RUNTIME})`, () => {
 		assert.deepStrictEqual(fs.readdirSync(iso.env.XDG_RUNTIME_DIR), []);
 	});
 
+	test("--print-config shows the default model", () => {
+		const r = run(["--print-config", "--pi-default-model", "zai/m"]);
+		assert.strictEqual(r.status, 0, r.stderr);
+		assert.strictEqual(JSON.parse(r.stdout).providers.pi.defaultModel, "zai/m");
+	});
+
 	test("an invalid setting fails startup and names the variable", () => {
 		const r = run([], { WORKER_MCP_MAX_OUTPUT_CHARS: "abc" });
 		assert.strictEqual(r.status, 1);

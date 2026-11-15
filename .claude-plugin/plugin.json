@@ -1,0 +1,32 @@
+{
+	"name": "worker-mcp",
+	"displayName": "worker-mcp",
+	"description": "Delegate tasks to local coding-agent workers through the worker-mcp MCP server, with a risk-gated approval flow.",
+	"author": {
+		"name": "noosxe"
+	},
+	"homepage": "https://github.com/noosxe/worker-mcp",
+	"repository": "https://github.com/noosxe/worker-mcp",
+	"license": "MIT",
+	"keywords": ["mcp", "agents", "workers", "pi"],
+	"userConfig": {
+		"allowed_roots": {
+			"type": "string",
+			"title": "Allowed directories",
+			"description": "Comma-separated absolute directories a worker's cwd must lie in, for example /home/user/src",
+			"required": true
+		},
+		"pi_path": {
+			"type": "string",
+			"title": "pi binary",
+			"description": "Path to the pi binary, or just pi to find it on PATH",
+			"default": "pi"
+		},
+		"default_model": {
+			"type": "string",
+			"title": "Default model",
+			"description": "Model for workers spawned without one, as <provider>/<model>. Leave empty for none.",
+			"default": ""
+		}
+	}
+}

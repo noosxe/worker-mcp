@@ -174,14 +174,45 @@ the build instead of the first start. It needs no overlay.
     # ...and `settings` for any key of the config file (it wins over the
     # typed options).
     settings = {
-      limits.allowedRoots = [ "${config.home.homeDirectory}/src" ];
       gate.onClassifierFailure = "deny";
     };
+
+    # Typed options for the pi provider and the limits (config file keys).
+    piPath = lib.getExe pkgs.pi;
+    defaultModel = "zai/glm-5.3";
+    allowedRoots = [ "/home/user/src" ];
+    legacyTools = false;
+
+    # Secrets the worker agent needs, read from files when the server starts.
+    # The names are also added to `env.allow`, so workers get them.
+    envFiles.ZAI_API_KEY = config.sops.secrets.zai_api_key.path;
+    # Plain values (these end up in the Nix store: no secrets).
+    env.WORKER_MCP_MAX_WORKERS = 2;
+
+    # Link the Claude Code plugin (skill and MCP server) into ~/.claude.
+    claude.enable = true;
   };
 
   sops.secrets.classifier_key = { };
+  sops.secrets.zai_api_key = { };
 }
 ```
+
+| Option                                                  | Meaning                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `piPath`, `defaultModel`, `allowedRoots`, `legacyTools` | `providers.pi.path`, `providers.pi.defaultModel`, `limits.allowedRoots`, `legacyTools` in the generated, build-checked config file (`settings` wins)                                                                                                                                                                                                                                                      |
+| `envPassthrough`                                        | `env.allow`: extra environment names workers receive                                                                                                                                                                                                                                                                                                                                                      |
+| `env`                                                   | Plain environment variables for the server, set by the launcher                                                                                                                                                                                                                                                                                                                                           |
+| `envFiles`                                              | Environment name → absolute file outside the store, read at start-up by the launcher (one trailing newline stripped). The names are added to `env.allow` automatically                                                                                                                                                                                                                                    |
+| `claude.enable`                                         | Link the plugin as **one** `home.file` symlink to the plugin folder at `<configDir>/skills/<claude.name>`. `<configDir>` is `programs.claude-code.configDir` when that module is imported, else `~/.claude`; `programs.claude-code` need not be enabled. `programs.claude-code.plugins` is not used: it links entries one by one, and Claude Code rejects such a plugin ("Path escapes plugin directory") |
+| `claude.name`                                           | Name of the link (default `worker-mcp`)                                                                                                                                                                                                                                                                                                                                                                   |
+| `claude.command`                                        | Absolute path of a wrapper of your own to run as the server, in place of the generated launcher                                                                                                                                                                                                                                                                                                           |
+
+The generated launcher (`programs.worker-mcp.launcher`) exports `env`, reads
+each `envFiles` entry into its variable and runs `worker-mcp`. It prints
+nothing before that, since stdout is the MCP channel; a file that cannot be
+read stops it with a message on stderr that names the variable, never a value.
+Use it for any harness, not only Claude Code.
 
 `settings` mirrors the whole config schema (see [Settings](#settings)).
 Secrets are file paths only; the module refuses a path in the Nix store, which
@@ -190,6 +221,23 @@ symlink to a mode 0400 file owned by you; give the secret the right `owner` if
 sops-nix runs as another user. pi is not in the package's closure; to use a Nix-built pi,
 set `settings.providers.pi.path = "${pkgs.some-pi}/bin/pi"` or export
 `WORKER_MCP_PI_PATH`.
+
+##### Option D: Build the Claude Code plugin yourself
+
+`lib.mkClaudePlugin { pkgs, command ? …, env ? { } }` returns the plugin folder
+(`.claude-plugin/plugin.json`, a `.mcp.json` whose `command` is absolute, and
+the skill) as a directory of real files. `command` defaults to this flake's
+`worker-mcp`; pass your own launcher to set up the environment, and `env` for
+plain variables. Link the whole folder, for example to `~/.claude/skills/worker-mcp`.
+
+```nix
+home.file.".claude/skills/worker-mcp".source = inputs.worker-mcp.lib.mkClaudePlugin {
+  inherit pkgs;
+  command = "${myLauncher}/bin/my-launcher";
+};
+```
+
+`programs.worker-mcp.claude.enable` does this for you.
 
 ---
 
@@ -322,6 +370,40 @@ Add the server to `claude_desktop_config.json` (on macOS under `~/Library/Applic
 
 Restart the app, then ask Claude to call `list_providers`.
 
+### The Claude Code plugin
+
+The repository is also a Claude Code plugin: the server, the skill that teaches
+the coordinator the delegation flow (`skills/worker-mcp/SKILL.md`) and its
+settings in one install. Claude Code loads plugins in both the terminal and the
+desktop app. Without Nix, install `worker-mcp` and `pi` first (see above), then:
+
+```
+/plugin marketplace add noosxe/worker-mcp
+/plugin install worker-mcp@worker-mcp
+```
+
+Claude Code asks for three values when the plugin is enabled and passes them to
+the server (`/config` shows them again):
+
+| Option          | Server setting                                        |
+| --------------- | ----------------------------------------------------- |
+| `allowed_roots` | `WORKER_MCP_ALLOWED_ROOTS`, comma-separated, required |
+| `pi_path`       | `WORKER_MCP_PI_PATH`, default `pi`                    |
+| `default_model` | `WORKER_MCP_PI_DEFAULT_MODEL`, e.g. `zai/glm-5.3`     |
+
+The plugin runs the command `worker-mcp`, so it must be on the `PATH` of the
+app (the desktop app does not inherit your shell's; see the pitfalls below), and
+the tools appear as `mcp__plugin_worker-mcp_worker-mcp__*`. Other settings come
+from the [config file](#settings). A model provider's API key is not a plugin
+option: put it in the environment the app starts with, and name it in
+`env.allow` / `WORKER_MCP_ENV_PASSTHROUGH` so that pi gets it.
+
+The plugin files are not part of the npm package: the plugin is installed from
+the repository (the marketplace entry is the repository root, so it follows the
+revision you installed) or built by Nix, and a copy inside the package would
+only be a second one to keep in step. The Nix package leaves them out for the
+same reason; `lib.mkClaudePlugin` builds the folder from the same files.
+
 ### Pitfalls
 
 - The desktop app does not inherit your shell's `PATH`. Use absolute paths for `worker-mcp` and `pi`; `worker-mcp --print-config` shows what the server resolved.
@@ -429,6 +511,7 @@ Lowest to highest:
 | ---------------------------------- | ---------------------------------- | ------------------------- | -------------------------------------------- |
 | (file location)                    | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json`    |
 | `providers.pi.path`                | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                       |
+| `providers.pi.defaultModel`        | `WORKER_MCP_PI_DEFAULT_MODEL`      | `--pi-default-model`      | none (pi's own default)                      |
 | `providers.pi.startupTimeoutMs`    | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                      |
 | `legacyTools`                      | `WORKER_MCP_LEGACY_TOOLS`          |                           | `true` (`0` hides the deprecated tools)      |
 | `limits.commandTimeoutMs`          | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | unset: the deprecated send waits `maxWaitMs` |

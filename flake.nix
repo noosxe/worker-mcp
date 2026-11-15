@@ -167,6 +167,10 @@ EOF
         };
       });
 
+      # `lib.mkClaudePlugin { pkgs, command ? …, env ? { } }`: the Claude Code
+      # plugin folder. See the README.
+      lib.mkClaudePlugin = import ./nix/claude-plugin.nix { inherit self; };
+
       # Home Manager module: `programs.worker-mcp`. See the README.
       homeManagerModules = {
         worker-mcp = import ./nix/home-manager.nix self;
@@ -178,6 +182,7 @@ EOF
           # Evaluates the module with a sample config, builds the checked
           # config file with the package, and inspects both.
           home-manager-module = import ./nix/module-check.nix { inherit self pkgs; };
+          claude-plugin = import ./nix/plugin-check.nix { inherit self pkgs; };
         }
       );
 

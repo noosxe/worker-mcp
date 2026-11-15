@@ -52,6 +52,7 @@ Options:
       --print-config          Print the effective configuration and exit
       --config <path>         JSON config file (default: $XDG_CONFIG_HOME/worker-mcp/config.json)
       --pi-path <path>        Path to the pi binary
+      --pi-default-model <model>  Model for workers spawned without one, as <provider>/<model>
       --pi-startup-timeout-ms <n>  How long a spawn waits for pi's gate (default 60000)
       --command-timeout-ms <n>  Default wait of the deprecated send_pi_command (at most --max-wait-ms)
       --run-timeout-ms <n>    Wall-clock limit for one run (default 1800000)

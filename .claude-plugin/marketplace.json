@@ -1,0 +1,12 @@
+{
+	"name": "worker-mcp",
+	"description": "worker-mcp: local coding-agent workers for Claude Code",
+	"owner": { "name": "noosxe" },
+	"plugins": [
+		{
+			"name": "worker-mcp",
+			"source": "./",
+			"description": "Delegate tasks to local coding-agent workers through the worker-mcp MCP server."
+		}
+	]
+}

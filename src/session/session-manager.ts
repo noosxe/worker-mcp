@@ -183,23 +183,30 @@ export class SessionManager {
 		}
 		let id = newWorkerId();
 		while (this.sessions.has(id)) id = newWorkerId();
-		const session = new Session(id, realCwd, model, systemPrompt, riskPolicy, {
-			config: this.config,
-			runtime: this.runtime,
-			env: this.env,
-			children: this.children,
-			provider,
-			runs: this.runs,
-			gateServices: this.gate,
-			name,
-			now: this.now,
-			onGone: (s) => {
-				if (this.sessions.get(s.sessionId) === s) {
-					this.sessions.delete(s.sessionId);
-					this.changed();
-				}
+		const session = new Session(
+			id,
+			realCwd,
+			model ?? this.defaultModel(provider.id),
+			systemPrompt,
+			riskPolicy,
+			{
+				config: this.config,
+				runtime: this.runtime,
+				env: this.env,
+				children: this.children,
+				provider,
+				runs: this.runs,
+				gateServices: this.gate,
+				name,
+				now: this.now,
+				onGone: (s) => {
+					if (this.sessions.get(s.sessionId) === s) {
+						this.sessions.delete(s.sessionId);
+						this.changed();
+					}
+				},
 			},
-		});
+		);
 		this.sessions.set(id, session);
 		void replaced?.terminate();
 		this.startReaper();
@@ -239,6 +246,13 @@ export class SessionManager {
 				// a listener must never break the manager
 			}
 		}
+	}
+
+	/** The model a worker of this provider gets when `spawn_worker` names none. */
+	public defaultModel(providerId: string): string | undefined {
+		return providerId === "pi"
+			? this.config.providers.pi.defaultModel
+			: undefined;
 	}
 
 	/** Ids of the providers a spawn may name; the first is the default. */

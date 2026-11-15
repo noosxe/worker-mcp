@@ -65,6 +65,11 @@ export interface Config {
 	providers: {
 		pi: {
 			path: string;
+			/**
+			 * Model for workers spawned without `model`, as `<provider>/<model>`.
+			 * An explicit `model` always wins.
+			 */
+			defaultModel?: string;
 			/** How long a spawn waits for pi to confirm its approval gate. */
 			startupTimeoutMs: number;
 		};
@@ -234,6 +239,7 @@ export const configFileSchema = z.strictObject({
 			pi: z
 				.strictObject({
 					path: z.string().min(1).optional(),
+					defaultModel: z.string().min(1).optional(),
 					startupTimeoutMs: positiveInt.optional(),
 				})
 				.optional(),
@@ -291,6 +297,10 @@ interface EnvVar {
 export const ENV_VARS = {
 	config: { name: "WORKER_MCP_CONFIG", key: "config file path" },
 	piPath: { name: "WORKER_MCP_PI_PATH", key: "providers.pi.path" },
+	piDefaultModel: {
+		name: "WORKER_MCP_PI_DEFAULT_MODEL",
+		key: "providers.pi.defaultModel",
+	},
 	piStartupTimeout: {
 		name: "WORKER_MCP_PI_STARTUP_TIMEOUT_MS",
 		key: "providers.pi.startupTimeoutMs",
@@ -341,6 +351,11 @@ interface FlagDef {
 const VALUE_FLAGS = {
 	config: { flag: "--config", key: "config file path", kind: "string" },
 	piPath: { flag: "--pi-path", key: "providers.pi.path", kind: "string" },
+	piDefaultModel: {
+		flag: "--pi-default-model",
+		key: "providers.pi.defaultModel",
+		kind: "string",
+	},
 	piStartupTimeout: {
 		flag: "--pi-startup-timeout-ms",
 		key: "providers.pi.startupTimeoutMs",
@@ -546,6 +561,7 @@ function stringLayer(
 	source: string,
 	values: {
 		piPath?: string;
+		piDefaultModel?: string;
 		piStartupTimeout?: { key: string; raw: string };
 		commandTimeout?: { key: string; raw: string };
 		maxOutputChars?: { key: string; raw: string };
@@ -561,7 +577,12 @@ function stringLayer(
 		runtimeDir?: string;
 		maxAutoApprove?: string;
 	},
-	keys: { piPath: string; stateDir: string; runtimeDir: string },
+	keys: {
+		piPath: string;
+		piDefaultModel: string;
+		stateDir: string;
+		runtimeDir: string;
+	},
 ): FileLayer {
 	const layer: FileLayer = {};
 	const check = <T>(key: string, schema: z.ZodType<T>, value: unknown): T => {
@@ -581,6 +602,18 @@ function stringLayer(
 	}
 	if (values.piPath !== undefined) {
 		layer.providers = { pi: { path: values.piPath } };
+	}
+	if (values.piDefaultModel !== undefined) {
+		layer.providers = {
+			pi: {
+				...layer.providers?.pi,
+				defaultModel: check(
+					keys.piDefaultModel,
+					z.string().min(1),
+					values.piDefaultModel,
+				),
+			},
+		};
 	}
 	if (values.piStartupTimeout) {
 		layer.providers = {
@@ -689,6 +722,11 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 			keysOf(),
 		),
 		stringLayer(
+			label(ENV_VARS.piDefaultModel),
+			{ piDefaultModel: get(ENV_VARS.piDefaultModel) },
+			keysOf(),
+		),
+		stringLayer(
 			label(ENV_VARS.piStartupTimeout),
 			{ piStartupTimeout: num(ENV_VARS.piStartupTimeout) },
 			keysOf(),
@@ -783,6 +821,7 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 function keysOf() {
 	return {
 		piPath: ENV_VARS.piPath.key,
+		piDefaultModel: ENV_VARS.piDefaultModel.key,
 		stateDir: ENV_VARS.stateDir.key,
 		runtimeDir: ENV_VARS.runtimeDir.key,
 	};
@@ -795,6 +834,7 @@ function flagLayer(flags: CliFlags): FileLayer {
 		const source = `flag ${def.flag}`;
 		const keys = {
 			piPath: VALUE_FLAGS.piPath.key,
+			piDefaultModel: VALUE_FLAGS.piDefaultModel.key,
 			stateDir: VALUE_FLAGS.stateDir.key,
 			runtimeDir: VALUE_FLAGS.runtimeDir.key,
 		};
@@ -802,6 +842,9 @@ function flagLayer(flags: CliFlags): FileLayer {
 		switch (name) {
 			case "piPath":
 				parts.push(stringLayer(source, { piPath: raw }, keys));
+				break;
+			case "piDefaultModel":
+				parts.push(stringLayer(source, { piDefaultModel: raw }, keys));
 				break;
 			case "piStartupTimeout":
 				parts.push(stringLayer(source, { piStartupTimeout: entry }, keys));
@@ -860,6 +903,8 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		providers: {
 			pi: {
 				path: over.providers?.pi?.path ?? base.providers?.pi?.path,
+				defaultModel:
+					over.providers?.pi?.defaultModel ?? base.providers?.pi?.defaultModel,
 				startupTimeoutMs:
 					over.providers?.pi?.startupTimeoutMs ??
 					base.providers?.pi?.startupTimeoutMs,
@@ -1058,6 +1103,7 @@ function applyDefaults(
 		providers: {
 			pi: {
 				path: layer.providers?.pi?.path || "pi",
+				defaultModel: layer.providers?.pi?.defaultModel,
 				startupTimeoutMs:
 					layer.providers?.pi?.startupTimeoutMs ??
 					DEFAULT_PI_STARTUP_TIMEOUT_MS,

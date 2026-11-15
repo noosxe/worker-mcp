@@ -159,6 +159,10 @@ export const ListProvidersOut = z.object({
 			id: z.string(),
 			displayName: z.string().optional(),
 			default: z.boolean(),
+			defaultModel: z
+				.string()
+				.optional()
+				.describe("Model used when spawn_worker omits `model`."),
 			available: z.boolean(),
 			version: z.string().optional(),
 			reason: z.string().optional(),
