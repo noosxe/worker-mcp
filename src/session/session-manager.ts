@@ -125,27 +125,6 @@ export class SessionManager {
 			);
 		}
 		const realCwd = this.resolveCwd(cwd);
-		if (name !== undefined) {
-			const existing = this.findByName(name);
-			if (existing) {
-				// A session with no subprocess is dead however its status reads.
-				if (existing.isAlive()) {
-					throw new ToolError(
-						"INVALID_ARGUMENT",
-						`A worker named ${name} is already running; choose another name or terminate it first.`,
-					);
-				}
-				this.sessions.delete(existing.sessionId);
-				await existing.terminate();
-			}
-		}
-		const max = this.config.limits.maxWorkers;
-		if (this.sessions.size >= max) {
-			throw new ToolError(
-				"LIMIT_REACHED",
-				`${max} workers are already running (the limit); terminate one or wait for an idle one to be closed.`,
-			);
-		}
 
 		let provider;
 		try {
@@ -153,8 +132,26 @@ export class SessionManager {
 		} catch (e) {
 			throw new ToolError("PROVIDER_UNAVAILABLE", firstLine(e));
 		}
-		// Reserve the slot before awaiting anything, so two spawns cannot both
-		// pass the limit.
+
+		// Everything from here to `sessions.set` is synchronous: nothing can
+		// register a worker, or take its name or slot, in between.
+		let replaced: Session | undefined;
+		if (name !== undefined) {
+			const existing = this.findByName(name);
+			if (existing) {
+				// A worker still starting is live. Only one whose process is gone
+				// may be replaced.
+				if (existing.isAlive() || existing.isStarting()) {
+					throw new ToolError(
+						"INVALID_ARGUMENT",
+						`A worker named ${name} is already running; choose another name or terminate it first.`,
+					);
+				}
+				this.sessions.delete(existing.sessionId);
+				replaced = existing;
+			}
+		}
+		const max = this.config.limits.maxWorkers;
 		if (this.sessions.size >= max) {
 			throw new ToolError(
 				"LIMIT_REACHED",
@@ -179,6 +176,7 @@ export class SessionManager {
 			},
 		});
 		this.sessions.set(id, session);
+		void replaced?.terminate();
 		this.startReaper();
 
 		try {

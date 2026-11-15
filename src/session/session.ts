@@ -212,6 +212,7 @@ export class Session {
 	/** When the worker last had nothing to do (epoch ms). */
 	private lastActiveAt: number;
 	private goneReported = false;
+	private starting = false;
 
 	constructor(
 		sessionId: string,
@@ -311,7 +312,21 @@ export class Session {
 		return this.currentRun?.run ?? null;
 	}
 
+	/** `start()` is in progress: the worker is not alive yet but is taken. */
+	public isStarting(): boolean {
+		return this.starting;
+	}
+
 	public async start(): Promise<void> {
+		this.starting = true;
+		try {
+			await this.open();
+		} finally {
+			this.starting = false;
+		}
+	}
+
+	private async open(): Promise<void> {
 		if (!this.provider) {
 			throw new Error("Cannot start a worker: no provider was given.");
 		}

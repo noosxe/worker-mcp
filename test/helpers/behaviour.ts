@@ -692,6 +692,27 @@ export function behaviourTests(name: string, layer: Layer) {
 			});
 		});
 
+		test("concurrent spawns of one name: one wins, the other is INVALID_ARGUMENT", async () => {
+			await withServer(async (client) => {
+				const results = await Promise.all(
+					[1, 2].map(() =>
+						call(client, TOOLS.spawn, { name: "race", cwd: iso.cwd }),
+					),
+				);
+				const won = results.filter((r) => !r.isError);
+				const lost = results.filter((r) => r.isError);
+				assert.strictEqual(won.length, 1);
+				assert.strictEqual(lost.length, 1);
+				assert.match(textOf(lost[0]), /^INVALID_ARGUMENT: /);
+				const id = textOf(won[0]).match(/worker (w_[a-z0-9]{8})/)?.[1];
+				const list = JSON.parse(await callOk(client, TOOLS.list, {}));
+				assert.deepStrictEqual(
+					list.map((w: { workerId: string }) => w.workerId),
+					[id],
+				);
+			});
+		});
+
 		test("a worker that closes its stdin does not take the server down", async () => {
 			await withServer(async (client) => {
 				await spawnSession(client, "stdin-close");
