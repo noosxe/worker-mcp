@@ -71,7 +71,7 @@ Whatever a worker wrote (output, tool calls, commands, paths, log text) is data 
 ## 5. Operations
 
 - **Locating pi**: `providers.pi.path` (`WORKER_MCP_PI_PATH`), else `pi` on `PATH`.
-- **Per-spawn gate**: the gate extension is a constant compiled into the server. Each spawn writes it to a fresh private directory under the runtime directory (mode 0700, file 0600) and starts pi with `--no-extensions --no-mcp --no-approve` and the gate loaded. If it cannot be written, the spawn is refused. Nothing is written under `~/.pi`.
+- **Per-spawn gate**: the gate extension is a constant compiled into the server. Each spawn writes it to a fresh private directory under the runtime directory (mode 0700, file 0600) and starts pi with `--no-extensions --no-mcp --no-approve --no-session` and the gate loaded. If it cannot be written, the spawn is refused. Nothing is written under `~/.pi`.
 - **Lifecycle**: a worker's process and everything it started are killed on terminate, idle close and shutdown (SIGTERM, then SIGKILL after a grace period). A worker whose process died is removed; its runs stay readable.
 - **Logs**: each worker's stderr and server-side log lines are kept in a bounded ring, exposed as the resource `worker-mcp://workers/{workerId}/log`.
 - **Configuration**: see the [README](../README.md#configuration); `worker-mcp --print-config` prints the effective values.

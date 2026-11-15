@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- pi workers run with `--no-session`, so pi no longer saves worker
+  conversations under its own session directory.
+
 ## 0.5.0
 
 ### Neutral tool surface (0.5.0)

@@ -26,9 +26,10 @@ tool calls, usage, `provider/id` models. No resume.
    `WORKER_MCP_GATE_NONCE`, the one variable added over the allowlisted
    environment.
 4. pi is started through the core with `--mode rpc --no-extensions --no-mcp
-   --no-approve -e <gate>` (plus `--system-prompt` when given). The first removes
-   discovered extensions, the second built-in MCP servers, the third
-   trust-gated project files.
+   --no-approve --no-session -e <gate>` (plus `--system-prompt` when given). The
+   first removes discovered extensions, the second built-in MCP servers, the
+   third trust-gated project files, the last stops pi from saving the worker's
+   conversation under its own session directory (workers are not persisted).
 5. `open()` waits (`providers.pi.startupTimeoutMs`, default 60 s) for `extension_ui_request {method: "setStatus",
    statusKey: "worker-mcp-gate", statusText: "ready:<nonce>"}`. It rejects, and
    the core kills the process, when pi exits first (a missing or throwing `-e`
@@ -105,6 +106,5 @@ than intended.
 
 ## Not done yet
 
-`--no-session` and a `--model` flag instead of `set_model` are in the design but
-change what pi writes or how a bare model name is read, which cannot be checked
-without a model call.
+A `--model` flag instead of `set_model` is in the design but changes how a bare
+model name is read, which cannot be checked without a model call.
