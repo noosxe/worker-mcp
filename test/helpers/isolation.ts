@@ -74,16 +74,17 @@ export async function waitUntil(
 export const pidGone = (pid: number) => !isAlive(pid);
 
 /**
- * Private HOME, XDG_STATE_HOME and XDG_RUNTIME_DIR: the server writes under
+ * Private HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and XDG_RUNTIME_DIR: the server writes under
  * ~/.config/worker-mcp and must never touch ~/.pi.
  */
 export function createIsolation(): Isolation {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-test-"));
 	const home = path.join(root, "home");
+	const config = path.join(root, "config");
 	const state = path.join(root, "state");
 	const runtime = path.join(root, "runtime");
 	const cwd = path.join(root, "workspace");
-	for (const dir of [home, state, runtime, cwd]) fs.mkdirSync(dir);
+	for (const dir of [home, config, state, runtime, cwd]) fs.mkdirSync(dir);
 	fs.chmodSync(runtime, 0o700);
 	const recordFile = path.join(root, "fake-pi.jsonl");
 
@@ -105,6 +106,7 @@ export function createIsolation(): Isolation {
 		env: {
 			PATH: process.env.PATH ?? "",
 			HOME: home,
+			XDG_CONFIG_HOME: config,
 			XDG_STATE_HOME: state,
 			XDG_RUNTIME_DIR: runtime,
 			WORKER_MCP_PI_PATH: FAKE_PI,
