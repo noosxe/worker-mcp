@@ -56,6 +56,10 @@ export const PI_SANDBOX_PROFILE: SandboxProfile = {
 	roHome: [".pi"],
 	rwHome: [],
 	overlayHome: [".pi/agent"],
+	// pi itself needs `auth.json` (and `models.json`), the commands it runs do
+	// not: they get an empty directory there, in their own sandbox.
+	toolHideHome: [".pi/agent"],
+	shellTool: { name: "bash", command: "command" },
 };
 
 export const PI_CAPABILITIES: ProviderCapabilities = {

@@ -4,6 +4,24 @@
 
 ### Security
 
+- **A sandboxed worker's shell commands can no longer read pi's credentials.**
+  Inside the `workspace` sandbox `~/.pi/agent/auth.json` was readable by any
+  command (`cat`, a glob, an interpreter, a symlink) and the pi process by
+  `/proc/<pid>/environ`, `fd`, `root` and `mem`; only the gate's protected-path
+  rule stood in the way. Every allowed `bash` call now runs in a second
+  bubblewrap inside the first, with an empty `~/.pi/agent` and a process
+  table of its own. New setting `sandbox.toolIsolation` (`auto` default,
+  `require`, `off`; also `WORKER_MCP_SANDBOX_TOOL_ISOLATION`,
+  `--sandbox-tool-isolation` and the Home Manager option
+  `programs.worker-mcp.sandbox.toolIsolation`): `auto` warns in the spawn
+  `notes` where nesting is refused, `require` fails the spawn. The startup check
+  also tests nesting. At the gate, `~/.pi/agent/models.json` joins `auth.json`
+  as a hard-limit read, and so does `/proc/<pid>/environ`, `mem`, `maps`, `fd`,
+  `root`, `cwd` for every tool. What is left (pi's own `read` tool and the
+  coordinator's approval, a key passed in the environment, the open network)
+  and what pi would have to offer are written up in
+  [docs/security.md](docs/security.md#the-agents-credentials).
+
 - **stderr is metadata only.** The `[INTERCEPTED]`, `[AUTO-APPROVED]` and
   `[AUTO-DENIED]` lines used to carry the whole tool input (a full shell
   command, or the file content of a `write`); Claude Code keeps that stderr on

@@ -208,16 +208,16 @@ the build instead of the first start. It needs no overlay.
 }
 ```
 
-| Option                                                                       | Meaning                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `piPath`, `defaultModel`, `allowedRoots`                                     | `providers.pi.path`, `providers.pi.defaultModel`, `limits.allowedRoots` in the generated, build-checked config file (`settings` wins)                                                                                                                                                                                                                                                                     |
-| `sandbox.minimum`, `.default`, `.extraRo`, `.extraRw`, `.hide`, `.bwrapPath` | `sandbox.*` in the config file. `minimum = "workspace"` is refused at evaluation on macOS. The package sets `WORKER_MCP_BWRAP` to its own bubblewrap on Linux; `bwrapPath` overrides it                                                                                                                                                                                                                   |
-| `envPassthrough`                                                             | `env.allow`: extra environment names workers receive                                                                                                                                                                                                                                                                                                                                                      |
-| `env`                                                                        | Plain environment variables for the server, set by the launcher                                                                                                                                                                                                                                                                                                                                           |
-| `envFiles`                                                                   | Environment name → absolute file outside the store, read at start-up by the launcher (one trailing newline stripped). The names are added to `env.allow` automatically                                                                                                                                                                                                                                    |
-| `claude.enable`                                                              | Link the plugin as **one** `home.file` symlink to the plugin folder at `<configDir>/skills/<claude.name>`. `<configDir>` is `programs.claude-code.configDir` when that module is imported, else `~/.claude`; `programs.claude-code` need not be enabled. `programs.claude-code.plugins` is not used: it links entries one by one, and Claude Code rejects such a plugin ("Path escapes plugin directory") |
-| `claude.name`                                                                | Name of the link (default `worker-mcp`)                                                                                                                                                                                                                                                                                                                                                                   |
-| `claude.command`                                                             | Absolute path of a wrapper of your own to run as the server, in place of the generated launcher                                                                                                                                                                                                                                                                                                           |
+| Option                                                                                         | Meaning                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `piPath`, `defaultModel`, `allowedRoots`                                                       | `providers.pi.path`, `providers.pi.defaultModel`, `limits.allowedRoots` in the generated, build-checked config file (`settings` wins)                                                                                                                                                                                                                                                                     |
+| `sandbox.minimum`, `.default`, `.toolIsolation`, `.extraRo`, `.extraRw`, `.hide`, `.bwrapPath` | `sandbox.*` in the config file. `minimum = "workspace"` is refused at evaluation on macOS. The package sets `WORKER_MCP_BWRAP` to its own bubblewrap on Linux; `bwrapPath` overrides it                                                                                                                                                                                                                   |
+| `envPassthrough`                                                                               | `env.allow`: extra environment names workers receive                                                                                                                                                                                                                                                                                                                                                      |
+| `env`                                                                                          | Plain environment variables for the server, set by the launcher                                                                                                                                                                                                                                                                                                                                           |
+| `envFiles`                                                                                     | Environment name → absolute file outside the store, read at start-up by the launcher (one trailing newline stripped). The names are added to `env.allow` automatically                                                                                                                                                                                                                                    |
+| `claude.enable`                                                                                | Link the plugin as **one** `home.file` symlink to the plugin folder at `<configDir>/skills/<claude.name>`. `<configDir>` is `programs.claude-code.configDir` when that module is imported, else `~/.claude`; `programs.claude-code` need not be enabled. `programs.claude-code.plugins` is not used: it links entries one by one, and Claude Code rejects such a plugin ("Path escapes plugin directory") |
+| `claude.name`                                                                                  | Name of the link (default `worker-mcp`)                                                                                                                                                                                                                                                                                                                                                                   |
+| `claude.command`                                                                               | Absolute path of a wrapper of your own to run as the server, in place of the generated launcher                                                                                                                                                                                                                                                                                                           |
 
 The generated launcher (`programs.worker-mcp.launcher`) exports `env`, reads
 each `envFiles` entry into its variable and runs `worker-mcp`. It prints
@@ -514,38 +514,39 @@ Lowest to highest:
 
 ### Settings
 
-| Config key                             | Environment variable               | Flag                      | Default                                     |
-| -------------------------------------- | ---------------------------------- | ------------------------- | ------------------------------------------- |
-| (file location)                        | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json`   |
-| `providers.pi.path`                    | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                      |
-| `providers.pi.defaultModel`            | `WORKER_MCP_PI_DEFAULT_MODEL`      | `--pi-default-model`      | none (pi's own default)                     |
-| `providers.pi.startupTimeoutMs`        | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                     |
-| `limits.commandTimeoutMs`              | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | no longer used                              |
-| `limits.maxOutputChars`                | `WORKER_MCP_MAX_OUTPUT_CHARS`      | `--max-output-chars`      | `64000`                                     |
-| `limits.maxRunMs`                      | `WORKER_MCP_RUN_TIMEOUT_MS`        | `--run-timeout-ms`        | `1800000` (30 min)                          |
-| `limits.maxWaitMs`                     | `WORKER_MCP_MAX_WAIT_MS`           | `--max-wait-ms`           | `50000`                                     |
-| `limits.runStartTimeoutMs`             | `WORKER_MCP_RUN_START_TIMEOUT_MS`  | `--run-start-timeout-ms`  | `15000`                                     |
-| `limits.maxWorkers`                    | `WORKER_MCP_MAX_WORKERS`           | `--max-workers`           | `4`                                         |
-| `limits.idleTimeoutMs`                 | `WORKER_MCP_IDLE_TIMEOUT_MS`       | `--idle-timeout-ms`       | `1800000` (30 min)                          |
-| `limits.allowedRoots`                  | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                         |
-| `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                           |
-| `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                        |
-| `logLevel`                             | `WORKER_MCP_LOG_LEVEL`             | `--log-level`             | `info`                                      |
-| `stateDir`                             | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`                |
-| `runtimeDir`                           | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`   |
-| `gate.maxAutoApprove`                  | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                    |
-| `gate.protectedPaths`                  | (file only)                        |                           | none                                        |
-| `gate.mode`                            | `WORKER_MCP_GATE_MODE`             | `--gate-mode`             | `manual` (`auto` needs a classifier)        |
-| `gate.httpAllowCeiling`                | `WORKER_MCP_HTTP_ALLOW_CEILING`    | `--http-allow-ceiling`    | `HIGH`                                      |
-| `gate.onClassifierFailure`             | `WORKER_MCP_ON_CLASSIFIER_FAILURE` | `--on-classifier-failure` | `escalate` (or `deny`; never allow)         |
-| `gate.classifiers`                     | (file only)                        |                           | none                                        |
-| `gate.cache`, `gate.recentActions`     | (file only)                        |                           | 1000 entries, 10 min; 10 actions            |
-| `audit.enabled`                        | `WORKER_MCP_AUDIT`                 | `--audit`                 | `true`                                      |
-| `audit.file`                           | `WORKER_MCP_AUDIT_FILE`            | `--audit-file`            | `<stateDir>/audit.jsonl`                    |
-| `sandbox.minimum`                      | `WORKER_MCP_SANDBOX_MINIMUM`       | `--sandbox-minimum`       | `none` (`workspace`: Linux only)            |
-| `sandbox.default`                      | `WORKER_MCP_SANDBOX_DEFAULT`       | `--sandbox-default`       | `workspace` when it works, else `none`      |
-| `sandbox.extraRo`, `.extraRw`, `.hide` | (file only)                        |                           | none                                        |
-| `sandbox.bwrapPath`                    | `WORKER_MCP_BWRAP`                 |                           | `bwrap` on `PATH` (the Nix package sets it) |
+| Config key                             | Environment variable                | Flag                       | Default                                     |
+| -------------------------------------- | ----------------------------------- | -------------------------- | ------------------------------------------- |
+| (file location)                        | `WORKER_MCP_CONFIG`                 | `--config <path>`          | `$XDG_CONFIG_HOME/worker-mcp/config.json`   |
+| `providers.pi.path`                    | `WORKER_MCP_PI_PATH`                | `--pi-path`                | `pi` (found on `PATH`)                      |
+| `providers.pi.defaultModel`            | `WORKER_MCP_PI_DEFAULT_MODEL`       | `--pi-default-model`       | none (pi's own default)                     |
+| `providers.pi.startupTimeoutMs`        | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS`  | `--pi-startup-timeout-ms`  | `60000`                                     |
+| `limits.commandTimeoutMs`              | `WORKER_MCP_COMMAND_TIMEOUT`        | `--command-timeout-ms`     | no longer used                              |
+| `limits.maxOutputChars`                | `WORKER_MCP_MAX_OUTPUT_CHARS`       | `--max-output-chars`       | `64000`                                     |
+| `limits.maxRunMs`                      | `WORKER_MCP_RUN_TIMEOUT_MS`         | `--run-timeout-ms`         | `1800000` (30 min)                          |
+| `limits.maxWaitMs`                     | `WORKER_MCP_MAX_WAIT_MS`            | `--max-wait-ms`            | `50000`                                     |
+| `limits.runStartTimeoutMs`             | `WORKER_MCP_RUN_START_TIMEOUT_MS`   | `--run-start-timeout-ms`   | `15000`                                     |
+| `limits.maxWorkers`                    | `WORKER_MCP_MAX_WORKERS`            | `--max-workers`            | `4`                                         |
+| `limits.idleTimeoutMs`                 | `WORKER_MCP_IDLE_TIMEOUT_MS`        | `--idle-timeout-ms`        | `1800000` (30 min)                          |
+| `limits.allowedRoots`                  | `WORKER_MCP_ALLOWED_ROOTS`          | `--allowed-roots`          | none: any directory                         |
+| `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`    | `--approval-timeout-ms`    | `600000` (10 min)                           |
+| `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`        | `--env-passthrough`        | none                                        |
+| `logLevel`                             | `WORKER_MCP_LOG_LEVEL`              | `--log-level`              | `info`                                      |
+| `stateDir`                             | `WORKER_MCP_STATE_DIR`              | `--state-dir`              | `$XDG_STATE_HOME/worker-mcp`                |
+| `runtimeDir`                           | `WORKER_MCP_RUNTIME_DIR`            | `--runtime-dir`            | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`   |
+| `gate.maxAutoApprove`                  | `WORKER_MCP_MAX_AUTO_APPROVE`       | `--max-auto-approve`       | `MEDIUM`                                    |
+| `gate.protectedPaths`                  | (file only)                         |                            | none                                        |
+| `gate.mode`                            | `WORKER_MCP_GATE_MODE`              | `--gate-mode`              | `manual` (`auto` needs a classifier)        |
+| `gate.httpAllowCeiling`                | `WORKER_MCP_HTTP_ALLOW_CEILING`     | `--http-allow-ceiling`     | `HIGH`                                      |
+| `gate.onClassifierFailure`             | `WORKER_MCP_ON_CLASSIFIER_FAILURE`  | `--on-classifier-failure`  | `escalate` (or `deny`; never allow)         |
+| `gate.classifiers`                     | (file only)                         |                            | none                                        |
+| `gate.cache`, `gate.recentActions`     | (file only)                         |                            | 1000 entries, 10 min; 10 actions            |
+| `audit.enabled`                        | `WORKER_MCP_AUDIT`                  | `--audit`                  | `true`                                      |
+| `audit.file`                           | `WORKER_MCP_AUDIT_FILE`             | `--audit-file`             | `<stateDir>/audit.jsonl`                    |
+| `sandbox.minimum`                      | `WORKER_MCP_SANDBOX_MINIMUM`        | `--sandbox-minimum`        | `none` (`workspace`: Linux only)            |
+| `sandbox.default`                      | `WORKER_MCP_SANDBOX_DEFAULT`        | `--sandbox-default`        | `workspace` when it works, else `none`      |
+| `sandbox.toolIsolation`                | `WORKER_MCP_SANDBOX_TOOL_ISOLATION` | `--sandbox-tool-isolation` | `auto` (`require`, `off`)                   |
+| `sandbox.extraRo`, `.extraRw`, `.hide` | (file only)                         |                            | none                                        |
+| `sandbox.bwrapPath`                    | `WORKER_MCP_BWRAP`                  |                            | `bwrap` on `PATH` (the Nix package sets it) |
 
 - Numbers are positive integers; directories are absolute paths.
 - **Sandbox (Linux).** `spawn_worker` takes an optional `sandbox` (`none` or
@@ -554,8 +555,12 @@ Lowest to highest:
   `sandbox.minimum: workspace` makes a spawn fail with `SANDBOX_UNAVAILABLE`
   where bubblewrap or unprivileged user namespaces are missing; with `none`
   the spawn result carries a warning instead. **macOS has no sandbox**, so
-  `minimum` must stay `none` there. The network is not restricted and the worker
-  can still read its own API key: see [docs/security.md](docs/security.md#the-workspace-sandbox).
+  `minimum` must stay `none` there. The network is not restricted. The commands a
+  worker runs (not pi itself) get a second sandbox that hides pi's credential
+  file and the pi process (`sandbox.toolIsolation`, default `auto`; `require`
+  refuses a spawn where it cannot work): see
+  [docs/security.md](docs/security.md#the-agents-credentials) for what is hidden
+  and what is left.
 - Also in the config file only (`limits.*`): `defaultWaitMs` (25000, never more
   than `maxWaitMs`), `resultRetentionMs` (3600000), `maxRetainedRuns` (100),
   `outputBufferChars` (1048576: output kept per run, the oldest dropped past

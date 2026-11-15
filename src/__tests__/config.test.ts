@@ -895,6 +895,7 @@ describe("sandbox config", () => {
 			extraRo: [],
 			extraRw: [],
 			hide: [],
+			toolIsolation: "auto",
 		});
 	});
 
@@ -924,6 +925,25 @@ describe("sandbox config", () => {
 			WORKER_MCP_SANDBOX_MINIMUM: "none",
 		});
 		assert.strictEqual(viaFlag.sandbox.minimum, "workspace");
+	});
+
+	test("toolIsolation defaults to auto; file, env and flag set it", () => {
+		assert.strictEqual(load([]).sandbox.toolIsolation, "auto");
+		const args = withFile({ sandbox: { toolIsolation: "require" } });
+		assert.strictEqual(load(args).sandbox.toolIsolation, "require");
+		assert.strictEqual(
+			load(args, { ...env, WORKER_MCP_SANDBOX_TOOL_ISOLATION: "off" }).sandbox
+				.toolIsolation,
+			"off",
+		);
+		assert.strictEqual(
+			load([...args, "--sandbox-tool-isolation", "auto"]).sandbox.toolIsolation,
+			"auto",
+		);
+		assert.throws(
+			() => load(withFile({ sandbox: { toolIsolation: "maybe" } })),
+			/toolIsolation/,
+		);
 	});
 
 	test("WORKER_MCP_BWRAP is the fallback for bwrapPath; the file wins", () => {

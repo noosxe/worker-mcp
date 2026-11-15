@@ -31,6 +31,16 @@ export interface SandboxProfile {
 	 * in `roHome`.
 	 */
 	overlayHome?: readonly string[];
+	/**
+	 * Home paths the agent itself needs but the commands it runs must not see
+	 * (its credentials). With `toolIsolation` on, each shell command gets a
+	 * second sandbox with an empty tmpfs over these and a process table of its
+	 * own, so neither the files nor the agent's process (environment, memory,
+	 * open files) can be read from it.
+	 */
+	toolHideHome?: readonly string[];
+	/** The agent's shell tool, whose command is run in that second sandbox. */
+	shellTool?: { name: string; command: string };
 }
 
 /** Home paths every sandboxed worker keeps, whatever its provider: Nix profiles. */
@@ -45,6 +55,11 @@ export interface SandboxStatus {
 	reason?: string;
 	/** The binary that passed the check. */
 	bwrap?: string;
+	/**
+	 * Whether a sandbox inside the sandbox works here (the second sandbox of
+	 * shell commands). Many systems that allow the first refuse nesting.
+	 */
+	nested?: { available: boolean; reason?: string };
 }
 
 // ---- detection --------------------------------------------------------------
@@ -106,6 +121,32 @@ const BASE_FLAGS = [
 const PROBE_EXTRA = ["--setenv", "TMPDIR", "/tmp", "--chdir", "/"];
 
 /**
+ * The flags of the second sandbox, around a shell command inside the first:
+ * everything as it is (the first sandbox's mounts are inherited, read-only
+ * ones stay read-only), a process table of its own, and an empty tmpfs over
+ * `hidden`.
+ */
+export function toolSandboxFlags(hidden: readonly string[]): string[] {
+	return [
+		"--die-with-parent",
+		"--unshare-pid",
+		"--unshare-ipc",
+		"--unshare-uts",
+		"--new-session",
+		"--bind",
+		"/",
+		"/",
+		"--dev",
+		"/dev",
+		"--proc",
+		"/proc",
+		...hidden.flatMap((p) => ["--tmpfs", p]),
+	];
+}
+
+const shellQuote = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`;
+
+/**
  * Run bwrap once with the same isolation as a worker gets and a trivial
  * command. Many systems install bwrap but forbid unprivileged user
  * namespaces (a sysctl, an AppArmor profile, a container), and then every
@@ -123,7 +164,39 @@ export function probeBwrap(
 			{ timeout: timeoutMs, env: { PATH: process.env.PATH ?? "" } },
 			(err, _stdout, stderr) => {
 				if (!err) {
-					resolve({ available: true, bwrap });
+					// The second sandbox is checked inside the first.
+					execFile(
+						bwrap,
+						[
+							...BASE_FLAGS,
+							...PROBE_EXTRA,
+							"--",
+							bwrap,
+							...toolSandboxFlags([]),
+							"--",
+							process.execPath,
+							"--version",
+						],
+						{ timeout: timeoutMs, env: { PATH: process.env.PATH ?? "" } },
+						(nestedErr, _o, nestedStderr) => {
+							const detail = nestedErr
+								? (String(nestedStderr)
+										.split("\n")
+										.find((l) => l.trim() !== "")
+										?.trim() ?? nestedErr.message)
+								: undefined;
+							resolve({
+								available: true,
+								bwrap,
+								nested: detail
+									? {
+											available: false,
+											reason: `bubblewrap cannot start a sandbox inside the sandbox here: ${detail.slice(0, 300)}`,
+										}
+									: { available: true },
+							});
+						},
+					);
 					return;
 				}
 				const detail =
@@ -240,6 +313,59 @@ export class SandboxService {
 			);
 		}
 		return { mode, clamped, notes };
+	}
+
+	/**
+	 * What to tell the caller about the second sandbox for shell commands, and
+	 * whether this spawn gets it. `error` is set when `toolIsolation` is
+	 * `require` and it does not work; `note` when it is `auto` and does not.
+	 */
+	resolveToolIsolation(status: SandboxStatus): {
+		active: boolean;
+		error?: string;
+		note?: string;
+	} {
+		const setting = this.settings.toolIsolation;
+		if (setting === "off") return { active: false };
+		if (status.nested?.available) return { active: true };
+		const why = status.nested?.reason ?? "it was not checked";
+		if (setting === "require") {
+			return {
+				active: false,
+				error: `sandbox.toolIsolation is require but the shell commands cannot be isolated: ${why}`,
+			};
+		}
+		return {
+			active: false,
+			note: `The shell commands of this worker are NOT isolated from the agent's own credentials (${why}): a command can read the agent's credential file and its process. Set sandbox.toolIsolation to off to silence this, or to require to refuse such a spawn.`,
+		};
+	}
+
+	/**
+	 * `command` (shell source) rewritten to run in the second sandbox, for the
+	 * agent's shell tool. The caller checks that the sandbox is available.
+	 */
+	isolateCommand(
+		command: string,
+		input: { home: string; profile: SandboxProfile },
+	): string {
+		if (!this.result?.available || !this.result.bwrap) {
+			throw new Error("the workspace sandbox is not available");
+		}
+		const home = path.resolve(input.home);
+		const hidden = new Set<string>();
+		for (const rel of input.profile.toolHideHome ?? []) {
+			for (const base of new Set([home, real(home)])) {
+				const p = path.join(base, rel);
+				if (isDir(p)) hidden.add(p);
+			}
+		}
+		const args = toolSandboxFlags([...hidden])
+			.map(shellQuote)
+			.join(" ");
+		// `exec` keeps the exit status and signals; `$PWD` is the workspace pi
+		// started the shell in.
+		return `exec ${shellQuote(this.result.bwrap)} ${args} --chdir "$PWD" -- "\${BASH:-bash}" -c ${shellQuote(command)}`;
 	}
 
 	/**

@@ -178,6 +178,15 @@ export class SessionManager {
 			);
 		}
 
+		let toolIsolation = false;
+		const notes = [...decided.notes];
+		if (decided.mode === "workspace") {
+			const iso = this.sandbox.resolveToolIsolation(sandboxStatus);
+			if (iso.error) throw new ToolError("SANDBOX_UNAVAILABLE", iso.error);
+			toolIsolation = iso.active;
+			if (iso.note) notes.push(iso.note);
+		}
+
 		// Everything from here to `sessions.set` is synchronous: nothing can
 		// register a worker, or take its name or slot, in between.
 		let replaced: Session | undefined;
@@ -218,7 +227,8 @@ export class SessionManager {
 				children: this.children,
 				provider,
 				sandbox: decided.mode,
-				sandboxReport: { clamped: decided.clamped, notes: decided.notes },
+				sandboxReport: { clamped: decided.clamped, notes },
+				toolIsolation,
 				runs: this.runs,
 				gateServices: this.gate,
 				name,

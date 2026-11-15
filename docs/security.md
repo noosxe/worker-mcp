@@ -45,7 +45,8 @@ for the coordinator.
   | `coordinator-config` | `<workspace>/.mcp.json`, `<workspace>/.claude/`, `~/.claude/`, `~/.claude.json`, `~/.config/Claude/`                                                                                                                                                                                  | write HIGH                |
   | `runs-later`         | `.git/hooks/` and `.git/config` (also in submodules), `.envrc`, `.husky/`, `~/.bashrc`, `~/.bash_profile`, `~/.bash_login`, `~/.bash_logout`, `~/.profile`, `~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.zlogin`, `~/.config/fish/`, `~/.config/autostart/`, `~/.config/systemd/user/` | write HIGH                |
   | `agent-config`       | `~/.pi/`, `<workspace>/.pi/`                                                                                                                                                                                                                                                          | write HIGH                |
-  | `secrets`            | `~/.ssh/`, `~/.gnupg/`, `~/.aws/`, `~/.config/gh/`, `~/.netrc`, `~/.docker/config.json`, `~/.pi/agent/auth.json`, `.env` and `.env.*` in the workspace                                                                                                                                | read HIGH, write CRITICAL |
+  | `secrets`            | `~/.ssh/`, `~/.gnupg/`, `~/.aws/`, `~/.config/gh/`, `~/.netrc`, `~/.docker/config.json`, `~/.pi/agent/auth.json`, `~/.pi/agent/models.json`, `.env` and `.env.*` in the workspace                                                                                                     | read HIGH, write CRITICAL |
+  | `process-memory`     | `/proc/<pid>/{environ,mem,maps,fd,root,cwd,...}` of any process, `self` included (they hold the agent's credentials)                                                                                                                                                                  | read HIGH, write CRITICAL |
   | `configured`         | `gate.protectedPaths` from the config file                                                                                                                                                                                                                                            | write HIGH                |
 
   Matching is case-insensitive and on real paths, so `./x/../.mcp.json` and a
@@ -117,6 +118,7 @@ on Linux:
 | The worker's private directory (holds the gate)                          | read-only                                                                                                                                                    |
 | `sandbox.extraRo`, `sandbox.extraRw`                                     | read-only, read-write                                                                                                                                        |
 | Process, IPC and hostname namespaces                                     | new: the worker sees only its own processes                                                                                                                  |
+| Every shell command the worker runs                                      | a second sandbox inside this one, with `~/.pi/agent` empty and a process table of its own (see [The agent's credentials](#the-agents-credentials))           |
 
 - **Cleanup is airtight.** The sandbox dies with the server (`--die-with-parent`
   and a PID namespace): even if the server is killed with SIGKILL, the worker
@@ -153,8 +155,9 @@ on Linux:
 - **The network is not restricted.** A worker needs it to reach its model API,
   and a namespace around `pi` cannot tell `pi`'s own calls from its tools'.
   Whatever the worker can read, it can send out.
-- **The worker can still read its own API key**: `pi` needs its auth file, which
-  stays visible (read-only), and the key may be in its environment.
+- **The agent process can still read its own API key**: `pi` needs its auth
+  file, which stays visible to it (read-only). What a worker's _commands_ can
+  reach is covered in the next section.
 - **The workspace is writable**, and so is everything in it that is not
   protected: build scripts, `package.json` scripts and git history can be
   changed. Review what a worker leaves behind before running it.
@@ -174,8 +177,77 @@ on Linux:
   there (a `workspace` minimum would make every spawn fail), and workers run
   with the gate and the environment allowlist alone.
 
+### The agent's credentials
+
+`pi` reads its provider credentials from `~/.pi/agent/auth.json` (and custom
+providers' keys from `models.json`). What was checked, with a throwaway home and
+a marker in place of a key, and what is done about it. The agent's own process
+has to be able to read the file: that cannot be removed with pi as it is (see
+the last paragraph). The commands and tools it runs must not.
+
+| Way to read it                                                             | Before | Now                                                                                                     |
+| -------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------- |
+| shell command: `cat`, `head`, `cp`, `base64`, a glob, `~`, a symlink       | worked | empty directory there: no such file (gate: a hard limit that only the coordinator can approve)          |
+| an interpreter in a shell command (`node -e`, `python3 -c`)                | worked | the same                                                                                                |
+| `/proc/<agent pid>/environ`, `cmdline`, `fd`, `root`, `mem` from a command | worked | the agent process is not in the command's process table                                                 |
+| pi's `read` tool                                                           | gate   | gate: a hard limit, as before (`auth.json`, now also `models.json`); not auto-approvable by any policy  |
+| `read` of `/proc/self/environ`, `/proc/self/mem`, `/proc/*/fd`, ...        | gate   | gate: a new hard limit (`process-memory`); `/proc/self/root/<path>` resolves to the path and is checked |
+| the key in the command's own environment (if passed through)               | worked | still works, see below                                                                                  |
+
+How: with `sandbox.toolIsolation` on (default `auto`), the shell command of
+every allowed `bash` call is rewritten by the server, after the gate rated it,
+into a command that starts a **second bubblewrap inside the worker's sandbox**
+(`--unshare-pid` with a fresh `/proc`, an empty tmpfs over `~/.pi/agent`, the
+first sandbox's mounts otherwise as they were: the same read-only system and
+the same writable workspace). The gate log and the approval show the command
+the worker asked for; pi runs the wrapped one. A command that is not a string
+is denied. pi itself is not inside the second sandbox, so it keeps its config.
+
+What pi allows, from its 1.4.0 source and documentation: it loads `auth.json`
+when it starts and afterwards only `stat`s it for changes; a changed file is
+read again, and an unreadable one makes a request with an abort signal fail,
+so the file cannot be removed or made unreadable after startup. Other ways to
+give it credentials are an environment variable, `--api-key` (visible in
+`/proc/<pid>/cmdline` to every process in the sandbox) and a `!command` in
+`auth.json`. None is better than the file: each leaves the key where the same
+user's processes can read it, unless they are kept out of pi's process table,
+which is what the second sandbox does.
+
+Left open:
+
+- **When the second sandbox cannot start** (many systems that allow the first
+  sandbox refuse a nested one, for example Ubuntu's AppArmor policy for
+  unprivileged user namespaces) `auto` spawns anyway, with a warning in
+  `notes`, and a command can read the credential file and the agent's process.
+  Set `sandbox.toolIsolation: "require"` to refuse such a spawn
+  (`SANDBOX_UNAVAILABLE`). `list_providers` does not show this separately.
+- **Without the workspace sandbox** nothing hides anything: only the gate.
+- **A key in the environment** (`WORKER_MCP_ENV_PASSTHROUGH`) is inherited by
+  every command, so a command can read it with `env`. Use pi's auth file.
+- **The `read` tool runs inside pi** and can read the file; only the gate stops
+  it, and a coordinator that approves it hands the key over. The approval says
+  it is a protected path.
+- **The key can be sent out**: the network is open and pi's own process is
+  allowed to use the key. A `bash` or `write` call that did not touch the file
+  cannot read it; a prompt-injected worker can still make pi call its model
+  endpoint with the key, which is what the endpoint is for. A narrow key with
+  a spend limit is the remaining defence.
+- A hostile `pi` binary or a kernel or bubblewrap bug.
+
+What pi would have to offer to close the rest: credentials passed through a
+channel only its process can read (a file descriptor it reads and closes, or a
+credential helper that is asked per request instead of a file read at startup
+and re-read on change), or running its tools in a process or namespace of their
+own so the agent never shares a user id with what the model controls. A local
+proxy that holds the key and is configured as a provider's `baseUrl` would
+also work, but needs one per provider.
+
 ### Settings
 
+- `sandbox.toolIsolation` (`auto`, `require` or `off`, default `auto`; also
+  `WORKER_MCP_SANDBOX_TOOL_ISOLATION` and `--sandbox-tool-isolation`): the
+  second sandbox for shell commands above. `auto` uses it when it works here
+  and warns when it does not, `require` fails the spawn, `off` never uses it.
 - `sandbox.minimum` (`none` or `workspace`, default `none`): `spawn_worker`
   cannot ask for less; a lower request is raised and reported in `clamped`.
 - `sandbox.default`: what a spawn gets when it asks for nothing. Default:
@@ -232,10 +304,16 @@ It does not change what is protected:
   worker. An approved or auto-approved action runs with the full privileges of
   the worker process. Use a tighter policy for sensitive work, and run the
   server as a user that has nothing to lose.
-- **A worker can always read its own LLM credentials.** pi needs them to work:
-  its auth file under `HOME`, or a key passed in the environment. No gate or
-  sandbox around a single process can stop it from sending that key out through
-  an allowed call. Use a key with a narrow scope and spend limit.
+- **The agent process always holds its LLM credentials.** pi needs them to
+  work: its auth file under `HOME`, or a key passed in the environment. In
+  the `workspace` sandbox with `sandbox.toolIsolation` the commands it runs
+  cannot read the file or the process, and the gate treats the file and
+  `/proc/<pid>/environ` and `mem` as hard limits for every tool, but pi's `read`
+  tool still runs inside the process and a coordinator can approve it, a key
+  in the environment reaches every command, and nothing stops pi from using
+  the key against its own endpoint. See
+  [The agent's credentials](#the-agents-credentials). Use a key with a narrow
+  scope and spend limit.
 - Without the sandbox (`sandbox: "none"`, or on macOS) a worker can read and
   write whatever the server's user can, subject to the gate. See
   [The workspace sandbox](#the-workspace-sandbox) for what `workspace` changes
@@ -292,4 +370,6 @@ pi reads its credentials from its own auth file under `HOME`, which workers
 keep, so the usual setup needs nothing here. **Prefer the auth file.** Keys that
 pi would otherwise find in the server's environment (for example
 `ANTHROPIC_API_KEY`) no longer reach the worker; to use them, name them in
-`WORKER_MCP_ENV_PASSTHROUGH`. As described above, the worker can read either.
+`WORKER_MCP_ENV_PASSTHROUGH`. A key in the environment is visible to every
+command the worker runs; the file is not, in the sandbox (see
+[The agent's credentials](#the-agents-credentials)).

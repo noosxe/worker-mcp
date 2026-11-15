@@ -93,6 +93,14 @@ export function workspaceProtectedPaths(workspace: string): string[] {
 		.concat([...w.gitTrees, ...w.gitFiles].map((rel) => path.join(git, rel)));
 }
 
+/**
+ * The parts of `/proc/<pid>` that expose a process's secrets: its environment,
+ * memory, open files and root, for any process (`self` and `thread-self` too,
+ * and the same per thread).
+ */
+const PROC_PRIVATE =
+	/^\/proc\/(?:self|thread-self|\d+)(?:\/task\/\d+)?\/(?:environ|mem|maps|smaps|smaps_rollup|pagemap|fd|fdinfo|root|cwd|exe|auxv)(?:\/|$)/;
+
 /** `.env`, `.env.local`, ...: any file named like that in the workspace. */
 const ENV_FILE = /^\.env(\..+)?$/;
 
@@ -187,10 +195,21 @@ export class ProtectedPaths {
 					...file(h(".netrc")),
 					...file(h(".docker/config.json")),
 					...file(h(".pi/agent/auth.json")),
+					// Custom providers keep their API keys here.
+					...file(h(".pi/agent/models.json")),
 					...(opts.secretFiles ?? []).flatMap(file),
 				],
 				extra: (p) =>
 					isInside(this.workspace, p) && ENV_FILE.test(path.basename(p)),
+				read: RiskLevel.HIGH,
+				write: RiskLevel.CRITICAL,
+			},
+			{
+				id: "process-memory",
+				reason:
+					"a process's environment, memory and open files (they hold the agent's credentials)",
+				entries: [],
+				extra: (p) => PROC_PRIVATE.test(p),
 				read: RiskLevel.HIGH,
 				write: RiskLevel.CRITICAL,
 			},

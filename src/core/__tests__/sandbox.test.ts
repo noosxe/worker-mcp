@@ -16,7 +16,9 @@ import {
 	protectedInside,
 	resolveBwrap,
 	SandboxService,
+	toolSandboxFlags,
 	type SandboxPlan,
+	type SandboxStatus,
 } from "../sandbox.js";
 
 let root: string;
@@ -352,7 +354,18 @@ describe("detection", () => {
 		assert.deepStrictEqual(await probeBwrap(good), {
 			available: true,
 			bwrap: good,
+			nested: { available: true },
 		});
+	});
+
+	test("probeBwrap reports apart that a sandbox cannot start inside the sandbox", async () => {
+		const noNesting = fakeBwrap(
+			'case " $* " in *" --bind / / "*) echo "bwrap: creating new namespace failed" >&2; exit 1;; esac; exit 0',
+		);
+		const status = await probeBwrap(noNesting);
+		assert.strictEqual(status.available, true);
+		assert.strictEqual(status.nested?.available, false);
+		assert.match(status.nested?.reason ?? "", /creating new namespace failed/);
 	});
 
 	test("the check runs once and its result is cached", async () => {
@@ -583,5 +596,105 @@ describe("hiding the home directory", () => {
 		const s = await broken.status();
 		assert.strictEqual(s.available, false);
 		assert.match(s.reason ?? "", /cannot be hidden reliably/);
+	});
+});
+
+describe("the second sandbox for shell commands", () => {
+	const profile = {
+		roHome: [".pi"],
+		rwHome: [],
+		toolHideHome: [".pi/agent"],
+		shellTool: { name: "bash", command: "command" },
+	};
+	// oxlint-disable-next-line unicorn/consistent-function-scoping -- a test helper next to its use
+	const ready = async (
+		setting: "auto" | "require" | "off",
+		nested?: boolean,
+	) => {
+		const service = new SandboxService(
+			{
+				...defaultConfig().sandbox,
+				toolIsolation: setting,
+				bwrapPath: "/x/bwrap",
+			},
+			{},
+			"linux",
+			async (bwrap): Promise<SandboxStatus> => ({
+				available: true,
+				bwrap,
+				nested:
+					nested === undefined
+						? undefined
+						: nested
+							? { available: true }
+							: { available: false, reason: "no nesting here" },
+			}),
+			() => "1 0 8:1 / / rw - ext4 /dev/sda rw\n",
+		);
+		return { service, status: await service.status() };
+	};
+
+	test("it has a process table of its own and an empty tmpfs over what it hides", () => {
+		const flags = toolSandboxFlags(["/home/u/.pi/agent"]);
+		assert.ok(flags.includes("--unshare-pid"));
+		assert.ok(flags.includes("--proc"));
+		const i = flags.indexOf("--tmpfs");
+		assert.strictEqual(flags[i + 1], "/home/u/.pi/agent");
+	});
+
+	test("the command is wrapped, quoted, and runs in the shell's directory", async () => {
+		const home = mk("home");
+		mk("home", ".pi", "agent");
+		const { service } = await ready("auto", true);
+		const command = "echo 'it'\"'\"'s' $HOME; echo \"x\"";
+		const out = service.isolateCommand(command, { home, profile });
+		assert.ok(out.startsWith("exec '/x/bwrap' "), out);
+		assert.ok(out.includes(`'--tmpfs' '${path.join(home, ".pi", "agent")}'`));
+		assert.ok(out.includes('--chdir "$PWD" --'));
+		// The original text survives as one word: a shell gives it back as it was.
+		const quoted = out.slice(out.indexOf(" -c ") + 4);
+		assert.strictEqual(
+			execFileSync("sh", ["-c", `printf %s ${quoted}`], { encoding: "utf8" }),
+			command,
+		);
+	});
+
+	test("a hidden directory that does not exist is left out", async () => {
+		const { service } = await ready("auto", true);
+		const out = service.isolateCommand("true", {
+			home: mk("empty-home"),
+			profile,
+		});
+		assert.ok(!out.includes("--tmpfs"), out);
+	});
+
+	test("auto: active when nesting works, a warning when not; require refuses; off is silent", async () => {
+		const ok = await ready("auto", true);
+		assert.deepStrictEqual(ok.service.resolveToolIsolation(ok.status), {
+			active: true,
+		});
+		const no = await ready("auto", false);
+		const r = no.service.resolveToolIsolation(no.status);
+		assert.strictEqual(r.active, false);
+		assert.match(r.note ?? "", /NOT isolated/);
+		assert.match(r.note ?? "", /no nesting here/);
+		const unknown = await ready("auto");
+		assert.match(
+			unknown.service.resolveToolIsolation(unknown.status).note ?? "",
+			/not checked/,
+		);
+		const req = await ready("require", false);
+		const e = req.service.resolveToolIsolation(req.status);
+		assert.strictEqual(e.active, false);
+		assert.match(e.error ?? "", /toolIsolation is require/);
+		const reqOk = await ready("require", true);
+		assert.strictEqual(
+			reqOk.service.resolveToolIsolation(reqOk.status).active,
+			true,
+		);
+		const off = await ready("off", false);
+		assert.deepStrictEqual(off.service.resolveToolIsolation(off.status), {
+			active: false,
+		});
 	});
 });

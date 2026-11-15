@@ -121,6 +121,15 @@ const nestedSkip: string | false = (() => {
 		: `bubblewrap cannot nest here: ${(r.stderr || "no output").trim().split("\n")[0].slice(0, 200)}`;
 })();
 
+/** Skip reason for the tests of the second sandbox around shell commands. */
+const toolSkip: string | false = probe.nested?.available
+	? false
+	: `bubblewrap cannot nest here: ${probe.nested?.reason ?? "not checked"}`;
+
+/** What the fake agent's credentials look like: a file, and an env variable. */
+const FILE_MARKER = "MARKER-S3-FILE-SECRET";
+const ENV_MARKER = "MARKER-S3-ENV-SECRET";
+
 describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 	let iso: Isolation;
 	const servers: RawServer[] = [];
@@ -470,4 +479,210 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 			assert.ok(!got.out.includes("id_alias"), got.out);
 		},
 	);
+
+	describe("the agent's credentials", () => {
+		/**
+		 * Run a call as the agent would, through the gate, and approve whatever
+		 * it asks about: the coordinator saying yes must still not be enough to
+		 * read the credentials from a shell command. Returns the final text.
+		 */
+		// oxlint-disable-next-line unicorn/consistent-function-scoping -- a test helper next to its use
+		async function viaGate(
+			server: RawServer,
+			workerId: string,
+			scenario: string,
+		): Promise<string> {
+			let res = await server.callTool("start_run", {
+				workerId,
+				prompt: `scenario:${scenario}`,
+				intent: "credential probe",
+				waitMs: 10_000,
+			});
+			let view = viewOf(res.result);
+			for (let i = 0; i < 5 && view.state === "awaiting_approval"; i++) {
+				await server.callTool("approve_action", {
+					approvalId: view.pendingApprovals[0].approvalId,
+				});
+				res = await server.callTool("wait_run", {
+					runId: view.runId,
+					waitMs: 10_000,
+				});
+				view = viewOf(res.result);
+			}
+			assert.strictEqual(view.state, "completed", view.error ?? "");
+			return view.output.text ?? "";
+		}
+
+		const AUTH = '"$HOME/.pi/agent/auth.json"';
+		/** Every way to read the file or the agent's process from a command. */
+		const VECTORS: Record<string, string> = {
+			cat: `cat ${AUTH}`,
+			head: `head -c 200 ${AUTH}`,
+			"cat with a tilde": "cat ~/.pi/agent/auth.json",
+			glob: "cat ~/.pi/*/a*",
+			cp: `cp ${AUTH} ./copied-auth && cat ./copied-auth`,
+			base64: `base64 ${AUTH}; base64 -w0 ${AUTH} | base64 -d`,
+			"interpreter (node)": `"${process.execPath}" -e "process.stdout.write(require('fs').readFileSync(process.env.HOME + '/.pi/agent/auth.json', 'utf8'))"`,
+			"interpreter (python)": `command -v python3 >/dev/null && python3 -c "import os; print(open(os.environ['HOME'] + '/.pi/agent/auth.json').read())"`,
+			symlink: `ln -sf ${AUTH} ./link-to-auth && cat ./link-to-auth`,
+			"/proc/<parent>/environ": "cat /proc/$PPID/environ",
+			"/proc/*/environ": "cat /proc/[0-9]*/environ",
+			"/proc/<parent>/root": 'cat /proc/$PPID/root"$HOME/.pi/agent/auth.json"',
+			"/proc/*/cmdline": "cat /proc/[0-9]*/cmdline",
+			"/proc/<parent>/fd": "ls -l /proc/$PPID/fd; cat /proc/$PPID/fd/*",
+			"the directory listing": 'ls -la "$HOME/.pi/agent"',
+			env: "env",
+		};
+
+		before(() => {
+			fs.mkdirSync(path.join(iso.home, ".pi", "agent"), { recursive: true });
+			fs.writeFileSync(
+				path.join(iso.home, ".pi", "agent", "auth.json"),
+				JSON.stringify({ zai: { type: "api_key", key: FILE_MARKER } }),
+			);
+			fs.writeFileSync(
+				path.join(iso.home, ".pi", "agent", "settings.json"),
+				"{}\n",
+			);
+			// The fake agent holds a credential in its environment, which its
+			// children do not inherit (like a key it read at startup).
+			iso.env.FAKE_PI_CRED = ENV_MARKER;
+		});
+		after(() => {
+			delete iso.env.FAKE_PI_CRED;
+		});
+
+		// oxlint-disable-next-line unicorn/consistent-function-scoping -- a test helper next to its use
+		const leaked = (out: string) =>
+			out.includes(FILE_MARKER) ||
+			out.includes(ENV_MARKER) ||
+			out.includes(Buffer.from(FILE_MARKER).toString("base64").slice(0, 20));
+
+		test(
+			"with the second sandbox no command can read the file or the agent's process",
+			{ skip: toolSkip },
+			async () => {
+				const server = await start();
+				const { worker, notes } = await spawnWorker(server, iso.cwd);
+				assert.deepStrictEqual(
+					notes.filter((n) => n.includes("NOT isolated")),
+					[],
+				);
+				const id = worker.workerId;
+				for (const [name, command] of Object.entries(VECTORS)) {
+					const out = await viaGate(server, id, `bash:${command}`);
+					assert.ok(!leaked(out), `${name} leaked the credentials: ${out}`);
+				}
+				// The agent still works: a command sees the workspace, and the
+				// agent's own files are an empty directory.
+				const ok = await viaGate(
+					server,
+					id,
+					'bash:echo fine > from-tool.txt; ls -A "$HOME/.pi/agent" | wc -l; pwd',
+				);
+				assert.match(ok, /^exit=0\n0\n/);
+				assert.ok(ok.trimEnd().endsWith(fs.realpathSync(iso.cwd)), ok);
+				assert.strictEqual(
+					fs.readFileSync(path.join(iso.cwd, "from-tool.txt"), "utf8"),
+					"fine\n",
+				);
+				await server.callTool("terminate_worker", { workerId: id });
+			},
+		);
+
+		test(
+			"the second sandbox keeps the first one's limits and the exit status",
+			{ skip: toolSkip },
+			async () => {
+				const server = await start();
+				const { worker } = await spawnWorker(server, iso.cwd);
+				const id = worker.workerId;
+				const out = await viaGate(
+					server,
+					id,
+					"bash:touch /etc/worker-mcp-test 2>&1 | head -c 200; exit 7",
+				);
+				assert.match(out, /^exit=7\n/);
+				assert.match(out, /Read-only file system/);
+				assert.ok(!fs.existsSync("/etc/worker-mcp-test"));
+				await server.callTool("terminate_worker", { workerId: id });
+			},
+		);
+
+		test(
+			"the vectors are real: without the second sandbox they read the credentials",
+			{ skip: toolSkip },
+			async () => {
+				iso.env.WORKER_MCP_SANDBOX_TOOL_ISOLATION = "off";
+				try {
+					const server = await start();
+					const { worker } = await spawnWorker(server, iso.cwd);
+					const id = worker.workerId;
+					const file = await viaGate(server, id, `bash:cat ${AUTH}`);
+					assert.ok(file.includes(FILE_MARKER), file);
+					const proc = await viaGate(
+						server,
+						id,
+						"bash:cat /proc/$PPID/environ",
+					);
+					assert.ok(proc.includes(ENV_MARKER), proc);
+					await server.callTool("terminate_worker", { workerId: id });
+				} finally {
+					delete iso.env.WORKER_MCP_SANDBOX_TOOL_ISOLATION;
+				}
+			},
+		);
+
+		test("the read tool and /proc paths are hard limits at the gate", async () => {
+			const server = await start();
+			const { worker } = await spawnWorker(server, iso.cwd);
+			const id = worker.workerId;
+			const auth = path.join(iso.home, ".pi", "agent", "auth.json");
+			for (const target of [
+				auth,
+				path.join(iso.home, ".pi", "agent", "models.json"),
+				"/proc/self/environ",
+				"/proc/self/mem",
+				`/proc/self/root${auth}`,
+			]) {
+				const res = await server.callTool("start_run", {
+					workerId: id,
+					prompt: `scenario:read:${target}`,
+					intent: "credential probe",
+					waitMs: 10_000,
+				});
+				const view = viewOf(res.result);
+				assert.strictEqual(view.state, "awaiting_approval", target);
+				assert.strictEqual(view.pendingApprovals[0].hardLimit, true, target);
+				await server.callTool("reject_action", {
+					approvalId: view.pendingApprovals[0].approvalId,
+					reason: "test",
+				});
+				const done = viewOf(
+					(
+						await server.callTool("wait_run", {
+							runId: view.runId,
+							waitMs: 10_000,
+						})
+					).result,
+				);
+				assert.ok(!leaked(done.output.text ?? ""), target);
+			}
+			await server.callTool("terminate_worker", { workerId: id });
+		});
+
+		test("toolIsolation off spawns without the warning", async () => {
+			iso.env.WORKER_MCP_SANDBOX_TOOL_ISOLATION = "off";
+			try {
+				const server = await start();
+				const { notes } = await spawnWorker(server, iso.cwd);
+				assert.deepStrictEqual(
+					notes.filter((n) => n.includes("NOT isolated")),
+					[],
+				);
+			} finally {
+				delete iso.env.WORKER_MCP_SANDBOX_TOOL_ISOLATION;
+			}
+		});
+	});
 });

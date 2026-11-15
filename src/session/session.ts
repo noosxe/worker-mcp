@@ -118,6 +118,8 @@ export interface SessionDeps {
 	sandbox?: "none" | "workspace";
 	/** What deciding the sandbox changed or warned about. */
 	sandboxReport?: { clamped: string[]; notes: string[] };
+	/** Run shell commands in the second sandbox (only with `workspace`). */
+	toolIsolation?: boolean;
 }
 
 /** A failure with a stable code, so the MCP tools can name it. */
@@ -198,6 +200,7 @@ export class Session {
 	public readonly policyReport: PolicyReport | null;
 	/** How the worker is confined; fixed at spawn. */
 	public readonly sandbox: "none" | "workspace";
+	private readonly toolIsolation: boolean;
 	/** What the server changed or warned about when it chose the sandbox. */
 	public readonly sandboxReport: { clamped: string[]; notes: string[] };
 
@@ -244,6 +247,7 @@ export class Session {
 		this.now = deps.now ?? Date.now;
 		this.onGone = deps.onGone;
 		this.sandbox = deps.sandbox ?? "none";
+		this.toolIsolation = deps.toolIsolation ?? false;
 		this.sandboxReport = deps.sandboxReport ?? { clamped: [], notes: [] };
 		this.lastActiveAt = this.now();
 		this.name = deps.name;
@@ -384,7 +388,11 @@ export class Session {
 				},
 				children: this.children,
 				runtime: this.runtime,
-				policy: { sandbox: this.sandbox, allowUngatedInSandbox: false },
+				policy: {
+					sandbox: this.sandbox,
+					allowUngatedInSandbox: false,
+					toolIsolation: this.toolIsolation,
+				},
 				emit: (event) => this.onEvent(event),
 				approve: (call, signal) => this.approve(call, signal),
 				log: {
