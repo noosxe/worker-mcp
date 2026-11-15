@@ -828,6 +828,15 @@ export class Session {
 		};
 	}
 
+	/** The id of the provider this worker runs on. */
+	public get providerId(): string {
+		return this.provider?.id ?? "unknown";
+	}
+
+	public get capabilities() {
+		return this.provider?.capabilities;
+	}
+
 	/** Whether a worker process is actually attached to this session. */
 	public isAlive(): boolean {
 		return this.alive;

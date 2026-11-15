@@ -180,11 +180,11 @@ EOF
           ];
 
           shellHook = ''
-            echo "========================================="
-            echo "  Welcome to the worker-mcp dev shell!   "
-            echo "  Node.js: $(node --version)             "
-            echo "  PNPM:    $(pnpm --version 2>/dev/null || echo 'not installed globally')"
-            echo "========================================="
+            echo "=========================================" >&2
+            echo "  Welcome to the worker-mcp dev shell!   " >&2
+            echo "  Node.js: $(node --version)             " >&2
+            echo "  PNPM:    $(pnpm --version 2>/dev/null || echo 'not installed globally')" >&2
+            echo "=========================================" >&2
           '';
         };
       });

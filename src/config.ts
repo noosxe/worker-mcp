@@ -15,6 +15,11 @@ export interface Config {
 	stateDir: string;
 	/** Directory holding the per-instance private runtime directory. */
 	runtimeDir: string;
+	/**
+	 * List the deprecated pi-named tools next to the neutral ones. On by
+	 * default in 0.5.x; `WORKER_MCP_LEGACY_TOOLS=0` drops them.
+	 */
+	legacyTools: boolean;
 	limits: {
 		/** Default blocking-call timeout in ms; null waits for the command. */
 		commandTimeoutMs: number | null;
@@ -124,6 +129,7 @@ const protectedPath = z
 export const configFileSchema = z.strictObject({
 	stateDir: absolutePath.optional(),
 	runtimeDir: absolutePath.optional(),
+	legacyTools: z.boolean().optional(),
 	limits: z
 		.strictObject({
 			commandTimeoutMs: positiveInt.optional(),
@@ -219,6 +225,7 @@ export const ENV_VARS = {
 		key: "gate.approvalTimeoutMs",
 	},
 	envPassthrough: { name: "WORKER_MCP_ENV_PASSTHROUGH", key: "env.allow" },
+	legacyTools: { name: "WORKER_MCP_LEGACY_TOOLS", key: "legacyTools" },
 	stateDir: { name: "WORKER_MCP_STATE_DIR", key: "stateDir" },
 	runtimeDir: { name: "WORKER_MCP_RUNTIME_DIR", key: "runtimeDir" },
 	maxAutoApprove: {
@@ -562,6 +569,19 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 			keysOf(),
 		),
 	];
+	const legacy = get(ENV_VARS.legacyTools);
+	if (legacy !== undefined) {
+		const word = legacy.trim().toLowerCase();
+		if (["1", "true", "on", "yes"].includes(word)) {
+			parts.push({ legacyTools: true });
+		} else if (["0", "false", "off", "no"].includes(word)) {
+			parts.push({ legacyTools: false });
+		} else {
+			throw new ConfigError(
+				`Invalid config (${label(ENV_VARS.legacyTools)}) ${ENV_VARS.legacyTools.key}: ${JSON.stringify(legacy)} is not 0 or 1`,
+			);
+		}
+	}
 	return parts.reduce<FileLayer>(mergeLayers, {});
 }
 
@@ -631,6 +651,7 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 	return {
 		stateDir: over.stateDir ?? base.stateDir,
 		runtimeDir: over.runtimeDir ?? base.runtimeDir,
+		legacyTools: over.legacyTools ?? base.legacyTools,
 		limits: { ...base.limits, ...over.limits },
 		env: { allow },
 		providers: {
@@ -759,6 +780,7 @@ function applyDefaults(
 		runtimeDir:
 			layer.runtimeDir ??
 			(env.XDG_RUNTIME_DIR ? env.XDG_RUNTIME_DIR : path.join(stateDir, "run")),
+		legacyTools: layer.legacyTools ?? true,
 		limits: {
 			commandTimeoutMs: layer.limits?.commandTimeoutMs ?? null,
 			maxOutputChars: layer.limits?.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS,

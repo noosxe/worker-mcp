@@ -53,7 +53,7 @@ Options:
       --config <path>         JSON config file (default: $XDG_CONFIG_HOME/worker-mcp/config.json)
       --pi-path <path>        Path to the pi binary
       --pi-startup-timeout-ms <n>  How long a spawn waits for pi's gate (default 60000)
-      --command-timeout-ms <n>  Default blocking-call timeout of the legacy send_pi_command
+      --command-timeout-ms <n>  Default wait of the deprecated send_pi_command (at most --max-wait-ms)
       --run-timeout-ms <n>    Wall-clock limit for one run (default 1800000)
       --max-wait-ms <n>       Longest a wait_run call blocks (default 50000)
       --run-start-timeout-ms <n>  How long a worker may take to accept a prompt (default 15000)
@@ -68,6 +68,7 @@ Options:
       --max-auto-approve <level>  Ceiling on auto-approval: LOW, MEDIUM or HIGH
 
 Settings may also come from WORKER_MCP_* environment variables; see the README.
+WORKER_MCP_LEGACY_TOOLS=0 hides the deprecated pi-named tools (on by default).
 `);
 	process.exit(0);
 }

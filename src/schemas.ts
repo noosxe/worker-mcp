@@ -111,7 +111,75 @@ const waitMs = z
 		"How long to wait, in ms (at most 50 000; the server may allow less).",
 	);
 
+const ref = (what: string) => WorkerRef.describe(`${what} (id or name).`);
+
 export const schemas = {
+	listProviders: z.strictObject({}),
+	spawnWorker: z.strictObject({
+		cwd: AbsolutePath.describe(
+			"The absolute directory the worker runs in. It must exist, be a directory and, when the server restricts workspaces, lie inside an allowed root.",
+		),
+		provider: z
+			.string()
+			.regex(/^[a-z][a-z0-9-]{0,31}$/, "a provider id such as pi")
+			.optional()
+			.describe("A provider id from list_providers. Default: the first one."),
+		name: name
+			.optional()
+			.describe(
+				"A name for the worker, unique among live workers. Every tool taking a workerId accepts it instead of the generated id.",
+			),
+		model: z
+			.string()
+			.max(200)
+			.optional()
+			.describe("Model override, as `<provider>/<model>`."),
+		systemPrompt: z
+			.string()
+			.max(MAX_SYSTEM_PROMPT_CHARS)
+			.optional()
+			.describe("Extra system instructions for the worker."),
+		policy: RiskPolicy.optional(),
+	}),
+	getPendingActions: z.strictObject({
+		workerId: ref("Only this worker's approvals").optional(),
+		runId: RunId.optional().describe("Only this run's approvals."),
+		sessionId: WorkerRef.optional().describe("Deprecated: use workerId."),
+	}),
+	listWorkers: z.strictObject({}),
+	setRiskPolicy: z
+		.strictObject({
+			workerId: ref("The worker").optional(),
+			policy: RiskPolicy.optional(),
+			sessionId: WorkerRef.optional().describe("Deprecated: use workerId."),
+			riskPolicy: RiskPolicy.optional().describe("Deprecated: use policy."),
+		})
+		.refine((a) => (a.workerId ?? a.sessionId) !== undefined, {
+			message: "workerId is required",
+			path: ["workerId"],
+		})
+		.refine((a) => (a.policy ?? a.riskPolicy) !== undefined, {
+			message: "policy is required",
+			path: ["policy"],
+		}),
+	getGateLog: z.strictObject({
+		workerId: ref("The worker"),
+		limit: z
+			.number()
+			.int()
+			.min(1)
+			.max(MAX_LOG_LIMIT)
+			.optional()
+			.describe("At most this many of the newest entries (max 200)."),
+		decidedBy: z
+			.string()
+			.max(32)
+			.optional()
+			.describe(
+				"Only entries decided by this: rules, coordinator, timeout or cancel.",
+			),
+	}),
+	terminateWorker: z.strictObject({ workerId: ref("The worker") }),
 	startRun: z.strictObject({
 		workerId: WorkerRef.describe("The worker's id or name."),
 		prompt: z.string().min(1).max(MAX_PROMPT_CHARS).describe("The task."),

@@ -66,6 +66,19 @@ export async function callOk(
 	return textOf(result);
 }
 
+/** The approvals `get_pending_actions` reports, with `command` as sent raw. */
+export async function pendingList(
+	client: Client,
+	args: Record<string, unknown>,
+) {
+	const result = await call(client, TOOLS.pending, args);
+	assert.notStrictEqual(result.isError, true, textOf(result));
+	const s = (result as { structuredContent?: { approvals: any[] } })
+		.structuredContent;
+	assert.ok(s, "the result has structuredContent");
+	return s.approvals.map((a) => ({ ...a, command: a.untrustedCommand }));
+}
+
 export async function sessionStatus(client: Client, sessionId: string) {
 	const list = JSON.parse(await callOk(client, TOOLS.list, {})) as {
 		workerId: string;
@@ -117,15 +130,21 @@ export interface RunViewJson {
 	next: string;
 }
 
+/** The run view of a result, read from `structuredContent` (worker text raw). */
 export function viewOf(result: object): RunViewJson {
-	const t = rawTextOf(result);
-	const view = JSON.parse(t.slice(t.indexOf("\n") + 1)) as RunViewJson;
-	view.output.text = unwrap(view.output.text);
-	view.activity = view.activity.map(unwrap);
-	for (const a of view.pendingApprovals) {
-		if (a.command !== undefined) a.command = unwrap(a.command);
-	}
-	return view;
+	const s = (result as { structuredContent?: Record<string, any> })
+		.structuredContent;
+	assert.ok(s, "the result has structuredContent");
+	const data = s.run ?? s;
+	return {
+		...data,
+		output: { ...data.output, text: data.untrustedFinalText },
+		activity: data.untrustedActivity,
+		pendingApprovals: data.pendingApprovals.map((a: any) => ({
+			...a,
+			command: a.untrustedCommand,
+		})),
+	} as RunViewJson;
 }
 
 /** Call a run tool (start_run, wait_run, ...) and parse its view. */
@@ -227,8 +246,8 @@ export function behaviourTests(name: string, layer: Layer) {
 					await sessionStatus(client, "approve"),
 					"AWAITING_APPROVAL",
 				);
-				const pending = JSON.parse(
-					await callOk(client, TOOLS.pending, { sessionId: "approve" }),
+				const pending = (
+					await pendingList(client, { sessionId: "approve" })
 				)[0];
 				assert.strictEqual(pending.actionId, actionId);
 
@@ -353,8 +372,8 @@ export function behaviourTests(name: string, layer: Layer) {
 						await sessionStatus(client, "risky"),
 						"AWAITING_APPROVAL",
 					);
-					const pending = JSON.parse(
-						await callOk(client, TOOLS.pending, { sessionId: "risky" }),
+					const pending = (
+						await pendingList(client, { sessionId: "risky" })
 					)[0];
 					assert.match(pending.riskLabel, /HIGH|CRITICAL/);
 				});
@@ -528,8 +547,8 @@ export function behaviourTests(name: string, layer: Layer) {
 					await sessionStatus(client, "protected"),
 					"AWAITING_APPROVAL",
 				);
-				const pending = JSON.parse(
-					await callOk(client, TOOLS.pending, { sessionId: "protected" }),
+				const pending = (
+					await pendingList(client, { sessionId: "protected" })
 				)[0];
 				assert.strictEqual(pending.hardLimit, true);
 				// Only the coordinator can let it through.

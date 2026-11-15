@@ -1,4 +1,5 @@
 import type { PendingApprovalInfo, RunView } from "./core/run.js";
+import type { ApprovalData, RunData } from "./outputs.js";
 
 /**
  * Everything a worker wrote that the coordinator reads is untrusted: it came
@@ -14,45 +15,60 @@ export function escapeUntrusted(text: string): string {
 	return text.replace(TAG, "&lt;$1worker_output");
 }
 
-/** `text` as untrusted output of run `runId`. */
-export function wrapUntrusted(runId: string, text: string): string {
-	return `<worker_output run="${runId}" trust="untrusted">${escapeUntrusted(text)}</worker_output>`;
+/** `text` as untrusted output of run `runId` (or of worker `id`, with `attr`). */
+export function wrapUntrusted(
+	runId: string,
+	text: string,
+	attr: "run" | "worker" = "run",
+): string {
+	return `<worker_output ${attr}="${runId}" trust="untrusted">${escapeUntrusted(text)}</worker_output>`;
 }
 
-/** The call an approval is about, as fields rather than a sentence. */
-export interface ApprovalView {
-	approvalId: string;
-	/** Deprecated: the same as `approvalId`. */
-	actionId: string;
-	runId: string;
-	tool: string;
-	kind: string;
-	/** The shell command, untrusted. */
-	command?: string;
-	/** Paths the call touches, untrusted. */
-	paths: { path: string; inWorkspace: boolean; protected: boolean }[];
-	riskLabel?: string;
-	/** Why the gate sent it to the coordinator. */
-	reason?: string;
-	hardLimit?: boolean;
-	expiresInMs: number;
+/**
+ * Fields written by a worker sit under keys named `untrusted…`. In
+ * `structuredContent` they stay raw; in the text block `wrapTree` wraps every
+ * string below such a key, so the label survives either channel. The run a
+ * wrapper names is the nearest enclosing object's `runId`, else `fallback`.
+ */
+export function wrapTree<T>(
+	data: T,
+	fallback: string,
+	attr: "run" | "worker" = "run",
+): T {
+	const walk = (value: unknown, id: string, untrusted: boolean): unknown => {
+		if (typeof value === "string") {
+			return untrusted ? wrapUntrusted(id, value, attr) : value;
+		}
+		if (Array.isArray(value)) return value.map((v) => walk(v, id, untrusted));
+		if (value && typeof value === "object") {
+			const obj = value as Record<string, unknown>;
+			const here = typeof obj.runId === "string" ? obj.runId : id;
+			return Object.fromEntries(
+				Object.entries(obj).map(([k, v]) => [
+					k,
+					walk(v, here, untrusted || k.startsWith("untrusted")),
+				]),
+			);
+		}
+		return value;
+	};
+	return walk(data, fallback, false) as T;
 }
 
-export function approvalView(
+export function approvalData(
 	runId: string,
 	a: PendingApprovalInfo,
 	now = Date.now(),
-): ApprovalView {
+): ApprovalData {
 	return {
 		approvalId: a.actionId,
 		actionId: a.actionId,
 		runId,
 		tool: escapeUntrusted(a.tool),
 		kind: a.kind,
-		command:
-			a.command === undefined ? undefined : wrapUntrusted(runId, a.command),
-		paths: a.paths.map((p) => ({
-			path: wrapUntrusted(runId, p.path),
+		untrustedCommand: a.command,
+		untrustedPaths: a.paths.map((p) => ({
+			path: p.path,
 			inWorkspace: p.inWorkspace,
 			protected: p.protected,
 		})),
@@ -63,31 +79,33 @@ export function approvalView(
 	};
 }
 
-/** A run view with every worker-written field wrapped. */
-export type RenderedRunView = Omit<
-	RunView,
-	"output" | "activity" | "pendingApprovals"
-> & {
-	pendingApprovals: ApprovalView[];
-	/** Each line is wrapped separately. */
-	activity: string[];
-	output: Omit<RunView["output"], "text"> & { text: string };
-};
-
-export function renderRunView(view: RunView): RenderedRunView {
+export function runData(view: RunView): RunData {
 	return {
-		...view,
+		runId: view.runId,
+		workerId: view.workerId,
+		state: view.state,
+		seq: view.seq,
+		elapsedMs: view.elapsedMs,
 		pendingApprovals: view.pendingApprovals.map((a) =>
-			approvalView(view.runId, a),
+			approvalData(view.runId, a),
 		),
-		activity: view.activity.map((l) => wrapUntrusted(view.runId, l)),
-		gate: {
-			...view.gate,
-			notable: view.gate.notable.map((l) => wrapUntrusted(view.runId, l)),
-		},
+		untrustedActivity: view.activity,
+		untrustedFinalText: view.output.text,
 		output: {
-			...view.output,
-			text: wrapUntrusted(view.runId, view.output.text),
+			offset: view.output.offset,
+			nextOffset: view.output.nextOffset,
+			totalChars: view.output.totalChars,
+			truncated: view.output.truncated,
+			more: view.output.more,
 		},
+		error: view.error,
+		usage: view.usage,
+		gate: {
+			autoAllowed: view.gate.autoAllowed,
+			autoDenied: view.gate.autoDenied,
+			escalated: view.gate.escalated,
+			untrustedNotable: view.gate.notable,
+		},
+		next: view.next,
 	};
 }
