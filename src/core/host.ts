@@ -36,6 +36,8 @@ export class WorkerHost implements ProviderHost {
 			/** Decided by the core for every process of this worker. */
 			sandbox?: "none" | "workspace";
 			sandboxProfile?: SandboxProfile;
+			/** Set when the shell commands run in the second sandbox. */
+			isolateCommand?: (command: string) => string;
 			emit: (event: WorkerEvent) => void;
 			approve: Approver;
 			log: Logger;
@@ -81,7 +83,7 @@ export class WorkerHost implements ProviderHost {
 		signal: AbortSignal,
 	): Promise<ApprovalDecision> {
 		try {
-			return await this.deps.approve(call, signal);
+			return this.isolate(call, await this.deps.approve(call, signal));
 		} catch (e) {
 			// Failing closed: a gate that errors denies.
 			return {
@@ -89,6 +91,34 @@ export class WorkerHost implements ProviderHost {
 				reason: `the approval gate failed: ${e instanceof Error ? e.message : String(e)}`,
 			};
 		}
+	}
+
+	/**
+	 * An allowed shell command runs in the second sandbox: the decision becomes
+	 * a mutation with the wrapped command (what the gate rated is what the
+	 * worker asked for; the wrapper only takes things away). A command that
+	 * cannot be wrapped is denied.
+	 */
+	private isolate(
+		call: RawToolCall,
+		decision: ApprovalDecision,
+	): ApprovalDecision {
+		const tool = this.deps.sandboxProfile?.shellTool;
+		const wrap = this.deps.isolateCommand;
+		if (!wrap || !tool || call.toolName !== tool.name) return decision;
+		if (decision.kind === "deny") return decision;
+		const input = decision.kind === "mutate" ? decision.input : call.input;
+		const command = input[tool.command];
+		if (typeof command !== "string") {
+			return {
+				kind: "deny",
+				reason: "the shell command could not be isolated: it is not a string",
+			};
+		}
+		return {
+			kind: "mutate",
+			input: { ...input, [tool.command]: wrap(command) },
+		};
 	}
 
 	/** Terminate every process this worker started. Idempotent. */
@@ -150,6 +180,16 @@ export async function openWorker(
 		privateDir,
 		sandbox: opts.policy.sandbox,
 		sandboxProfile: opts.provider.sandboxProfile,
+		isolateCommand:
+			opts.policy.sandbox === "workspace" &&
+			opts.policy.toolIsolation &&
+			opts.provider.sandboxProfile
+				? (command) =>
+						opts.children.isolateCommand(
+							command,
+							opts.provider.sandboxProfile as SandboxProfile,
+						)
+				: undefined,
 		emit: opts.emit,
 		approve: opts.approve,
 		log,

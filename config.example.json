@@ -18,6 +18,7 @@
 	},
 	"sandbox": {
 		"minimum": "none",
+		"toolIsolation": "auto",
 		"extraRo": ["/opt/tools"]
 	},
 	"gate": {

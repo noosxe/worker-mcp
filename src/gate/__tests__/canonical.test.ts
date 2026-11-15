@@ -198,3 +198,32 @@ describe("path resolution", () => {
 		);
 	});
 });
+
+describe("the agent's credentials", () => {
+	test("the credential files and a process's environment and memory are hard reads", () => {
+		for (const [p, rule] of [
+			[`${fx.home}/.pi/agent/auth.json`, "secrets"],
+			[`${fx.home}/.pi/agent/models.json`, "secrets"],
+			["/proc/self/environ", "process-memory"],
+			["/proc/self/mem", "process-memory"],
+			["/proc/12/environ", "process-memory"],
+			["/proc/thread-self/maps", "process-memory"],
+			["/proc/1/task/7/fd", "process-memory"],
+			[`/proc/self/root${fx.home}/.pi/agent/auth.json`, "secrets"],
+		] as const) {
+			assert.strictEqual(map("read", { path: p }).paths[0].protected, rule, p);
+		}
+		// Other parts of /proc and the agent's other files stay readable.
+		for (const p of [
+			"/proc/cpuinfo",
+			"/proc/self/status",
+			`${fx.home}/.pi/agent/settings.json`,
+		]) {
+			assert.strictEqual(
+				map("read", { path: p }).paths[0].protected,
+				undefined,
+				p,
+			);
+		}
+	});
+});

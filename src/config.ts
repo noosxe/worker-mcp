@@ -126,10 +126,19 @@ export interface Config {
 		hide: string[];
 		/** The bwrap binary. Unset: `WORKER_MCP_BWRAP`, else `bwrap` on PATH. */
 		bwrapPath?: string;
+		/**
+		 * Whether the shell commands a sandboxed worker runs get a second,
+		 * tighter sandbox that hides the agent's own configuration and
+		 * credentials and the agent process itself. `auto` (default): when it
+		 * works here, otherwise a warning at spawn. `require`: a spawn fails
+		 * when it does not work. `off`: never.
+		 */
+		toolIsolation: ToolIsolation;
 	};
 }
 
 export type SandboxMode = "none" | "workspace";
+export type ToolIsolation = "auto" | "require" | "off";
 
 export interface HttpClassifierConfig {
 	/** Names the classifier in the gate log as `http:<name>`. */
@@ -303,6 +312,7 @@ const sandboxPath = absolutePath.refine(
 	"must be an absolute path without '..' segments, and not the root",
 );
 const sandboxMode = z.enum(["none", "workspace"]);
+const toolIsolation = z.enum(["auto", "require", "off"]);
 const protectedPath = z
 	.string()
 	.min(1)
@@ -379,6 +389,7 @@ export const configFileSchema = z.strictObject({
 			extraRw: z.array(sandboxPath).optional(),
 			hide: z.array(sandboxPath).optional(),
 			bwrapPath: z.string().min(1).optional(),
+			toolIsolation: toolIsolation.optional(),
 		})
 		.optional(),
 });
@@ -565,6 +576,11 @@ const CHOICE_SETTINGS = {
 		flag: "--sandbox-minimum",
 		key: "sandbox.minimum",
 	},
+	sandboxToolIsolation: {
+		env: "WORKER_MCP_SANDBOX_TOOL_ISOLATION",
+		flag: "--sandbox-tool-isolation",
+		key: "sandbox.toolIsolation",
+	},
 	sandboxDefault: {
 		env: "WORKER_MCP_SANDBOX_DEFAULT",
 		flag: "--sandbox-default",
@@ -625,6 +641,12 @@ function choiceLayer(source: string, name: ChoiceName, raw: string): FileLayer {
 		case "sandboxMinimum":
 			return {
 				sandbox: { minimum: pick<SandboxMode>(["none", "workspace"], word) },
+			};
+		case "sandboxToolIsolation":
+			return {
+				sandbox: {
+					toolIsolation: pick<ToolIsolation>(["auto", "require", "off"], word),
+				},
 			};
 		case "sandboxDefault":
 			return {
@@ -1056,6 +1078,7 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 			],
 			hide: [...(base.sandbox?.hide ?? []), ...(over.sandbox?.hide ?? [])],
 			bwrapPath: over.sandbox?.bwrapPath ?? base.sandbox?.bwrapPath,
+			toolIsolation: over.sandbox?.toolIsolation ?? base.sandbox?.toolIsolation,
 		},
 		gate: {
 			maxAutoApprove: over.gate?.maxAutoApprove ?? base.gate?.maxAutoApprove,
@@ -1338,6 +1361,7 @@ function applyDefaults(
 			extraRo: [...new Set(layer.sandbox?.extraRo ?? [])],
 			extraRw: [...new Set(layer.sandbox?.extraRw ?? [])],
 			hide: [...new Set(layer.sandbox?.hide ?? [])],
+			toolIsolation: layer.sandbox?.toolIsolation ?? "auto",
 			// The file wins over the environment, which the Nix package sets.
 			...(layer.sandbox?.bwrapPath || bwrapEnv
 				? { bwrapPath: layer.sandbox?.bwrapPath || bwrapEnv }

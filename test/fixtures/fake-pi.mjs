@@ -32,6 +32,11 @@
 //                               after the gate (which may have rewritten it)
 //   parallel-tools:<name>:<json>  two calls through the gate before either is
 //                               answered (the input gets "n": 1 and "n": 2)
+//   bash:<command>              like pi's bash tool: propose it through the gate,
+//                               run what comes back (the gate may have wrapped
+//                               it) with bash, report exit code and output
+//   read:<path>                 like pi's read tool: propose it, then read the
+//                               file in this process and report its content
 //   dialog:<method>             send a non-gate select/input/editor/confirm and
 //                               report how it was answered
 // Startup scenarios, chosen with FAKE_PI_SCENARIO (they act before any prompt):
@@ -42,7 +47,7 @@
 // so a gate that reports readiness from that hook is seen on the wire.
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -85,6 +90,9 @@ record({
 	env: { ...process.env },
 	cwd: process.cwd(),
 });
+// Like pi after it has read its credentials: they stay in this process's
+// environment (visible in /proc/<pid>/environ) but not in its children's.
+delete process.env.FAKE_PI_CRED;
 
 // ---- gate extensions -------------------------------------------------------
 const extensionPaths = [];
@@ -238,6 +246,32 @@ async function startPrompt(message) {
 		send(toolExecutionStart(toolCallId, toolName, result.input));
 		send(toolExecutionEnd(toolCallId, toolName));
 		finishRun(`tool ${toolName} ran with ${JSON.stringify(result.input)}`);
+	} else if ((m = spec.match(/^bash:([\s\S]+)$/))) {
+		run = { timer: null };
+		const result = await gate("bash", { command: m[1] });
+		if (!run) return;
+		if (result.blocked) {
+			finishRun(`blocked: ${result.reason}`);
+			return;
+		}
+		const r = spawnSync("bash", ["-c", result.input.command], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		finishRun(`exit=${r.status}\n${r.stdout}${r.stderr}`);
+	} else if ((m = spec.match(/^read:([\s\S]+)$/))) {
+		run = { timer: null };
+		const result = await gate("read", { path: m[1] });
+		if (!run) return;
+		if (result.blocked) {
+			finishRun(`blocked: ${result.reason}`);
+			return;
+		}
+		try {
+			finishRun(`content=${readFileSync(m[1], "utf8")}`);
+		} catch (e) {
+			finishRun(`error=${e.code}`);
+		}
 	} else if ((m = spec.match(/^parallel-tools:([^:]+):([\s\S]*)$/))) {
 		const [, toolName, json] = m;
 		const base = JSON.parse(json);

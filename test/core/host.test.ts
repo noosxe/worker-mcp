@@ -131,4 +131,103 @@ describe("core/host: opening workers through a provider", () => {
 		assert.strictEqual(decision.kind, "deny");
 		await opened.close({ graceMs: 50, reason: "requested" });
 	});
+
+	describe("shell commands in the second sandbox", () => {
+		const profile = {
+			roHome: [],
+			rwHome: [],
+			shellTool: { name: "bash", command: "command" },
+		};
+
+		async function hostWith(decision: object, toolIsolation: boolean) {
+			const stub = {
+				isolateCommand: (c: string) => `WRAPPED(${c})`,
+			} as unknown as import("../../src/core/sandbox.js").SandboxService;
+			const registry = new ChildRegistry({
+				env: iso.env,
+				envConfig: { allow: [], forceDropExempt: [] },
+				sandbox: stub,
+			});
+			let host!: ProviderHost;
+			const fake = new FakeProvider();
+			const provider = Object.assign(Object.create(fake), {
+				sandboxProfile: profile,
+				async open(_spec: unknown, h: ProviderHost): Promise<WorkerHandle> {
+					host = h;
+					return {} as WorkerHandle;
+				},
+			});
+			await openWorker({
+				...base(),
+				children: registry,
+				provider,
+				policy: {
+					sandbox: "workspace" as const,
+					allowUngatedInSandbox: false,
+					toolIsolation,
+				},
+				approve: async () => decision as never,
+			});
+			return host;
+		}
+		// oxlint-disable-next-line unicorn/consistent-function-scoping -- a test helper next to its use
+		const bash = (input: Record<string, unknown>) => ({
+			callId: "1",
+			toolName: "bash",
+			input,
+		});
+
+		test("an allowed bash command becomes a mutation with the wrapped command", async () => {
+			const host = await hostWith({ kind: "allow" }, true);
+			const d = await host.requestApproval(
+				bash({ command: "ls", timeout: 5 }),
+				new AbortController().signal,
+			);
+			assert.deepStrictEqual(d, {
+				kind: "mutate",
+				input: { command: "WRAPPED(ls)", timeout: 5 },
+			});
+		});
+
+		test("a mutated command is wrapped too, and a denial stays a denial", async () => {
+			const host = await hostWith(
+				{ kind: "mutate", input: { command: "pwd" } },
+				true,
+			);
+			assert.deepStrictEqual(
+				await host.requestApproval(
+					bash({ command: "ls" }),
+					new AbortController().signal,
+				),
+				{ kind: "mutate", input: { command: "WRAPPED(pwd)" } },
+			);
+			const denied = await hostWith({ kind: "deny", reason: "no" }, true);
+			assert.deepStrictEqual(
+				await denied.requestApproval(
+					bash({ command: "ls" }),
+					new AbortController().signal,
+				),
+				{ kind: "deny", reason: "no" },
+			);
+		});
+
+		test("other tools, a switched-off isolation and a command that is not text", async () => {
+			const host = await hostWith({ kind: "allow" }, true);
+			const signal = new AbortController().signal;
+			assert.deepStrictEqual(
+				await host.requestApproval(
+					{ callId: "2", toolName: "read", input: { path: "x" } },
+					signal,
+				),
+				{ kind: "allow" },
+			);
+			const bad = await host.requestApproval(bash({ command: 5 }), signal);
+			assert.strictEqual(bad.kind, "deny");
+			const off = await hostWith({ kind: "allow" }, false);
+			assert.deepStrictEqual(
+				await off.requestApproval(bash({ command: "ls" }), signal),
+				{ kind: "allow" },
+			);
+		});
+	});
 });

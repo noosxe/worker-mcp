@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import * as os from "node:os";
 import { StringDecoder } from "node:string_decoder";
 
 import type { Config, SandboxMode } from "../config.js";
@@ -432,6 +433,22 @@ export class ChildRegistry {
 	/** Number of children that have not exited yet. */
 	get size(): number {
 		return this.children.size;
+	}
+
+	/**
+	 * `command` rewritten to run in the second sandbox of shell commands, for a
+	 * worker spawned with `spawn`'s environment.
+	 */
+	isolateCommand(command: string, profile: SandboxProfile): string {
+		const sandbox = this.opts.sandbox;
+		if (!sandbox) {
+			throw new Error("cannot isolate a command: the sandbox is not set up");
+		}
+		const env = buildWorkerEnv(this.opts.env, this.opts.envConfig);
+		return sandbox.isolateCommand(command, {
+			home: env.HOME || os.homedir(),
+			profile,
+		});
 	}
 
 	spawn(spec: ChildSpec): ManagedChild {

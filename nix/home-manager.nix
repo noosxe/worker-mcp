@@ -158,7 +158,7 @@ let
     limits = lib.optionalAttrs (cfg.allowedRoots != [ ]) { inherit (cfg) allowedRoots; };
     sandbox =
       lib.filterAttrs (_: v: v != null) {
-        inherit (cfg.sandbox) minimum default bwrapPath;
+        inherit (cfg.sandbox) minimum default bwrapPath toolIsolation;
       }
       // lib.optionalAttrs (cfg.sandbox.extraRo != [ ]) { inherit (cfg.sandbox) extraRo; }
       // lib.optionalAttrs (cfg.sandbox.extraRw != [ ]) { inherit (cfg.sandbox) extraRw; }
@@ -478,6 +478,23 @@ in
         description = ''
           What a spawn gets when it names no sandbox. Server default (null):
           `workspace` where it works, otherwise `none`.
+        '';
+      };
+      toolIsolation = mkOption {
+        type = types.nullOr (
+          types.enum [
+            "auto"
+            "require"
+            "off"
+          ]
+        );
+        default = null;
+        description = ''
+          Whether the shell commands a sandboxed worker runs get a second
+          sandbox that hides pi's credential file and the pi process from
+          them. `auto` uses it where it works and warns where it does not,
+          `require` refuses a spawn where it cannot work, `off` never uses
+          it. Server default (null): `auto`.
         '';
       };
       extraRo = mkOption {

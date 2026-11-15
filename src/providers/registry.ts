@@ -94,6 +94,11 @@ export interface OpenPolicy {
 	sandbox: "none" | "workspace";
 	/** Server setting: let a provider with no gate run inside the sandbox. */
 	allowUngatedInSandbox: boolean;
+	/**
+	 * Run the agent's shell commands in a second sandbox that hides the agent's
+	 * credentials (see `SandboxProfile.toolHideHome`). Only with `workspace`.
+	 */
+	toolIsolation?: boolean;
 }
 
 /**

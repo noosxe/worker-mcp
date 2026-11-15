@@ -97,6 +97,7 @@ let
               legacyTools = false;
               sandbox = {
                 default = "workspace";
+                toolIsolation = "require";
                 extraRo = [ "/opt/toolchain" ];
                 extraRw = [ "/var/cache/build" ];
                 hide = [ "/data/home-backup" ];
@@ -202,7 +203,7 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .providers.pi.path == "/opt/pi/bin/pi"
           and .providers.pi.defaultModel == "zai/test-model"
           and (has("legacyTools") | not)
-          and .sandbox == { default: "workspace", extraRo: ["/opt/toolchain"], extraRw: ["/var/cache/build"], hide: ["/data/home-backup"] }
+          and .sandbox == { default: "workspace", toolIsolation: "require", extraRo: ["/opt/toolchain"], extraRw: ["/var/cache/build"], hide: ["/data/home-backup"] }
           and .env.allow == ["TEST_API_KEY"]
         ' ${file}
 
@@ -221,6 +222,7 @@ pkgs.runCommand "worker-mcp-module-eval"
                and .logLevel == "debug"
                and .sandbox.minimum == "none"
                and .sandbox.default == "workspace"
+               and .sandbox.toolIsolation == "require"
                and .sandbox.extraRo == ["/opt/toolchain"]' effective.json
 
         # On Linux the package finds its own bubblewrap.

@@ -26,7 +26,9 @@ A provider never spawns on its own: it gives `host.spawn` a command and
 gets a `ManagedChild`. The core decides the sandbox: when the worker runs in
 `workspace`, `ChildRegistry` wraps the command in bubblewrap (`core/sandbox.ts`).
 A provider only declares what its agent needs from `$HOME` in an optional
-`sandboxProfile` (`roHome`, `rwHome`, `overlayHome`), for example pi's `~/.pi`. So the environment allowlist, process group, framing
+`sandboxProfile` (`roHome`, `rwHome`, `overlayHome`, and for credentials
+`toolHideHome` and `shellTool`: what the agent's shell commands must not see, which
+the core hides in a second sandbox), for example pi's `~/.pi`. So the environment allowlist, process group, framing
 caps and kill escalation cannot be skipped. `open()` resolves only once the
 provider has proof its gate is active; otherwise it rejects and the core kills
 the child. `requestApproval` never rejects: any failure is a deny.
