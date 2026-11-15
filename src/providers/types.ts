@@ -155,8 +155,11 @@ export type WorkerEvent =
 			runId?: string;
 			level: "info" | "warn";
 			text: string;
-			/** The text carries the worker's own words: logged only at `debug`. */
-			untrusted?: boolean;
+			/**
+			 * A fixed string written by the server. Without it the text is taken
+			 * to carry the worker's own words and is logged only at `debug`.
+			 */
+			trusted?: boolean;
 	  }
 	| {
 			type: "run_finished";

@@ -432,7 +432,6 @@ class PiWorker implements WorkerHandle {
 				type: "notice",
 				level: "warn",
 				text: `pi rejected ${String(msg.command)}: ${String(msg.error ?? "")}`,
-				untrusted: true,
 			});
 		}
 	}
@@ -449,6 +448,7 @@ class PiWorker implements WorkerHandle {
 							type: "notice",
 							level: "warn",
 							text: "ignored a gate status with the wrong nonce",
+							trusted: true,
 						});
 					}
 				}
@@ -459,7 +459,6 @@ class PiWorker implements WorkerHandle {
 					runId: this.run?.runId,
 					level: req.notifyType === "info" || !req.notifyType ? "info" : "warn",
 					text: req.message ?? "",
-					untrusted: true,
 				});
 				return;
 			case "input":
@@ -477,6 +476,7 @@ class PiWorker implements WorkerHandle {
 					runId: this.run?.runId,
 					level: "warn",
 					text: `a "${req.method}" dialog from pi was answered with cancel`,
+					trusted: true,
 				});
 				return;
 			default:
@@ -494,6 +494,7 @@ class PiWorker implements WorkerHandle {
 				runId: this.run?.runId,
 				level: "warn",
 				text: "a gate request without a valid nonce was refused",
+				trusted: true,
 			});
 			return;
 		}
@@ -539,7 +540,6 @@ class PiWorker implements WorkerHandle {
 			runId: this.run?.runId,
 			level: "warn",
 			text: `pi extension error: ${String(msg.error ?? "")}`,
-			untrusted: true,
 		});
 		if (!text.includes(this.gateFile)) return;
 		// The gate itself is broken: nothing may run ungated.

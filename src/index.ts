@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { ConfigError, formatConfig, loadConfig } from "./config.js";
-import { describeError } from "./core/log.js";
+import { describeError, setLogLevel } from "./core/log.js";
 import { createServer } from "./server.js";
 import { SessionManager } from "./session/session-manager.js";
 
@@ -73,6 +73,7 @@ Options:
       --on-classifier-failure <escalate|deny>  What an unanswered classifier means (default escalate)
       --audit <on|off>        Write the audit log file (default on)
       --audit-file <path>     Audit log file (default <state dir>/audit.jsonl)
+      --log-level <level>     debug, info (default), warn or error; tool inputs and worker output only at debug
 
 Settings may also come from WORKER_MCP_* environment variables; see the README.
 `);
@@ -83,6 +84,8 @@ if (loaded.flags.printConfig) {
 	process.stdout.write(formatConfig(loaded.config));
 	process.exit(0);
 }
+
+setLogLevel(loaded.config.logLevel);
 
 // Builds the classifiers: a missing or insecure token file stops the server here.
 let sessionManager: SessionManager;
