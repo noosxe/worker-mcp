@@ -204,6 +204,12 @@ describe("jev dialect: the request", () => {
 	});
 });
 
+const withRisk = (risk: Record<string, unknown>) => {
+	const a: any = answers();
+	a.answers.risk = { type: "score", confidence: 0.9, ...risk };
+	return a;
+};
+
 describe("jev dialect: the mapping", () => {
 	test("low risk, low approval, confident: allow", async () => {
 		const s = await serve(reply({}));
@@ -299,6 +305,51 @@ describe("jev dialect: the mapping", () => {
 			const out = await run(classifier(s.url));
 			assert.strictEqual(out.decision, "escalate", JSON.stringify(body));
 			assert.ok(out.consulted[1].reason.includes("unusable answer"));
+		}
+	});
+
+	test("risk position from probabilities; a disagreeing score escalates", async () => {
+		const cases: [string, Record<string, unknown>, string, RegExp?][] = [
+			// only probabilities: computed 2.95, a deny
+			["probabilities only", { probabilities: [0, 0.01, 0.03, 0.96] }, "deny"],
+			// object form, as in the docs' example
+			[
+				"keyed probabilities",
+				{ probabilities: { 0: 0.97, 1: 0.03, 2: 0, 3: 0 } },
+				"allow",
+			],
+			// both agree: 2.95
+			[
+				"both agree",
+				{ score: 2.95, probabilities: [0, 0.01, 0.03, 0.96] },
+				"deny",
+			],
+			// a normalised score next to probabilities of a top-risk call
+			[
+				"disagree",
+				{ score: 0.98, probabilities: [0, 0.01, 0.03, 0.96] },
+				"escalate",
+				/disagrees/,
+			],
+			[
+				"wrong length",
+				{ probabilities: [0.5, 0.5, 0] },
+				"escalate",
+				/four values/,
+			],
+			[
+				"sum off",
+				{ probabilities: [0.1, 0.1, 0.1, 0.1] },
+				"escalate",
+				/sum to/,
+			],
+			["score alone is read as 0-3", { score: 2.9 }, "deny"],
+		];
+		for (const [name, risk, verdict, reason] of cases) {
+			const s = await serve((_r, res) => send(res, withRisk(risk)));
+			const out = await run(classifier(s.url));
+			assert.strictEqual(out.decision, verdict, name);
+			if (reason) assert.match(out.consulted[1].reason, reason, name);
 		}
 	});
 

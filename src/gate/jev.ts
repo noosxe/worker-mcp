@@ -18,6 +18,7 @@ const MAX_PATHS = 30;
 const MAX_RECENT = 10;
 const MAX_FIELD = 300;
 
+const f = (n: number) => String(Math.round(n * 100) / 100);
 const clip = (s: string, n = MAX_FIELD) =>
 	s.length > n ? `${s.slice(0, n)}...` : s;
 const oneLine = (s: string, n = MAX_FIELD) =>
@@ -119,6 +120,59 @@ const isObject = (v: unknown): v is Record<string, unknown> =>
 const inRange = (v: unknown, lo: number, hi: number): v is number =>
 	typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi;
 
+/** Tolerances for the risk answer's own consistency. */
+const PROBABILITY_SUM_TOLERANCE = 0.02;
+const SCORE_TOLERANCE = 0.25;
+
+/**
+ * The risk position on the 0-3 scale, or the reason it cannot be trusted.
+ * TypeSafe documents `score` as the probability-weighted mean of the level
+ * numbers, but the scale of a real response has not been seen. So when
+ * `probabilities` are there (an array, or an object keyed "0".."3") the
+ * position is computed from them, and a `score` that disagrees is not
+ * believed. A `score` alone is read as 0-3: that is unverified.
+ */
+function riskPosition(a: Record<string, unknown>): number | string {
+	let probs: unknown[] | undefined;
+	if (Array.isArray(a.probabilities)) probs = a.probabilities;
+	else if (isObject(a.probabilities)) {
+		probs = ["0", "1", "2", "3"].map(
+			(k) => (a.probabilities as Record<string, unknown>)[k],
+		);
+		if (Object.keys(a.probabilities).length !== RISK_MAX + 1) probs = [];
+	}
+	let computed: number | undefined;
+	if (probs !== undefined) {
+		if (
+			probs.length !== RISK_MAX + 1 ||
+			!probs.every((p) => inRange(p, 0, 1))
+		) {
+			return "risk probabilities are not four values from 0 to 1";
+		}
+		const values = probs as number[];
+		const sum = values.reduce((x, y) => x + y, 0);
+		if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE) {
+			return `risk probabilities sum to ${f(sum)}, not 1`;
+		}
+		computed = values.reduce((x, p, i) => x + i * p, 0);
+	}
+	if (a.score !== undefined && !inRange(a.score, 0, RISK_MAX)) {
+		return "risk score is not a number from 0 to 3";
+	}
+	if (computed === undefined) {
+		if (a.score === undefined)
+			return "risk has neither score nor probabilities";
+		return a.score as number;
+	}
+	if (
+		a.score !== undefined &&
+		Math.abs((a.score as number) - computed) > SCORE_TOLERANCE
+	) {
+		return `risk score ${f(a.score as number)} disagrees with its probabilities (${f(computed)}): unknown scale`;
+	}
+	return computed;
+}
+
 /** Reads the four answers; the first problem, as text, if any is unusable. */
 function readAnswers(json: unknown): Answers | string {
 	if (!isObject(json) || !isObject(json.answers)) {
@@ -134,8 +188,8 @@ function readAnswers(json: unknown): Answers | string {
 	};
 	const score = answers.risk;
 	if (!isObject(score)) return "no answer for risk";
-	if (!inRange(score.score, 0, RISK_MAX))
-		return "risk is not a score from 0 to 3";
+	const position = riskPosition(score);
+	if (typeof position === "string") return position;
 	const confidence =
 		score.confidence ?? (isObject(meta) ? meta.risk : undefined);
 	if (!inRange(confidence, 0, 1)) return "risk has no confidence";
@@ -146,14 +200,12 @@ function readAnswers(json: unknown): Answers | string {
 		if (typeof v === "string") return v;
 	}
 	return {
-		risk: { score: score.score, confidence },
+		risk: { score: position, confidence },
 		approval: approval as number,
 		user_requested: requested as number,
 		from_untrusted: untrusted as number,
 	};
 }
-
-const f = (n: number) => String(Math.round(n * 100) / 100);
 
 /**
  * Answers to a verdict and a confidence:
