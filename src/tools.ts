@@ -14,7 +14,7 @@ import {
 	SpawnOut,
 	TerminateOut,
 } from "./outputs.js";
-import { approvalData } from "./render.js";
+import { approvalData, consultedData } from "./render.js";
 import { schemas } from "./schemas.js";
 import type { Session } from "./session/session.js";
 import {
@@ -141,6 +141,8 @@ export function gateEntries(
 		decidedBy: e.decidedBy,
 		reason: e.reason,
 		matchedOverride: e.matchedOverride,
+		escalatedBecause: e.escalatedBecause,
+		consulted: e.consulted.map(consultedData),
 	}));
 }
 
@@ -360,20 +362,30 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "Approve a tool call",
 			description:
-				"Allow one pending tool call. Look at the tool, command and paths yourself; don't trust the worker's explanation. It returns at once, without the worker's output: call wait_run next. An approval nobody answers is denied after the approval timeout.",
+				"Allow one pending tool call. Look at the tool, command and paths yourself; don't trust the worker's explanation. It returns at once, without the worker's output: call wait_run next. An approval nobody answers is denied after the approval timeout. With remember \"worker\", identical calls (same tool, command, paths and arguments) from this worker are then allowed without asking until it is terminated or its policy changes; this is never done for hard limits, protected paths or CRITICAL calls, and `remembered` in the result says whether it was. Use it for a repeated harmless call, not for a broad one.",
 			inputSchema: schemas.approve,
 			outputSchema: AnswerOut,
 			annotations: ANNOTATIONS.approve_action,
 		},
-		guarded(async ({ approvalId, actionId, sessionId, summarize }) => {
-			const id = (approvalId ?? actionId) as string;
-			const session = sessionForApproval(ctx, id, sessionId);
-			const run = session.approveAction(id, summarize);
-			return ok(
-				`Approved action ${id}. This returns at once: call wait_run with runId ${run.id} to follow the run.`,
-				{ approvalId: id, runId: run.id, run: ctx.viewRun(run) },
-			);
-		}),
+		guarded(
+			async ({ approvalId, actionId, sessionId, summarize, remember }) => {
+				const id = (approvalId ?? actionId) as string;
+				const session = sessionForApproval(ctx, id, sessionId);
+				const remembered =
+					remember === "worker" ? session.rememberApproval(id) : false;
+				const run = session.approveAction(id, summarize);
+				const note =
+					remember === "worker"
+						? remembered
+							? " Identical calls from this worker are now allowed without asking."
+							: " This call cannot be remembered (a hard limit, a protected path or CRITICAL), so it will ask again."
+						: "";
+				return ok(
+					`Approved action ${id}.${note} This returns at once: call wait_run with runId ${run.id} to follow the run.`,
+					{ approvalId: id, runId: run.id, remembered, run: ctx.viewRun(run) },
+				);
+			},
+		),
 	);
 
 	server.registerTool(
@@ -409,7 +421,11 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		},
 		guarded(async () => {
 			const workers = manager.allSessions().map((s) => ctx.workerData(s));
-			return ok(`${workers.length} live worker(s).`, { workers });
+			const auditDegraded = manager.auditDegraded;
+			return ok(
+				`${workers.length} live worker(s).${auditDegraded ? " The audit log cannot be written (auditDegraded)." : ""}`,
+				{ workers, auditDegraded },
+			);
 		}),
 	);
 

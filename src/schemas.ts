@@ -176,7 +176,7 @@ export const schemas = {
 			.max(32)
 			.optional()
 			.describe(
-				"Only entries decided by this: rules, coordinator, timeout or cancel.",
+				"Only entries decided by this: rules, cache, coordinator, timeout, cancel or http:<name> for a classifier.",
 			),
 	}),
 	terminateWorker: z.strictObject({ workerId: ref("The worker") }),
@@ -290,6 +290,12 @@ export const schemas = {
 			sessionId: WorkerRef.optional().describe(
 				"Optional: the worker the approval belongs to (id or name).",
 			),
+			remember: z
+				.enum(["none", "worker"])
+				.optional()
+				.describe(
+					'"worker": also allow identical calls (same tool, command, paths and arguments) from this worker without asking, until it is terminated or its policy changes. Ignored for hard limits, protected paths and CRITICAL calls. Default "none".',
+				),
 			summarize: z.boolean().optional().describe("Deprecated and ignored."),
 		})
 		.refine((a) => (a.approvalId ?? a.actionId) !== undefined, {

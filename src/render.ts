@@ -1,5 +1,5 @@
 import type { PendingApprovalInfo, RunView } from "./core/run.js";
-import type { ApprovalData, RunData } from "./outputs.js";
+import type { ApprovalData, ConsultedData, RunData } from "./outputs.js";
 
 /**
  * Everything a worker wrote that the coordinator reads is untrusted: it came
@@ -55,6 +55,25 @@ export function wrapTree<T>(
 	return walk(data, fallback, false) as T;
 }
 
+/** A classifier's answer: its reason may echo the call, so it is untrusted. */
+export function consultedData(c: {
+	by: string;
+	verdict: string;
+	confidence?: number;
+	reason: string;
+	cached?: boolean;
+	error?: string;
+}): ConsultedData {
+	return {
+		by: c.by,
+		verdict: c.verdict,
+		confidence: c.confidence,
+		untrustedReason: c.reason,
+		cached: c.cached,
+		error: c.error,
+	};
+}
+
 export function approvalData(
 	runId: string,
 	a: PendingApprovalInfo,
@@ -75,6 +94,8 @@ export function approvalData(
 		riskLabel: a.riskLabel,
 		reason: a.reason,
 		hardLimit: a.hardLimit,
+		escalatedBecause: a.escalatedBecause,
+		consulted: a.consulted?.map(consultedData),
 		expiresInMs: Math.max(0, a.expiresAt - now),
 	};
 }

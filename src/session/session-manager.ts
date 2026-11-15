@@ -6,6 +6,7 @@ import { ChildRegistry } from "../core/child.js";
 import { type RunStore } from "../core/run.js";
 import { ToolError } from "../errors.js";
 import { isInside } from "../gate/paths.js";
+import { GateServices } from "../gate/services.js";
 import { newWorkerId, WORKER_ID_PATTERN, WORKER_NAME_PATTERN } from "../ids.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import type { ProviderCheck, WorkerProvider } from "../providers/types.js";
@@ -17,6 +18,10 @@ export interface ManagerOptions {
 	now?: () => number;
 	/** How often idle workers are looked for (default: a quarter of the limit, at most 60 s). */
 	reaperIntervalMs?: number;
+	/** The server's version, for the classifiers' User-Agent. */
+	version?: string;
+	/** Replaces the classifiers, cache and audit file built from the config. */
+	gateServices?: GateServices;
 }
 
 /** One line of an error message: no stack, no stderr dump. */
@@ -35,6 +40,8 @@ export class SessionManager {
 	readonly runs: RunStore;
 	private readonly now: () => number;
 	private reaper: ReturnType<typeof setInterval> | null = null;
+	/** Shared by every worker's gate. */
+	readonly gate: GateServices;
 	private readonly changeListeners = new Set<() => void>();
 	private readonly reaperIntervalMs: number;
 
@@ -51,6 +58,10 @@ export class SessionManager {
 		this.runtime = runtime ?? new RuntimeDir(config.runtimeDir);
 		this.children = new ChildRegistry({ env, envConfig: config.env });
 		this.runs = runStoreFor(config);
+		// Throws a ConfigError when a classifier's token file is unusable.
+		this.gate =
+			options.gateServices ??
+			new GateServices(config, { version: options.version });
 		this.now = options.now ?? Date.now;
 		this.reaperIntervalMs =
 			options.reaperIntervalMs ??
@@ -179,6 +190,7 @@ export class SessionManager {
 			children: this.children,
 			provider,
 			runs: this.runs,
+			gateServices: this.gate,
 			name,
 			now: this.now,
 			onGone: (s) => {
@@ -354,6 +366,16 @@ export class SessionManager {
 		this.sessions.clear();
 		await Promise.all([...all, this.children.terminateAll()]);
 		this.runtime.dispose();
+	}
+
+	/** Whether the audit log file could not be written. */
+	public get auditDegraded(): boolean {
+		return this.gate.auditDegraded;
+	}
+
+	/** SIGHUP: read the classifiers' token files again. */
+	public reloadTokens(): { reloaded: number; failed: number } {
+		return this.gate.reloadTokens();
 	}
 
 	/** Second-signal path: SIGKILL everything now, without waiting. */

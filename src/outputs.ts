@@ -16,6 +16,18 @@ const RUN_STATES = [
 	"timed_out",
 ] as const;
 
+export const ConsultedOut = z.object({
+	by: z.string().describe('"rules", "cache" or "http:<name>".'),
+	verdict: z.string(),
+	confidence: z.number().optional(),
+	untrustedReason: z
+		.string()
+		.describe("The classifier's reason; it may quote the call."),
+	cached: z.boolean().optional(),
+	error: z.string().optional().describe("Why the classifier did not answer."),
+});
+export type ConsultedData = z.infer<typeof ConsultedOut>;
+
 export const ApprovalOut = z.object({
 	approvalId: z
 		.string()
@@ -37,6 +49,16 @@ export const ApprovalOut = z.object({
 	riskLabel: z.string().optional(),
 	reason: z.string().optional().describe("Why the gate asks you."),
 	hardLimit: z.boolean().optional(),
+	escalatedBecause: z
+		.string()
+		.optional()
+		.describe(
+			"Why the gate asked you: hard_limit, manual_mode, low_confidence, classifier_error or ceiling.",
+		),
+	consulted: z
+		.array(ConsultedOut)
+		.optional()
+		.describe("What the classifiers said before it came to you."),
 	expiresInMs: z.number(),
 });
 export type ApprovalData = z.infer<typeof ApprovalOut>;
@@ -156,10 +178,23 @@ export const PendingOut = z.object({ approvals: z.array(ApprovalOut) });
 export const AnswerOut = z.object({
 	approvalId: z.string(),
 	runId: z.string(),
+	remembered: z
+		.boolean()
+		.optional()
+		.describe(
+			"approve_action only: identical calls from this worker are now allowed without asking.",
+		),
 	run: RunOut,
 });
 
-export const ListWorkersOut = z.object({ workers: z.array(WorkerOut) });
+export const ListWorkersOut = z.object({
+	workers: z.array(WorkerOut),
+	auditDegraded: z
+		.boolean()
+		.describe(
+			"True when the audit log file could not be written; decisions are still made.",
+		),
+});
 
 export const SetPolicyOut = z.object({
 	effectivePolicy: PolicyOut,
@@ -193,9 +228,13 @@ export const GateLogOut = z.object({
 				autoAllowable: z.boolean(),
 			}),
 			decision: z.enum(["allow", "deny", "escalate"]),
-			decidedBy: z.string(),
+			decidedBy: z
+				.string()
+				.describe("rules, cache, http:<name>, coordinator, timeout or cancel."),
 			reason: z.string(),
 			matchedOverride: z.string().optional(),
+			escalatedBecause: z.string().optional(),
+			consulted: z.array(ConsultedOut).describe("Who was asked, in order."),
 		}),
 	),
 });

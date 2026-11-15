@@ -210,7 +210,8 @@ describe("schemas: every tool is strict and bounded", () => {
 			invalid: {
 				missing: {},
 				"bad id": { approvalId: "call_0_abc" },
-				"extra key": { approvalId: approval, remember: "worker" },
+				"extra key": { approvalId: approval, x: 1 },
+				"bad remember": { approvalId: approval, remember: "forever" },
 			},
 		},
 		{

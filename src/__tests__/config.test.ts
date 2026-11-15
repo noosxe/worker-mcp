@@ -167,7 +167,15 @@ describe("defaults", () => {
 			maxAutoApprove: "MEDIUM",
 			protectedPaths: [],
 			approvalTimeoutMs: 600_000,
+			mode: "manual",
+			httpAllowCeiling: "HIGH",
+			onClassifierFailure: "escalate",
+			classifiers: [],
+			cache: { maxEntries: 1000, maxTtlMs: 600_000 },
+			recentActions: 10,
 		});
+		assert.strictEqual(config.audit.enabled, true);
+		assert.match(config.audit.file, /worker-mcp\/audit\.jsonl$/);
 		assert.strictEqual(config.limits.maxRunMs, 1_800_000);
 		assert.strictEqual(config.limits.maxWaitMs, 50_000);
 		assert.strictEqual(config.limits.defaultWaitMs, 25_000);
@@ -680,5 +688,130 @@ describe("config file trust", () => {
 			failure(() => load(["--config", file])),
 			/directory/,
 		);
+	});
+});
+
+const classifier = (over: Record<string, unknown> = {}) => ({
+	name: "local",
+	url: "http://127.0.0.1:9/c",
+	...over,
+});
+const withGate = (gate: unknown) => writeFile({ gate });
+
+describe("classifier settings", () => {
+	test("defaults are filled in for a classifier", () => {
+		const c = load([
+			"--config",
+			withGate({
+				mode: "auto",
+				classifiers: [classifier({ tokenFile: "/run/secrets/k" })],
+			}),
+		]);
+		assert.strictEqual(c.gate.mode, "auto");
+		assert.deepStrictEqual(c.gate.classifiers, [
+			{
+				name: "local",
+				url: "http://127.0.0.1:9/c",
+				tokenFile: "/run/secrets/k",
+				dialect: "worker-mcp-v1",
+				timeoutMs: 3000,
+				minAllowConfidence: 0.85,
+				minDenyConfidence: 0.6,
+				maxArgumentBytes: 8192,
+				sendIntent: true,
+				breaker: { failures: 5, coolDownMs: 60_000 },
+			},
+		]);
+	});
+
+	test("auto mode needs a classifier; manual mode may list some", () => {
+		assert.match(
+			failure(() => load(["--config", withGate({ mode: "auto" })])),
+			/gate\.mode is auto but gate\.classifiers is empty/,
+		);
+		assert.match(
+			failure(() => load([], { ...env, WORKER_MCP_GATE_MODE: "auto" })),
+			/gate\.classifiers is empty/,
+		);
+		assert.strictEqual(
+			load(["--config", withGate({ classifiers: [classifier()] })]).gate.mode,
+			"manual",
+		);
+	});
+
+	test("invalid classifiers are rejected with the key", () => {
+		for (const [what, gate, pattern] of [
+			[
+				"relative token file",
+				{ classifiers: [classifier({ tokenFile: "k" })] },
+				/absolute/,
+			],
+			["bad name", { classifiers: [classifier({ name: "a b" })] }, /name/],
+			[
+				"http elsewhere",
+				{ classifiers: [classifier({ url: "http://example.com" })] },
+				/https/,
+			],
+			[
+				"unknown key",
+				{ classifiers: [classifier({ token: "x" })] },
+				/unknown key/,
+			],
+			[
+				"confidence",
+				{ classifiers: [classifier({ minAllowConfidence: 2 })] },
+				/minAllowConfidence/,
+			],
+			[
+				"duplicate",
+				{ classifiers: [classifier(), classifier()] },
+				/two classifiers named local/,
+			],
+			["ceiling", { httpAllowCeiling: "CRITICAL" }, /httpAllowCeiling/],
+			[
+				"failure mode allow",
+				{ onClassifierFailure: "allow" },
+				/onClassifierFailure/,
+			],
+		] as const) {
+			assert.match(
+				failure(() => load(["--config", withGate(gate)])),
+				pattern,
+				what,
+			);
+		}
+	});
+
+	test("env and flags set the simple choices; flags win", () => {
+		const c = load(["--http-allow-ceiling", "medium"], {
+			...env,
+			WORKER_MCP_HTTP_ALLOW_CEILING: "low",
+			WORKER_MCP_ON_CLASSIFIER_FAILURE: "deny",
+			WORKER_MCP_AUDIT_FILE: path.join(root, "a.jsonl"),
+		});
+		assert.strictEqual(c.gate.httpAllowCeiling, "MEDIUM");
+		assert.strictEqual(c.gate.onClassifierFailure, "deny");
+		assert.strictEqual(c.audit.file, path.join(root, "a.jsonl"));
+		assert.match(
+			failure(() => load([], { ...env, WORKER_MCP_AUDIT: "maybe" })),
+			/WORKER_MCP_AUDIT.*audit\.enabled/,
+		);
+		assert.match(
+			failure(() => load([], { ...env, WORKER_MCP_AUDIT_FILE: "rel" })),
+			/absolute/,
+		);
+	});
+
+	test("the printed config shows the token file path and no secret", () => {
+		const c = load([
+			"--config",
+			withGate({
+				mode: "auto",
+				classifiers: [classifier({ tokenFile: "/run/secrets/k" })],
+			}),
+		]);
+		const printed = formatConfig(c);
+		assert.match(printed, /"tokenFile": "\/run\/secrets\/k"/);
+		assert.ok(!printed.includes("[redacted]"));
 	});
 });
