@@ -1,12 +1,14 @@
 # Token Conservation Improvements
 
+> History: this describes the design before 0.5 and uses the pre-0.5 tool names (`spawn_pi_session`, `send_pi_command`, `get_auto_approved_log`) and keys (`riskPolicy`, `notifyUpTo`, `summarize`). Those names were removed; see the README for the current tools.
+
 This document outlines proposed enhancements to `worker-mcp` aimed at reducing the token consumption of the coordinator agent. The core value of `worker-mcp` is offloading work to cheaper local models — these improvements amplify that benefit by minimizing how much the coordinator needs to read, write, and reason about during supervision.
 
 ---
 
 ## 1. Summarized Responses Instead of Full Transcripts (Done)
 
-**Status**: ⛔ Removed. The `summarize` argument is still accepted but ignored; the summarizer ran a second, ungated `pi` on untrusted text. Summarize from paged output instead.
+**Status**: ⛔ Removed. The `summarize` argument was removed in this release (it was ignored before that); the summarizer ran a second, ungated `pi` on untrusted text. Summarize from paged output instead.
 
 **Problem**: `send_pi_command` currently returns `responseText` containing the full worker output. The coordinator must read and process the entire stream of consciousness from the worker, including irrelevant intermediate reasoning steps.
 
