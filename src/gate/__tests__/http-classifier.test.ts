@@ -262,7 +262,7 @@ describe("http classifier: every failure escalates", () => {
 			gateFor(new HttpClassifier(config(s.url, { timeoutMs: 150 }))),
 		);
 		assert.strictEqual(out.decision, "escalate");
-		assert.match(out.consulted[1].error ?? "", /no answer within 150/);
+		assert.match(out.consulted[1].error ?? "", /^no answer within 150 ms$/);
 		assert.ok(Date.now() - began < 2000);
 	});
 
