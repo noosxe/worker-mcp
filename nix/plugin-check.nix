@@ -15,7 +15,7 @@ pkgs.runCommand "worker-mcp-plugin-check" { nativeBuildInputs = [ pkgs.jq ]; } '
          and (.mcpServers["worker-mcp"] | has("env") | not)' ${default}/.mcp.json
   jq -e '.mcpServers["worker-mcp"].command == "/opt/launch"
          and .mcpServers["worker-mcp"].env.WORKER_MCP_ALLOWED_ROOTS == "/home/user/src"' ${custom}/.mcp.json
-  jq -e '.name == "worker-mcp"' ${default}/.claude-plugin/plugin.json
+  jq -e '.name == "worker-mcp" and (has("mcpServers") | not) and (has("userConfig") | not)' ${default}/.claude-plugin/plugin.json
   head -3 ${default}/skills/worker-mcp/SKILL.md | grep -q '^name: worker-mcp$'
   touch $out
 ''

@@ -9,7 +9,7 @@
   `model` wins. It shows in `list_providers` (`defaultModel`), in the
   `spawn_worker` result and in `--print-config`.
 - **Claude Code plugin** in the repository: `.claude-plugin/plugin.json`, a
-  root `.mcp.json`, a `marketplace.json` (`/plugin marketplace add
+  server declared in `plugin.json`, a `marketplace.json` (`/plugin marketplace add
   noosxe/worker-mcp`) and the skill. Plugin options ask for the allowed
   directories, the pi path and the default model. `skills/worker-mcp/SKILL.md`
   is rewritten for the 13-tool surface (default model, `remember`, auto mode and
