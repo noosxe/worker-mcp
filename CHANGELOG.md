@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 ### Neutral tool surface (0.5.0)
 
