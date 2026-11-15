@@ -49,6 +49,8 @@ export interface ProtectedPathsOptions {
 	extra?: readonly string[];
 	/** Provider config directories (a later phase passes them in). */
 	providerDirs?: readonly string[];
+	/** Files holding secrets, such as classifier token files. */
+	secretFiles?: readonly string[];
 }
 
 const lower = (p: string) => p.toLowerCase();
@@ -144,6 +146,7 @@ export class ProtectedPaths {
 					...file(h(".netrc")),
 					...file(h(".docker/config.json")),
 					...file(h(".pi/agent/auth.json")),
+					...(opts.secretFiles ?? []).flatMap(file),
 				],
 				extra: (p) =>
 					isInside(this.workspace, p) && ENV_FILE.test(path.basename(p)),

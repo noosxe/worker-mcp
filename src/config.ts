@@ -4,6 +4,8 @@ import * as path from "node:path";
 
 import { z } from "zod";
 
+import { classifierUrlProblem } from "./gate/http-classifier.js";
+
 /**
  * The server's configuration. One `Config` is built at startup from, lowest to
  * highest precedence: built-in defaults, a JSON config file, `WORKER_MCP_*`
@@ -77,7 +79,52 @@ export interface Config {
 		protectedPaths: string[];
 		/** How long an approval waits for the coordinator before it is denied. */
 		approvalTimeoutMs: number;
+		/**
+		 * `manual`: the rules, then the coordinator. `auto`: calls the rules
+		 * escalate go to the classifiers first, and only uncertain ones reach the
+		 * coordinator. `auto` needs at least one classifier.
+		 */
+		mode: "manual" | "auto";
+		/**
+		 * Highest risk level a classifier may allow. Separate from
+		 * `maxAutoApprove`, which bounds the coordinator's policy. Never CRITICAL.
+		 */
+		httpAllowCeiling: "LOW" | "MEDIUM" | "HIGH";
+		/** What a classifier that cannot answer means. There is no `allow`. */
+		onClassifierFailure: "escalate" | "deny";
+		/** Consulted in order; the first decisive verdict wins. */
+		classifiers: HttpClassifierConfig[];
+		/** The cache of classifier verdicts. */
+		cache: { maxEntries: number; maxTtlMs: number };
+		/** How many recent decisions are summarised for a classifier. */
+		recentActions: number;
 	};
+	audit: {
+		enabled: boolean;
+		/** The JSONL file; `<stateDir>/audit.jsonl` unless set. */
+		file: string;
+	};
+}
+
+export interface HttpClassifierConfig {
+	/** Names the classifier in the gate log as `http:<name>`. */
+	name: string;
+	/** https, or http only for localhost, 127.0.0.1 and [::1]. */
+	url: string;
+	/**
+	 * A file holding the bearer token. Mode 0600 or stricter, owned by the
+	 * user running the server; a symlink is judged by its target. Read at
+	 * startup and again on SIGHUP. The token itself is never configured.
+	 */
+	tokenFile?: string;
+	/** The wire format: `worker-mcp-v1` is the provisional API. */
+	dialect: "worker-mcp-v1";
+	timeoutMs: number;
+	minAllowConfidence: number;
+	minDenyConfidence: number;
+	maxArgumentBytes: number;
+	sendIntent: boolean;
+	breaker: { failures: number; coolDownMs: number };
 }
 
 export const DEFAULT_MAX_OUTPUT_CHARS = 64000;
@@ -93,6 +140,13 @@ export const DEFAULT_RUN_START_TIMEOUT_MS = 15_000;
 export const DEFAULT_MAX_WORKERS = 4;
 export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 10 * 60_000;
+export const DEFAULT_CLASSIFIER_TIMEOUT_MS = 3000;
+export const DEFAULT_MIN_ALLOW_CONFIDENCE = 0.85;
+export const DEFAULT_MIN_DENY_CONFIDENCE = 0.6;
+export const DEFAULT_MAX_ARGUMENT_BYTES = 8192;
+export const DEFAULT_BREAKER = { failures: 5, coolDownMs: 60_000 };
+export const DEFAULT_CACHE = { maxEntries: 1000, maxTtlMs: 10 * 60_000 };
+export const DEFAULT_RECENT_ACTIONS = 10;
 
 /** An npx-wrapped pi can take most of a minute to start the first time. */
 export const DEFAULT_PI_STARTUP_TIMEOUT_MS = 60_000;
@@ -117,6 +171,33 @@ const envName = z
 	);
 
 const maxAutoApprove = z.enum(["LOW", "MEDIUM", "HIGH"]);
+const confidence = z.number().gt(0).max(1);
+
+const httpClassifier = z.strictObject({
+	name: z
+		.string()
+		.regex(
+			/^[A-Za-z0-9_-]{1,32}$/,
+			"must be 1-32 characters from A-Z a-z 0-9 _ -",
+		),
+	url: z.string().superRefine((u, ctx) => {
+		const problem = classifierUrlProblem(u);
+		if (problem) ctx.addIssue({ code: "custom", message: problem });
+	}),
+	tokenFile: absolutePath.optional(),
+	dialect: z.enum(["worker-mcp-v1"]).optional(),
+	timeoutMs: positiveInt.max(60_000).optional(),
+	minAllowConfidence: confidence.optional(),
+	minDenyConfidence: confidence.optional(),
+	maxArgumentBytes: positiveInt.max(65_536).optional(),
+	sendIntent: z.boolean().optional(),
+	breaker: z
+		.strictObject({
+			failures: positiveInt.optional(),
+			coolDownMs: positiveInt.optional(),
+		})
+		.optional(),
+});
 const protectedPath = z
 	.string()
 	.min(1)
@@ -163,6 +244,23 @@ export const configFileSchema = z.strictObject({
 			maxAutoApprove: maxAutoApprove.optional(),
 			protectedPaths: z.array(protectedPath).optional(),
 			approvalTimeoutMs: positiveInt.optional(),
+			mode: z.enum(["manual", "auto"]).optional(),
+			httpAllowCeiling: maxAutoApprove.optional(),
+			onClassifierFailure: z.enum(["escalate", "deny"]).optional(),
+			classifiers: z.array(httpClassifier).optional(),
+			cache: z
+				.strictObject({
+					maxEntries: positiveInt.max(100_000).optional(),
+					maxTtlMs: positiveInt.optional(),
+				})
+				.optional(),
+			recentActions: z.number().int().min(0).max(50).optional(),
+		})
+		.optional(),
+	audit: z
+		.strictObject({
+			enabled: z.boolean().optional(),
+			file: absolutePath.optional(),
 		})
 		.optional(),
 });
@@ -299,11 +397,96 @@ const VALUE_FLAGS = {
 	},
 } as const satisfies Record<string, FlagDef>;
 
+/**
+ * Settings that are one value each, not numbers: the same name in the
+ * environment and on the command line.
+ */
+const CHOICE_SETTINGS = {
+	gateMode: {
+		env: "WORKER_MCP_GATE_MODE",
+		flag: "--gate-mode",
+		key: "gate.mode",
+	},
+	httpAllowCeiling: {
+		env: "WORKER_MCP_HTTP_ALLOW_CEILING",
+		flag: "--http-allow-ceiling",
+		key: "gate.httpAllowCeiling",
+	},
+	onClassifierFailure: {
+		env: "WORKER_MCP_ON_CLASSIFIER_FAILURE",
+		flag: "--on-classifier-failure",
+		key: "gate.onClassifierFailure",
+	},
+	auditEnabled: {
+		env: "WORKER_MCP_AUDIT",
+		flag: "--audit",
+		key: "audit.enabled",
+	},
+	auditFile: {
+		env: "WORKER_MCP_AUDIT_FILE",
+		flag: "--audit-file",
+		key: "audit.file",
+	},
+} as const;
+type ChoiceName = keyof typeof CHOICE_SETTINGS;
+
+/** One choice setting, checked against its schema, as a config layer. */
+function choiceLayer(source: string, name: ChoiceName, raw: string): FileLayer {
+	const key = CHOICE_SETTINGS[name].key;
+	const fail = (message: string): never => {
+		throw new ConfigError(`Invalid config (${source}) ${key}: ${message}`);
+	};
+	const word = raw.trim().toLowerCase();
+	const pick = <T extends string>(allowed: readonly T[], value: string): T =>
+		(allowed as readonly string[]).includes(value)
+			? (value as T)
+			: fail(`${JSON.stringify(raw)} is not one of ${allowed.join(", ")}`);
+	switch (name) {
+		case "gateMode":
+			return {
+				gate: { mode: pick<"manual" | "auto">(["manual", "auto"], word) },
+			};
+		case "httpAllowCeiling":
+			return {
+				gate: {
+					httpAllowCeiling: pick<"LOW" | "MEDIUM" | "HIGH">(
+						["LOW", "MEDIUM", "HIGH"],
+						word.toUpperCase(),
+					),
+				},
+			};
+		case "onClassifierFailure":
+			return {
+				gate: {
+					onClassifierFailure: pick<"escalate" | "deny">(
+						["escalate", "deny"],
+						word,
+					),
+				},
+			};
+		case "auditEnabled":
+			if (["1", "true", "on", "yes"].includes(word)) {
+				return { audit: { enabled: true } };
+			}
+			if (["0", "false", "off", "no"].includes(word)) {
+				return { audit: { enabled: false } };
+			}
+			return fail(`${JSON.stringify(raw)} is not 0 or 1`);
+		case "auditFile": {
+			const result = absolutePath.safeParse(raw);
+			return result.success
+				? { audit: { file: result.data } }
+				: fail("must be an absolute path");
+		}
+	}
+}
+
 export interface CliFlags {
 	help: boolean;
 	version: boolean;
 	printConfig: boolean;
 	values: Partial<Record<keyof typeof VALUE_FLAGS, string>>;
+	choices: Partial<Record<ChoiceName, string>>;
 }
 
 /** Parse argv (without the node and script entries). Unknown flags fail. */
@@ -313,6 +496,7 @@ export function parseArgs(argv: readonly string[]): CliFlags {
 		version: false,
 		printConfig: false,
 		values: {},
+		choices: {},
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -325,7 +509,10 @@ export function parseArgs(argv: readonly string[]): CliFlags {
 			const entry = Object.entries(VALUE_FLAGS).find(
 				([, def]) => def.flag === name,
 			);
-			if (!entry) {
+			const choice = Object.entries(CHOICE_SETTINGS).find(
+				([, def]) => def.flag === name,
+			);
+			if (!entry && !choice) {
 				throw new ConfigError(`Invalid command line: unknown flag ${arg}`);
 			}
 			let value: string | undefined;
@@ -334,7 +521,10 @@ export function parseArgs(argv: readonly string[]): CliFlags {
 			if (value === undefined || value === "") {
 				throw new ConfigError(`Invalid command line: ${name} needs a value`);
 			}
-			flags.values[entry[0] as keyof typeof VALUE_FLAGS] = value;
+			if (choice) flags.choices[choice[0] as ChoiceName] = value;
+			else if (entry) {
+				flags.values[entry[0] as keyof typeof VALUE_FLAGS] = value;
+			}
 		}
 	}
 	return flags;
@@ -569,6 +759,11 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 			keysOf(),
 		),
 	];
+	for (const [name, def] of Object.entries(CHOICE_SETTINGS)) {
+		const raw = env[def.env];
+		if (raw === undefined || raw.trim() === "") continue;
+		parts.push(choiceLayer(`env ${def.env}`, name as ChoiceName, raw));
+	}
 	const legacy = get(ENV_VARS.legacyTools);
 	if (legacy !== undefined) {
 		const word = legacy.trim().toLowerCase();
@@ -642,6 +837,10 @@ function flagLayer(flags: CliFlags): FileLayer {
 				break; // --config is handled when locating the file
 		}
 	}
+	for (const [name, raw] of Object.entries(flags.choices)) {
+		const def = CHOICE_SETTINGS[name as ChoiceName];
+		parts.push(choiceLayer(`flag ${def.flag}`, name as ChoiceName, raw));
+	}
 	return parts.reduce<FileLayer>(mergeLayers, {});
 }
 
@@ -654,6 +853,10 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		legacyTools: over.legacyTools ?? base.legacyTools,
 		limits: { ...base.limits, ...over.limits },
 		env: { allow },
+		audit: {
+			enabled: over.audit?.enabled ?? base.audit?.enabled,
+			file: over.audit?.file ?? base.audit?.file,
+		},
 		providers: {
 			pi: {
 				path: over.providers?.pi?.path ?? base.providers?.pi?.path,
@@ -666,6 +869,15 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 			maxAutoApprove: over.gate?.maxAutoApprove ?? base.gate?.maxAutoApprove,
 			approvalTimeoutMs:
 				over.gate?.approvalTimeoutMs ?? base.gate?.approvalTimeoutMs,
+			mode: over.gate?.mode ?? base.gate?.mode,
+			httpAllowCeiling:
+				over.gate?.httpAllowCeiling ?? base.gate?.httpAllowCeiling,
+			onClassifierFailure:
+				over.gate?.onClassifierFailure ?? base.gate?.onClassifierFailure,
+			// Classifiers come from the file only; a later layer never has any.
+			classifiers: over.gate?.classifiers ?? base.gate?.classifiers,
+			cache: { ...base.gate?.cache, ...over.gate?.cache },
+			recentActions: over.gate?.recentActions ?? base.gate?.recentActions,
 			// Protected paths only ever accumulate.
 			protectedPaths: [
 				...(base.gate?.protectedPaths ?? []),
@@ -767,6 +979,35 @@ export function defaultConfigFile(env: NodeJS.ProcessEnv): string {
 	return path.join(base, "worker-mcp", "config.json");
 }
 
+function resolveClassifiers(
+	list: NonNullable<NonNullable<FileLayer["gate"]>["classifiers"]>,
+): HttpClassifierConfig[] {
+	const names = new Set<string>();
+	return list.map((c) => {
+		if (names.has(c.name)) {
+			throw new ConfigError(
+				`Invalid config: gate.classifiers has two classifiers named ${c.name}`,
+			);
+		}
+		names.add(c.name);
+		return {
+			name: c.name,
+			url: c.url,
+			...(c.tokenFile === undefined ? {} : { tokenFile: c.tokenFile }),
+			dialect: c.dialect ?? "worker-mcp-v1",
+			timeoutMs: c.timeoutMs ?? DEFAULT_CLASSIFIER_TIMEOUT_MS,
+			minAllowConfidence: c.minAllowConfidence ?? DEFAULT_MIN_ALLOW_CONFIDENCE,
+			minDenyConfidence: c.minDenyConfidence ?? DEFAULT_MIN_DENY_CONFIDENCE,
+			maxArgumentBytes: c.maxArgumentBytes ?? DEFAULT_MAX_ARGUMENT_BYTES,
+			sendIntent: c.sendIntent ?? true,
+			breaker: {
+				failures: c.breaker?.failures ?? DEFAULT_BREAKER.failures,
+				coolDownMs: c.breaker?.coolDownMs ?? DEFAULT_BREAKER.coolDownMs,
+			},
+		};
+	});
+}
+
 function applyDefaults(
 	layer: FileLayer,
 	env: NodeJS.ProcessEnv,
@@ -775,6 +1016,13 @@ function applyDefaults(
 	const stateBase =
 		env.XDG_STATE_HOME || path.join(homeOf(env), ".local", "state");
 	const stateDir = layer.stateDir ?? path.join(stateBase, "worker-mcp");
+	const mode = layer.gate?.mode ?? "manual";
+	const classifiers = resolveClassifiers(layer.gate?.classifiers ?? []);
+	if (mode === "auto" && classifiers.length === 0) {
+		throw new ConfigError(
+			"Invalid config: gate.mode is auto but gate.classifiers is empty; configure a classifier or use gate.mode manual",
+		);
+	}
 	return {
 		stateDir,
 		runtimeDir:
@@ -820,6 +1068,19 @@ function applyDefaults(
 			protectedPaths: [...new Set(layer.gate?.protectedPaths ?? [])],
 			approvalTimeoutMs:
 				layer.gate?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS,
+			mode,
+			httpAllowCeiling: layer.gate?.httpAllowCeiling ?? "HIGH",
+			onClassifierFailure: layer.gate?.onClassifierFailure ?? "escalate",
+			classifiers,
+			cache: {
+				maxEntries: layer.gate?.cache?.maxEntries ?? DEFAULT_CACHE.maxEntries,
+				maxTtlMs: layer.gate?.cache?.maxTtlMs ?? DEFAULT_CACHE.maxTtlMs,
+			},
+			recentActions: layer.gate?.recentActions ?? DEFAULT_RECENT_ACTIONS,
+		},
+		audit: {
+			enabled: layer.audit?.enabled ?? true,
+			file: layer.audit?.file ?? path.join(stateDir, "audit.jsonl"),
 		},
 	};
 }
@@ -876,6 +1137,8 @@ export function defaultConfig(env: NodeJS.ProcessEnv = {}): Config {
 // ---- print ------------------------------------------------------------------
 
 const SECRET_KEY = /token|secret|password|passwd|credential|api[_-]?key/i;
+/** Names a file that holds a secret, not the secret: safe and useful to show. */
+const PATH_KEY = /File$/;
 
 /** Deep copy with the value of every secret-looking key replaced. */
 export function redactConfig<T>(value: T): T {
@@ -883,7 +1146,10 @@ export function redactConfig<T>(value: T): T {
 	if (value && typeof value === "object") {
 		const out: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(value)) {
-			out[k] = SECRET_KEY.test(k) && v != null ? "[redacted]" : redactConfig(v);
+			out[k] =
+				SECRET_KEY.test(k) && !PATH_KEY.test(k) && v != null
+					? "[redacted]"
+					: redactConfig(v);
 		}
 		return out as T;
 	}

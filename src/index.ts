@@ -66,6 +66,11 @@ Options:
       --state-dir <path>      State directory
       --runtime-dir <path>    Directory for the private runtime dir
       --max-auto-approve <level>  Ceiling on auto-approval: LOW, MEDIUM or HIGH
+      --gate-mode <mode>      manual (default) or auto (classifiers decide what the rules escalate)
+      --http-allow-ceiling <level>  Highest level a classifier may allow (default HIGH)
+      --on-classifier-failure <escalate|deny>  What an unanswered classifier means (default escalate)
+      --audit <on|off>        Write the audit log file (default on)
+      --audit-file <path>     Audit log file (default <state dir>/audit.jsonl)
 
 Settings may also come from WORKER_MCP_* environment variables; see the README.
 WORKER_MCP_LEGACY_TOOLS=0 hides the deprecated pi-named tools (on by default).
@@ -78,7 +83,16 @@ if (loaded.flags.printConfig) {
 	process.exit(0);
 }
 
-const sessionManager = new SessionManager(loaded.config, process.env);
+// Builds the classifiers: a missing or insecure token file stops the server here.
+let sessionManager: SessionManager;
+try {
+	sessionManager = new SessionManager(loaded.config, process.env, undefined, {
+		version,
+	});
+} catch (error) {
+	console.error(error instanceof Error ? error.message : String(error));
+	process.exit(1);
+}
 const server = createServer(sessionManager, version);
 
 // Terminate every worker (and what each started) and exit. Safe to call more
@@ -119,6 +133,18 @@ async function main() {
 	console.error("worker-mcp server running on stdio");
 }
 
+// A rotated secret takes effect without a restart. Without token files SIGHUP
+// keeps its usual meaning: the controlling terminal is gone, so shut down.
+process.on("SIGHUP", () => {
+	if (!sessionManager.gate.hasTokenFiles) {
+		shutdown(0, "Hangup received.", true);
+		return;
+	}
+	const { reloaded, failed } = sessionManager.reloadTokens();
+	console.error(
+		`Reloaded ${reloaded} classifier token file(s)${failed ? `, ${failed} failed (old token kept)` : ""}.`,
+	);
+});
 process.on("SIGINT", () => shutdown(0, "Shutdown signal received.", true));
 process.on("SIGTERM", () => shutdown(0, "Shutdown signal received.", true));
 process.on("unhandledRejection", (reason) => {

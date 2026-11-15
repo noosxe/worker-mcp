@@ -49,6 +49,17 @@ export interface PendingApprovalInfo {
 	reason?: string;
 	/** A hard limit (a protected path): only the coordinator can allow it. */
 	hardLimit?: boolean;
+	/** Why the gate asked: hard_limit, manual_mode, low_confidence, ... */
+	escalatedBecause?: string;
+	/** What the classifiers consulted before it said (not the rules). */
+	consulted?: {
+		by: string;
+		verdict: string;
+		confidence?: number;
+		reason: string;
+		cached?: boolean;
+		error?: string;
+	}[];
 	/** The run's `seq` when the approval appeared. */
 	seq: number;
 	/** When the approval is denied if nobody answered (epoch ms). */

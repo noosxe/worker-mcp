@@ -15,6 +15,7 @@ import {
 	type RiskPolicy,
 } from "../gate/policy.js";
 import { RISK_LABELS, RiskLevel } from "../gate/risk.js";
+import type { GateServices } from "../gate/services.js";
 import { newApprovalId } from "../ids.js";
 import type {
 	ApprovalDecision,
@@ -110,6 +111,8 @@ export interface SessionDeps {
 	name?: string;
 	/** The clock, for idle tracking. */
 	now?: () => number;
+	/** The classifiers, cache and audit file shared by the server's workers. */
+	gateServices?: GateServices;
 	/** Called once when the worker process is gone without being asked to. */
 	onGone?: (session: Session) => void;
 }
@@ -241,9 +244,24 @@ export class Session {
 		this.cwd = cwd;
 		this.model = model;
 		this.systemPrompt = systemPrompt;
+		const services = deps.gateServices;
+		const gateConfig = this.config.gate;
 		this.approvalGate = new ApprovalGate({
 			cwd,
 			workerId: sessionId,
+			model,
+			mode: gateConfig.mode,
+			classifiers: services?.classifiers,
+			classifierAllowCeiling:
+				RiskLevel[gateConfig.httpAllowCeiling] ?? RiskLevel.HIGH,
+			onClassifierFailure: gateConfig.onClassifierFailure,
+			cache: services?.cache,
+			configVersion: services?.configVersion,
+			recentActions: gateConfig.recentActions,
+			audit: services?.audit,
+			secretFiles: gateConfig.classifiers.flatMap((c) =>
+				c.tokenFile === undefined ? [] : [c.tokenFile],
+			),
 			home: this.processEnv.HOME || undefined,
 			maxAutoApprove:
 				RiskLevel[this.config.gate.maxAutoApprove] ?? DEFAULT_MAX_AUTO_APPROVE,
@@ -251,7 +269,11 @@ export class Session {
 			protected: {
 				stateDir: this.config.stateDir,
 				runtimeDir: this.config.runtimeDir,
-				extra: this.config.gate.protectedPaths,
+				extra: [
+					...this.config.gate.protectedPaths,
+					// An audit file outside the state directory is protected too.
+					...(this.config.audit.enabled ? [this.config.audit.file] : []),
+				],
 			},
 		});
 		this.policyReport =
@@ -587,6 +609,11 @@ export class Session {
 				depth: call.origin?.depth,
 			},
 			call.callId,
+			{
+				runId: this.currentRun?.run.id,
+				intent: this.currentRun?.run.intent,
+				signal,
+			},
 		);
 		return Promise.resolve(decided).then((outcome) =>
 			this.applyOutcome(call, outcome, signal),
@@ -736,6 +763,17 @@ export class Session {
 					riskLabel: label,
 					reason: outcome.reason,
 					hardLimit: !outcome.autoAllowable,
+					escalatedBecause: outcome.escalatedBecause,
+					consulted: outcome.consulted
+						.filter((c) => c.by !== "rules")
+						.map((c) => ({
+							by: c.by,
+							verdict: c.verdict,
+							confidence: c.confidence,
+							reason: c.reason,
+							cached: c.cached,
+							error: c.error,
+						})),
 					expiresAt: Date.now() + timeoutMs,
 				},
 				`awaiting approval: ${call.toolName} [${label}]`,
@@ -993,6 +1031,17 @@ export class Session {
 		return entry.run;
 	}
 
+	/**
+	 * Keep an allow for the call behind a pending approval, so an identical
+	 * call from this worker is allowed without asking until it closes or its
+	 * policy changes. False when the call may not be remembered (a hard limit,
+	 * a protected path or CRITICAL), or when there is no such approval.
+	 */
+	public rememberApproval(actionId: string): boolean {
+		const outcome = this.pending.get(actionId)?.outcome;
+		return outcome ? this.approvalGate.remember(outcome) : false;
+	}
+
 	public approveAction(actionId: string, summarize?: boolean): Run {
 		this.log(`Approving action ${actionId}`);
 		return this.answer(
@@ -1121,6 +1170,7 @@ export class Session {
 			}
 		}
 		this.dropPending("the worker was terminated");
+		this.approvalGate.forget();
 		this.runs.workerClosed(this.sessionId);
 		if (worker) await worker.close({ graceMs: 3000, reason });
 	}
