@@ -698,6 +698,17 @@ const classifier = (over: Record<string, unknown> = {}) => ({
 });
 const withGate = (gate: unknown) => writeFile({ gate });
 
+const jev = (over: Record<string, unknown> = {}) =>
+	load([
+		"--config",
+		withGate({
+			mode: "auto",
+			classifiers: [
+				{ name: "j", dialect: "jev", tokenFile: "/run/secrets/k", ...over },
+			],
+		}),
+	]).gate.classifiers[0];
+
 describe("classifier settings", () => {
 	test("defaults are filled in for a classifier", () => {
 		const c = load([
@@ -722,6 +733,59 @@ describe("classifier settings", () => {
 				breaker: { failures: 5, coolDownMs: 60_000 },
 			},
 		]);
+	});
+
+	test("a jev classifier: backend defaults, thresholds and rules", () => {
+		const d = jev();
+		assert.strictEqual(d.url, "https://api.typesafe.ai");
+		assert.strictEqual(d.backend, "typesafe");
+		assert.strictEqual(d.model, "jev-latest");
+		assert.strictEqual(d.timeoutMs, 3000);
+		assert.strictEqual(d.cacheTtlMs, undefined);
+		assert.deepStrictEqual(d.jev, {
+			denyScore: 2.5,
+			askScore: 1.5,
+			askProbability: 0.75,
+			untrustedProbability: 0.7,
+			userRequestedProbability: 0.85,
+		});
+		const o = jev({ backend: "openrouter" });
+		assert.strictEqual(o.url, "https://openrouter.ai/api");
+		assert.strictEqual(o.model, "jev-1.13");
+		const c = jev({
+			url: "http://127.0.0.1:9",
+			model: "m",
+			cacheTtlMs: 5000,
+			thresholds: { denyScore: 2 },
+		});
+		assert.strictEqual(c.backend, "custom");
+		assert.strictEqual(c.url, "http://127.0.0.1:9");
+		assert.strictEqual(c.model, "m");
+		assert.strictEqual(c.cacheTtlMs, 5000);
+		assert.strictEqual(c.jev?.denyScore, 2);
+		for (const [over, pattern] of [
+			[{ backend: "custom" }, /needs url/],
+			[{ url: "https://example.com", backend: "typesafe" }, /backend custom/],
+			[{ tokenFile: undefined }, /needs tokenFile/],
+			[{ thresholds: { askScore: 3, denyScore: 2 } }, /askScore/],
+			[{ thresholds: { denyScore: 4 } }, /denyScore/],
+		] as const) {
+			assert.match(
+				failure(() => jev(over as any)),
+				pattern,
+			);
+		}
+		assert.match(
+			failure(() =>
+				load([
+					"--config",
+					withGate({
+						classifiers: [classifier({ model: "x" })],
+					}),
+				]),
+			),
+			/model is for dialect jev/,
+		);
 	});
 
 	test("auto mode needs a classifier; manual mode may list some", () => {

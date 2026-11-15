@@ -169,6 +169,13 @@ the build instead of the first start. It needs no overlay.
         # A path, never the token: a sops-nix secret owned by this user.
         tokenFile = config.sops.secrets.classifier_key.path;
       }
+      # Or TypeSafe's hosted jev model (see Auto mode below):
+      # {
+      #   name = "jev";
+      #   dialect = "jev";
+      #   backend = "typesafe";
+      #   tokenFile = config.sops.secrets.jev_key.path;
+      # }
     ];
 
     # ...and `settings` for any key of the config file (it wins over the
@@ -601,6 +608,24 @@ only uncertain calls, or ones it cannot answer, reach the coordinator.
   `gate.maxAutoApprove`, which only bounds the coordinator's own policy); a
   `deny` needs 0.6. If it fails (timeout, bad answer, breaker open), the call
   goes to the coordinator, or is denied with `gate.onClassifierFailure: deny`.
+- `dialect: "jev"` uses TypeSafe's hosted System One model ("jev") as the
+  classifier: worker-mcp asks it four typed questions (`risk`, `approval`,
+  `user_requested`, `from_untrusted`) and maps the answers to allow, deny or
+  escalate. `backend` is `typesafe` (default), `openrouter` or `custom` (with
+  `url`); `thresholds` tune the mapping, `cacheTtlMs` optionally caches
+  answers. **Commands and up to 8 KiB of arguments are sent to the backend**,
+  so it is off unless you configure it. Details in
+  [docs/classifier-api.md](docs/classifier-api.md#dialect-jev-typesafe-system-one).
+
+  ```json
+  {
+  	"name": "jev",
+  	"dialect": "jev",
+  	"backend": "typesafe",
+  	"tokenFile": "/run/secrets/jev_key"
+  }
+  ```
+
 - A coordinator can switch classifiers off for one worker with
   `policy.classifiers: "off"` in `spawn_worker` or `set_risk_policy`.
 - `auto` with no classifier is a configuration error. Commands, paths and up to

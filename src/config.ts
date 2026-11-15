@@ -114,7 +114,10 @@ export interface Config {
 export interface HttpClassifierConfig {
 	/** Names the classifier in the gate log as `http:<name>`. */
 	name: string;
-	/** https, or http only for localhost, 127.0.0.1 and [::1]. */
+	/**
+	 * https, or http only for localhost, 127.0.0.1 and [::1]. For dialect
+	 * `jev` it is the server's base URL: `/v1/systemone` is appended.
+	 */
 	url: string;
 	/**
 	 * A file holding the bearer token. Mode 0600 or stricter, owned by the
@@ -122,8 +125,22 @@ export interface HttpClassifierConfig {
 	 * startup and again on SIGHUP. The token itself is never configured.
 	 */
 	tokenFile?: string;
-	/** The wire format: `worker-mcp-v1` is the provisional API. */
-	dialect: "worker-mcp-v1";
+	/**
+	 * The wire format: `worker-mcp-v1` is the provisional API, `jev` is
+	 * TypeSafe's System One API.
+	 */
+	dialect: "worker-mcp-v1" | "jev";
+	/** Dialect `jev`: where `url` comes from. `custom` is any compatible server. */
+	backend?: JevBackend;
+	/** Dialect `jev`: the System One model. */
+	model?: string;
+	/** Dialect `jev`: how the answers map to a verdict. */
+	jev?: JevThresholds;
+	/**
+	 * How long a decisive verdict is reused for the same call of the same
+	 * worker. For dialects whose answer carries no TTL (`jev`); unset: off.
+	 */
+	cacheTtlMs?: number;
 	timeoutMs: number;
 	minAllowConfidence: number;
 	minDenyConfidence: number;
@@ -146,6 +163,38 @@ export const DEFAULT_MAX_WORKERS = 4;
 export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60_000;
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 10 * 60_000;
 export const DEFAULT_CLASSIFIER_TIMEOUT_MS = 3000;
+
+export type JevBackend = "typesafe" | "openrouter" | "custom";
+export const JEV_BACKENDS: Record<
+	Exclude<JevBackend, "custom">,
+	{ url: string; model: string }
+> = {
+	typesafe: { url: "https://api.typesafe.ai", model: "jev-latest" },
+	openrouter: { url: "https://openrouter.ai/api", model: "jev-1.13" },
+};
+/** Model for `custom` servers, which have no default URL of their own. */
+export const JEV_CUSTOM_MODEL = "jev-latest";
+
+/** How a System One answer becomes a verdict; see docs/classifier-api.md. */
+export interface JevThresholds {
+	/** `risk` (0-3) at or above this: deny. */
+	denyScore: number;
+	/** `risk` at or above this makes a call risky. */
+	askScore: number;
+	/** `approval` at or above this makes a call risky. */
+	askProbability: number;
+	/** `from_untrusted` at or above this: deny. */
+	untrustedProbability: number;
+	/** `user_requested` at or above this lets a risky call through. */
+	userRequestedProbability: number;
+}
+export const DEFAULT_JEV_THRESHOLDS: JevThresholds = {
+	denyScore: 2.5,
+	askScore: 1.5,
+	askProbability: 0.75,
+	untrustedProbability: 0.7,
+	userRequestedProbability: 0.85,
+};
 export const DEFAULT_MIN_ALLOW_CONFIDENCE = 0.85;
 export const DEFAULT_MIN_DENY_CONFIDENCE = 0.6;
 export const DEFAULT_MAX_ARGUMENT_BYTES = 8192;
@@ -185,12 +234,27 @@ const httpClassifier = z.strictObject({
 			/^[A-Za-z0-9_-]{1,32}$/,
 			"must be 1-32 characters from A-Z a-z 0-9 _ -",
 		),
-	url: z.string().superRefine((u, ctx) => {
-		const problem = classifierUrlProblem(u);
-		if (problem) ctx.addIssue({ code: "custom", message: problem });
-	}),
+	url: z
+		.string()
+		.superRefine((u, ctx) => {
+			const problem = classifierUrlProblem(u);
+			if (problem) ctx.addIssue({ code: "custom", message: problem });
+		})
+		.optional(),
 	tokenFile: absolutePath.optional(),
-	dialect: z.enum(["worker-mcp-v1"]).optional(),
+	dialect: z.enum(["worker-mcp-v1", "jev"]).optional(),
+	backend: z.enum(["typesafe", "openrouter", "custom"]).optional(),
+	model: z.string().min(1).max(100).optional(),
+	thresholds: z
+		.strictObject({
+			denyScore: z.number().gt(0).max(3).optional(),
+			askScore: z.number().gt(0).max(3).optional(),
+			askProbability: confidence.optional(),
+			untrustedProbability: confidence.optional(),
+			userRequestedProbability: confidence.optional(),
+		})
+		.optional(),
+	cacheTtlMs: positiveInt.optional(),
 	timeoutMs: positiveInt.max(60_000).optional(),
 	minAllowConfidence: confidence.optional(),
 	minDenyConfidence: confidence.optional(),
@@ -1035,11 +1099,59 @@ function resolveClassifiers(
 			);
 		}
 		names.add(c.name);
+		const where = `Invalid config: gate.classifiers ${c.name}`;
+		const dialect = c.dialect ?? "worker-mcp-v1";
+		let url: string;
+		let jevFields: Partial<HttpClassifierConfig> = {};
+		if (dialect === "jev") {
+			const backend: JevBackend = c.backend ?? (c.url ? "custom" : "typesafe");
+			if (backend === "custom") {
+				if (!c.url) throw new ConfigError(`${where}: backend custom needs url`);
+				url = c.url;
+			} else {
+				if (c.url) {
+					throw new ConfigError(
+						`${where}: url goes with backend custom; backend ${backend} has its own`,
+					);
+				}
+				if (c.tokenFile === undefined) {
+					throw new ConfigError(
+						`${where}: backend ${backend} needs tokenFile (a file holding the API key)`,
+					);
+				}
+				url = JEV_BACKENDS[backend].url;
+			}
+			const th = { ...DEFAULT_JEV_THRESHOLDS, ...c.thresholds };
+			if (th.askScore > th.denyScore) {
+				throw new ConfigError(
+					`${where}: thresholds.askScore must not exceed thresholds.denyScore`,
+				);
+			}
+			jevFields = {
+				backend,
+				model:
+					c.model ??
+					(backend === "custom"
+						? JEV_CUSTOM_MODEL
+						: JEV_BACKENDS[backend].model),
+				jev: th,
+				...(c.cacheTtlMs === undefined ? {} : { cacheTtlMs: c.cacheTtlMs }),
+			};
+		} else {
+			for (const k of ["backend", "model", "thresholds"] as const) {
+				if (c[k] !== undefined) {
+					throw new ConfigError(`${where}: ${k} is for dialect jev`);
+				}
+			}
+			if (!c.url) throw new ConfigError(`${where}: url is required`);
+			url = c.url;
+		}
 		return {
 			name: c.name,
-			url: c.url,
+			url,
 			...(c.tokenFile === undefined ? {} : { tokenFile: c.tokenFile }),
-			dialect: c.dialect ?? "worker-mcp-v1",
+			dialect,
+			...jevFields,
 			timeoutMs: c.timeoutMs ?? DEFAULT_CLASSIFIER_TIMEOUT_MS,
 			minAllowConfidence: c.minAllowConfidence ?? DEFAULT_MIN_ALLOW_CONFIDENCE,
 			minDenyConfidence: c.minDenyConfidence ?? DEFAULT_MIN_DENY_CONFIDENCE,
