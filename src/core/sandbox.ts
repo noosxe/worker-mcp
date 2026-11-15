@@ -152,6 +152,7 @@ export class SandboxService {
 		private readonly probe: (
 			bwrap: string,
 		) => Promise<SandboxStatus> = probeBwrap,
+		private readonly mountinfo: () => string = readMountinfo,
 	) {}
 
 	get config(): Config["sandbox"] {
@@ -184,6 +185,16 @@ export class SandboxService {
 				available: false,
 				reason:
 					"bubblewrap was not found: install it, or set sandbox.bwrapPath (WORKER_MCP_BWRAP)",
+			};
+		}
+		// Hiding the home directory needs the mounts: without them the sandbox
+		// could leave it reachable by another path, so it is not offered.
+		try {
+			parseMountinfo(this.mountinfo());
+		} catch (e) {
+			return {
+				available: false,
+				reason: `the mounts cannot be inspected, so the home directory cannot be hidden reliably: ${e instanceof Error ? e.message : String(e)}`,
 			};
 		}
 		return await this.probe(bwrap);
@@ -252,6 +263,8 @@ export class SandboxService {
 			privateDir: input.privateDir,
 			home,
 			runtimeDir: input.env.XDG_RUNTIME_DIR,
+			hide: this.settings.hide,
+			mountinfo: this.mountinfo(),
 			profile: input.profile ?? { roHome: [], rwHome: [] },
 			extraRo: this.settings.extraRo,
 			extraRw: this.settings.extraRw,
@@ -267,10 +280,12 @@ export interface SandboxPlan {
 	/** Real path of the workspace. */
 	cwd: string;
 	privateDir: string;
-	/** Hidden behind an empty tmpfs when it exists. */
-	home: string | null;
-	/** Another tmpfs, so sockets in it are out of reach. */
-	runtimeDir: string | null;
+	/**
+	 * Directories hidden behind an empty tmpfs: the home
+	 * directory and every other path that leads to its data, the runtime
+	 * directory (so agent sockets are out of reach) and `sandbox.hide`.
+	 */
+	hidden: string[];
 	roHome: string[];
 	rwHome: string[];
 	/** Writable scratch over a read-only directory: the tmpfs, then its entries. */
@@ -290,8 +305,7 @@ export interface SandboxPlan {
  */
 export function buildBwrapArgs(plan: SandboxPlan): string[] {
 	const args = [...BASE_FLAGS];
-	if (plan.home) args.push("--tmpfs", plan.home);
-	if (plan.runtimeDir) args.push("--tmpfs", plan.runtimeDir);
+	for (const p of plan.hidden) args.push("--tmpfs", p);
 	for (const p of plan.roHome) args.push("--ro-bind-try", p, p);
 	for (const p of plan.rwHome) args.push("--bind-try", p, p);
 	for (const o of plan.overlays) {
@@ -317,6 +331,10 @@ export interface PlanInput {
 	privateDir: string;
 	home: string;
 	runtimeDir?: string;
+	/** Extra paths always hidden (`sandbox.hide`). */
+	hide?: readonly string[];
+	/** The text of `/proc/self/mountinfo`; read from the system when omitted. */
+	mountinfo?: string;
 	profile: SandboxProfile;
 	extraRo: readonly string[];
 	extraRw: readonly string[];
@@ -338,6 +356,171 @@ const real = (p: string): string => {
 	}
 };
 
+// ---- hiding the home directory ------------------------------------------------
+
+/** One line of `/proc/self/mountinfo`, as far as hiding needs it. */
+export interface MountEntry {
+	/** `major:minor` of the device. */
+	dev: string;
+	/** The directory of the filesystem that is mounted here. */
+	root: string;
+	mountPoint: string;
+}
+
+/** Octal escapes (`\040` for a space) of a mountinfo field, as UTF-8. */
+function unescapeMount(field: string): string {
+	const bytes: number[] = [];
+	for (let i = 0; i < field.length; i++) {
+		const m = /^\\([0-7]{3})/.exec(field.slice(i, i + 4));
+		if (m) {
+			bytes.push(Number.parseInt(m[1], 8) & 0xff);
+			i += 3;
+		} else {
+			bytes.push(...Buffer.from(field[i]));
+		}
+	}
+	return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * Parse `/proc/self/mountinfo`. Throws on anything unexpected: a home that
+ * cannot be checked against the mounts must not be assumed hidden.
+ */
+export function parseMountinfo(text: string): MountEntry[] {
+	const mounts: MountEntry[] = [];
+	for (const line of text.split("\n")) {
+		if (line.trim() === "") continue;
+		const f = line.split(" ");
+		// id parent dev root mountpoint options [optional fields] - type source opts
+		const dash = f.indexOf("-", 6);
+		if (dash < 6 || f.length < dash + 3 || !/^\d+:\d+$/.test(f[2])) {
+			throw new Error(`cannot parse a mountinfo line: ${line.slice(0, 60)}`);
+		}
+		const root = unescapeMount(f[3]);
+		const mountPoint = unescapeMount(f[4]);
+		// Roots such as `net:[4026531992]` (namespace files) are not paths.
+		if (!mountPoint.startsWith("/")) {
+			throw new Error(`cannot parse a mountinfo line: ${line.slice(0, 60)}`);
+		}
+		mounts.push({ dev: f[2], root, mountPoint });
+	}
+	if (mounts.length === 0) throw new Error("mountinfo lists no mounts");
+	return mounts;
+}
+
+/** The system's mounts as text; throws when they cannot be read. */
+export function readMountinfo(): string {
+	try {
+		return fs.readFileSync("/proc/self/mountinfo", "utf8");
+	} catch (e) {
+		throw new Error(
+			`cannot read /proc/self/mountinfo (${e instanceof Error ? e.message : String(e)})`,
+			{ cause: e },
+		);
+	}
+}
+
+const sameFile = (a: string, b: string): boolean => {
+	try {
+		const x = fs.statSync(a);
+		const y = fs.statSync(b);
+		return x.dev === y.dev && x.ino === y.ino;
+	} catch {
+		return false;
+	}
+};
+
+/**
+ * Other paths that lead to the data of `home` (a real path): a bind mount of
+ * the same directory elsewhere (`/persistent/home/u` behind `/home/u`), the
+ * same device mounted twice, a bind of just one directory in it. Found from
+ * the mounts: for the home directory and every mount point inside it, take
+ * (device, directory on it); every mount of that device whose directory is a
+ * prefix of it gives another path. Only paths that are really the same
+ * directory (device and inode) are kept.
+ */
+export function findHomeAliases(
+	mounts: readonly MountEntry[],
+	home: string,
+	same: (a: string, b: string) => boolean = sameFile,
+): string[] {
+	const targets: { dev: string; root: string; at: string }[] = [];
+	// The mount that contains home: the longest mount point, the latest on a tie.
+	let container: MountEntry | undefined;
+	for (const m of mounts) {
+		if (
+			isInside(m.mountPoint, home) &&
+			(!container || m.mountPoint.length >= container.mountPoint.length)
+		) {
+			container = m;
+		}
+	}
+	if (container?.root.startsWith("/")) {
+		targets.push({
+			dev: container.dev,
+			root: path.posix.join(
+				container.root,
+				path.posix.relative(container.mountPoint, home),
+			),
+			at: home,
+		});
+	}
+	for (const m of mounts) {
+		if (
+			m.root.startsWith("/") &&
+			m.mountPoint !== home &&
+			isInside(home, m.mountPoint)
+		) {
+			targets.push({ dev: m.dev, root: m.root, at: m.mountPoint });
+		}
+	}
+	const found = new Set<string>();
+	for (const t of targets) {
+		for (const m of mounts) {
+			if (m.dev !== t.dev || !m.root.startsWith("/")) continue;
+			if (!isInside(m.root, t.root)) continue;
+			const alias = path.posix.join(
+				m.mountPoint,
+				path.posix.relative(m.root, t.root),
+			);
+			if (alias === "/" || isInside(home, alias)) continue;
+			if (same(alias, t.at)) found.add(alias);
+		}
+	}
+	return [...found];
+}
+
+/**
+ * What to put an empty tmpfs on. Missing directories are left out (bwrap
+ * cannot create a mount point under the read-only root), and so is anything
+ * inside another, so the order does not matter.
+ */
+function hiddenPaths(input: {
+	home: string;
+	runtimeDir: string | null;
+	hide: readonly string[];
+	mounts: readonly MountEntry[];
+}): string[] {
+	const wanted: string[] = [];
+	if (input.home !== "/" && isDir(input.home)) {
+		const realHome = real(input.home);
+		wanted.push(input.home, realHome);
+		wanted.push(...findHomeAliases(input.mounts, realHome));
+	}
+	if (
+		input.runtimeDir &&
+		path.isAbsolute(input.runtimeDir) &&
+		input.runtimeDir.split("/").filter(Boolean).length >= 2
+	) {
+		wanted.push(input.runtimeDir);
+	}
+	wanted.push(...input.hide);
+	const existing = [...new Set(wanted)].filter((p) => p !== "/" && isDir(p));
+	return existing.filter(
+		(p) => !existing.some((o) => o !== p && isInside(o, p)),
+	);
+}
+
 /** Look at the disk and decide what to mount. */
 export function planSandbox(input: PlanInput): SandboxPlan {
 	const cwd = real(input.cwd);
@@ -352,16 +535,12 @@ export function planSandbox(input: PlanInput): SandboxPlan {
 	return {
 		cwd,
 		privateDir: real(input.privateDir),
-		// Nothing to hide when there is no such directory, and bwrap cannot
-		// create one under the read-only root.
-		home: home !== "/" && isDir(home) ? home : null,
-		runtimeDir:
-			runtimeDir &&
-			path.isAbsolute(runtimeDir) &&
-			runtimeDir.split("/").filter(Boolean).length >= 2 &&
-			isDir(runtimeDir)
-				? runtimeDir
-				: null,
+		hidden: hiddenPaths({
+			home,
+			runtimeDir,
+			hide: input.hide ?? [],
+			mounts: parseMountinfo(input.mountinfo ?? readMountinfo()),
+		}),
 		roHome: [...BASE_RO_HOME, ...input.profile.roHome].map(underHome),
 		rwHome: input.profile.rwHome.map(underHome),
 		overlays: (input.profile.overlayHome ?? []).flatMap((rel) => {

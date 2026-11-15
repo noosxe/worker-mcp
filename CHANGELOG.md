@@ -17,6 +17,11 @@
   `sandbox.bwrapPath` (else `WORKER_MCP_BWRAP`, else `PATH`); env vars
   `WORKER_MCP_SANDBOX_MINIMUM` and `WORKER_MCP_SANDBOX_DEFAULT`, flags
   `--sandbox-minimum` and `--sandbox-default`.
+- **Other paths to `$HOME` are hidden too**: the sandbox reads the mounts and
+  puts an empty tmpfs on every other path to the home directory's data (a
+  persistent-storage bind, a device mounted twice). If the mounts cannot be
+  read, the sandbox is unavailable. `sandbox.hide` lists extra paths to hide
+  (also a Nix option).
 - **Spawn**: the new `sandbox` argument is raised to the minimum and reported
   in `clamped`. Without a working sandbox a `workspace` minimum fails the spawn
   with the new error code `SANDBOX_UNAVAILABLE`; otherwise the worker runs

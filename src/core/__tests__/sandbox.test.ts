@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import { defaultConfig } from "../../config.js";
 import {
 	buildBwrapArgs,
+	findHomeAliases,
 	findWorktreeGit,
+	parseMountinfo,
 	planSandbox,
 	probeBwrap,
 	protectedInside,
@@ -42,8 +44,7 @@ function at(args: string[], flag: string, target: string): number {
 const basePlan = (over: Partial<SandboxPlan> = {}): SandboxPlan => ({
 	cwd: "/work/ws",
 	privateDir: "/run/user/1000/worker-mcp-1/worker-x",
-	home: "/home/u",
-	runtimeDir: "/run/user/1000",
+	hidden: ["/home/u", "/run/user/1000"],
 	roHome: ["/home/u/.nix-profile", "/home/u/.pi"],
 	rwHome: [],
 	overlays: [],
@@ -122,8 +123,7 @@ describe("buildBwrapArgs", () => {
 		const plan = basePlan({
 			cwd: "/tmp/ws",
 			privateDir: "/tmp/run/worker-x",
-			home: "/tmp/home",
-			runtimeDir: "/tmp/run",
+			hidden: ["/tmp/home", "/tmp/run"],
 			roHome: ["/tmp/home/.pi"],
 			extraRo: ["/tmp/tools"],
 			extraRw: ["/tmp/cache"],
@@ -197,7 +197,7 @@ describe("buildBwrapArgs", () => {
 	});
 
 	test("no home or runtime tmpfs when there is nothing to hide", () => {
-		const a = buildBwrapArgs(basePlan({ home: null, runtimeDir: null }));
+		const a = buildBwrapArgs(basePlan({ hidden: [] }));
 		assert.strictEqual(a.filter((x) => x === "--tmpfs").length, 1);
 	});
 });
@@ -239,8 +239,7 @@ describe("planSandbox", () => {
 			extraRo: [],
 			extraRw: [],
 		});
-		assert.strictEqual(plan.home, null);
-		assert.strictEqual(plan.runtimeDir, null);
+		assert.deepStrictEqual(plan.hidden, []);
 		assert.ok(plan.roHome.includes(path.join(root, "no-home", ".pi")));
 	});
 
@@ -424,5 +423,165 @@ describe("resolveMode", () => {
 		const r = svc({ minimum: "workspace" }).resolveMode(undefined, false);
 		assert.strictEqual(r.mode, "workspace");
 		assert.deepStrictEqual(r.notes, []);
+	});
+});
+
+// Fixture mountinfo: id parent dev root mountpoint options - type source opts
+const mi = (...lines: string[]) => `${lines.join("\n")}\n`;
+const HOME_ALIAS = mi(
+	"20 1 8:2 / / rw - ext4 /dev/disk rw",
+	"30 20 8:3 /home /home rw - btrfs /dev/pers rw",
+	"31 20 8:3 / /persistent rw - btrfs /dev/pers rw",
+	"32 20 0:5 / /tmp rw - tmpfs tmpfs rw",
+);
+
+const always = () => true;
+
+const input = (over: Record<string, unknown>) => ({
+	cwd: mk("ws"),
+	privateDir: mk("priv"),
+	home: mk("home"),
+	profile: { roHome: [], rwHome: [] },
+	extraRo: [],
+	extraRw: [],
+	...over,
+});
+
+describe("parseMountinfo", () => {
+	test("reads the fields and optional fields", () => {
+		const m = parseMountinfo(
+			mi(
+				"36 35 98:0 /mnt1 /mnt2 rw,noatime master:1 shared:2 - ext3 /dev/root rw",
+			),
+		);
+		assert.deepStrictEqual(m, [
+			{ dev: "98:0", root: "/mnt1", mountPoint: "/mnt2" },
+		]);
+	});
+
+	test("octal escapes in paths", () => {
+		const m = parseMountinfo(
+			mi(
+				"40 20 8:3 /my\\040home /home/a\\040b rw - btrfs /dev/pers rw",
+				"41 20 8:3 /\\303\\244 /x\\134y rw - btrfs /dev/pers rw",
+			),
+		);
+		assert.strictEqual(m[0].root, "/my home");
+		assert.strictEqual(m[0].mountPoint, "/home/a b");
+		assert.strictEqual(m[1].root, "/\u00e4");
+		assert.strictEqual(m[1].mountPoint, "/x\\y");
+	});
+
+	test("anything unexpected throws, so the caller fails closed", () => {
+		for (const bad of ["", "garbage", "1 2 x /a /b rw - t s o"]) {
+			assert.throws(() => parseMountinfo(bad), /mountinfo|mounts/, bad);
+		}
+	});
+});
+
+describe("findHomeAliases", () => {
+	test("a bind of the home directory elsewhere (persistent storage)", () => {
+		const m = parseMountinfo(HOME_ALIAS);
+		assert.deepStrictEqual(findHomeAliases(m, "/home/u", always), [
+			"/persistent/home/u",
+		]);
+	});
+
+	test("a bind of one directory in the home, with the home itself a tmpfs", () => {
+		const m = parseMountinfo(
+			mi(
+				"20 1 8:2 / / rw - ext4 /dev/disk rw",
+				"21 20 0:7 / /home/u rw - tmpfs tmpfs rw",
+				"22 21 8:3 /home/u/.ssh /home/u/.ssh rw - btrfs /dev/pers rw",
+				"23 20 8:3 / /persistent rw - btrfs /dev/pers rw",
+			),
+		);
+		assert.deepStrictEqual(findHomeAliases(m, "/home/u", always), [
+			"/persistent/home/u/.ssh",
+		]);
+	});
+
+	test("a home that is not a mount point, on a device mounted twice", () => {
+		const m = parseMountinfo(
+			mi(
+				"20 1 8:2 / / rw - ext4 /dev/disk rw",
+				"21 20 8:2 / /mnt/disk rw - ext4 /dev/disk rw",
+			),
+		);
+		assert.deepStrictEqual(findHomeAliases(m, "/home/u", always), [
+			"/mnt/disk/home/u",
+		]);
+	});
+
+	test("an octal-escaped mount point", () => {
+		const m = parseMountinfo(
+			mi(
+				"20 1 8:2 / / rw - ext4 /dev/disk rw",
+				"30 20 8:3 /home /home rw - btrfs /dev/pers rw",
+				"31 20 8:3 / /per\\040sistent rw - btrfs /dev/pers rw",
+			),
+		);
+		assert.deepStrictEqual(findHomeAliases(m, "/home/u", always), [
+			"/per sistent/home/u",
+		]);
+	});
+
+	test("a path that is not the same directory is dropped", () => {
+		const m = parseMountinfo(HOME_ALIAS);
+		assert.deepStrictEqual(
+			findHomeAliases(m, "/home/u", () => false),
+			[],
+		);
+	});
+
+	test("a different device gives no alias", () => {
+		const m = parseMountinfo(
+			mi(
+				"20 1 8:2 / / rw - ext4 /dev/disk rw",
+				"31 20 8:9 / /other rw - ext4 /dev/other rw",
+			),
+		);
+		assert.deepStrictEqual(findHomeAliases(m, "/home/u", always), []);
+	});
+});
+
+describe("hiding the home directory", () => {
+	test("sandbox.hide paths are hidden, nested and missing ones skipped", () => {
+		const a = mk("a");
+		const b = mk("a", "b");
+		const plan = planSandbox(
+			input({ hide: [b, a, path.join(root, "nope")], runtimeDir: undefined }),
+		);
+		assert.deepStrictEqual(plan.hidden.slice(-1), [a]);
+		assert.ok(!plan.hidden.includes(b), "inside another hidden path");
+		assert.ok(!plan.hidden.includes(path.join(root, "nope")));
+	});
+
+	test("the workspace under a hidden alias is bound back afterwards", () => {
+		const hideRoot = mk("persist");
+		const cwd = mk("persist", "ws");
+		const a = buildBwrapArgs(planSandbox(input({ cwd, hide: [hideRoot] })));
+		const tmpfs = at(a, "--tmpfs", hideRoot);
+		assert.ok(tmpfs > -1);
+		assert.ok(at(a, "--bind", cwd) > tmpfs);
+	});
+
+	test("unreadable mounts fail closed: not available, and no plan", async () => {
+		assert.throws(
+			() => planSandbox(input({ mountinfo: "garbage" })),
+			/mountinfo/,
+		);
+		const broken = new SandboxService(
+			{ ...defaultConfig().sandbox, bwrapPath: "/x/bwrap" },
+			{},
+			"linux",
+			async (bwrap) => ({ available: true, bwrap }),
+			() => {
+				throw new Error("cannot read /proc/self/mountinfo (EACCES)");
+			},
+		);
+		const s = await broken.status();
+		assert.strictEqual(s.available, false);
+		assert.match(s.reason ?? "", /cannot be hidden reliably/);
 	});
 });

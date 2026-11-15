@@ -94,6 +94,7 @@ let
                 default = "workspace";
                 extraRo = [ "/opt/toolchain" ];
                 extraRw = [ "/var/cache/build" ];
+                hide = [ "/data/home-backup" ];
               };
               env.WORKER_MCP_RUN_TIMEOUT_MS = 600000;
               envFiles.TEST_API_KEY = config.sops.secrets.api_key.path;
@@ -185,7 +186,7 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .providers.pi.path == "/opt/pi/bin/pi"
           and .providers.pi.defaultModel == "zai/test-model"
           and .legacyTools == false
-          and .sandbox == { default: "workspace", extraRo: ["/opt/toolchain"], extraRw: ["/var/cache/build"] }
+          and .sandbox == { default: "workspace", extraRo: ["/opt/toolchain"], extraRw: ["/var/cache/build"], hide: ["/data/home-backup"] }
           and .env.allow == ["TEST_API_KEY"]
         ' ${file}
 

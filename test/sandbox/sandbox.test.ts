@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -9,6 +9,7 @@ import { gatedBash, textOf, viewOf } from "../helpers/behaviour.js";
 import {
 	createIsolation,
 	type Isolation,
+	REPO_ROOT,
 	sleep,
 	waitUntil,
 } from "../helpers/isolation.js";
@@ -65,6 +66,11 @@ async function exec(server: RawServer, workerId: string, command: string) {
 	assert.ok(m, `unexpected output: ${text}`);
 	return { code: Number(m[1]), out: m[2] };
 }
+
+/** An existing directory the outer sandbox can replace with a tmpfs. */
+const MOUNT_BASE = ["/mnt", "/srv", "/media", "/opt"].find((d) =>
+	fs.existsSync(d),
+);
 
 describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 	let iso: Isolation;
@@ -375,6 +381,61 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 				[],
 			);
 			await server.callTool("terminate_worker", { workerId: id });
+		},
+	);
+
+	test(
+		"another path to the home directory is hidden too",
+		{
+			skip: MOUNT_BASE ? false : "no directory to mount the alias on",
+		},
+		() => {
+			fs.mkdirSync(path.join(iso.home, ".ssh"), { recursive: true });
+			fs.writeFileSync(path.join(iso.home, ".ssh", "id_alias"), "x\n");
+			const priv = fs.mkdtempSync(path.join(iso.root, "priv-"));
+			// An outer sandbox mounts the same home a second time, as persistent
+			// storage does (/home and /persistent/home).
+			const alias = `${MOUNT_BASE}/alias-home`;
+			const run = (script: string) =>
+				spawnSync(
+					bwrap as string,
+					[
+						"--bind",
+						"/",
+						"/",
+						"--dev",
+						"/dev",
+						"--proc",
+						"/proc",
+						"--tmpfs",
+						"/mnt",
+						"--bind",
+						iso.home,
+						alias,
+						"--",
+						process.execPath,
+						script,
+						bwrap as string,
+						iso.home,
+						alias,
+						iso.cwd,
+						priv,
+					],
+					{ encoding: "utf8" },
+				);
+			const r = run(
+				path.join(REPO_ROOT, "test", "fixtures", "alias-probe.mjs"),
+			);
+			if (r.status !== 0 && /namespace|permitted|denied/i.test(r.stderr)) {
+				// Nested sandboxes are not allowed here: nothing to test.
+				return;
+			}
+			assert.strictEqual(r.status, 0, r.stderr);
+			const got = JSON.parse(r.stdout.trim().split("\n").at(-1) as string);
+			assert.ok(got.hidden.includes(alias), `alias not hidden: ${got.hidden}`);
+			assert.match(got.out, /via-home: .*No such file/);
+			assert.match(got.out, /via-alias: .*No such file/);
+			assert.ok(!got.out.includes("id_alias"), got.out);
 		},
 	);
 });

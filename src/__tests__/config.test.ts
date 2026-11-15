@@ -894,6 +894,7 @@ describe("sandbox config", () => {
 			minimum: "none",
 			extraRo: [],
 			extraRw: [],
+			hide: [],
 		});
 	});
 
@@ -943,6 +944,8 @@ describe("sandbox config", () => {
 			{ minimum: "strict" },
 			{ extraRo: ["relative/path"] },
 			{ extraRw: ["/"] },
+			{ hide: ["relative"] },
+			{ hide: ["/"] },
 			{ extraRw: ["/a/../etc"] },
 			{ extraRo: [""] },
 			{ unknown: true },
