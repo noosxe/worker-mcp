@@ -68,3 +68,55 @@ jobs:
 
       - name: Run stdio tests under Bun
         run: pnpm run test:bun
+
+  # The workspace sandbox needs bubblewrap and unprivileged user namespaces.
+  # The sandbox tests skip themselves where those are missing, so this job
+  # also checks that they really ran: a skip here would be a silent pass.
+  test-sandbox:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Check that bubblewrap works
+        run: bwrap --ro-bind / / --unshare-pid --die-with-parent true
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build code
+        run: pnpm run build
+
+      - name: Run the sandbox tests under Node and Bun
+        run: |
+          for runtime in node bun; do
+            WORKER_MCP_TEST_RUNTIME=$runtime node --import tsx --test \
+              test/sandbox/sandbox.test.ts | tee "sandbox-$runtime.log"
+            # They must have run: not skipped, and not zero.
+            grep -Eq '^ℹ skipped 0$' "sandbox-$runtime.log"
+            grep -Eq '^ℹ pass [1-9][0-9]*$' "sandbox-$runtime.log"
+            grep -Eq '^ℹ fail 0$' "sandbox-$runtime.log"
+          done

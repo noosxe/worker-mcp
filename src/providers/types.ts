@@ -1,8 +1,9 @@
 import type { z } from "zod";
 
 import type { Config } from "../config.js";
-import type { ChildSpec, ManagedChild } from "../core/child.js";
+import type { ManagedChild, ProviderChildSpec } from "../core/child.js";
 import type { Logger } from "../core/log.js";
+import type { SandboxProfile } from "../core/sandbox.js";
 import type { ToolMap } from "../gate/canonical.js";
 
 /**
@@ -41,6 +42,11 @@ export interface WorkerProvider {
 	readonly displayName: string;
 	readonly capabilities: ProviderCapabilities;
 	readonly toolMap: ToolMap;
+	/**
+	 * What the agent needs from `$HOME` inside the `workspace` sandbox. The
+	 * core mounts it; the provider only declares it. Default: nothing.
+	 */
+	readonly sandboxProfile?: SandboxProfile;
 	/** Cheap availability probe: binary found, version. No model calls. */
 	check(config: Config): Promise<ProviderCheck>;
 	/** Validates provider-specific spawn options; unknown keys are rejected. */
@@ -72,7 +78,7 @@ export interface ProviderHost {
 	 * Start a process under core policy: env allowlist, process group, bounded
 	 * framing, tree kill. A provider never spawns on its own.
 	 */
-	spawn(spec: ChildSpec): ManagedChild;
+	spawn(spec: ProviderChildSpec): ManagedChild;
 	/** A normalised event into the core run. */
 	emit(event: WorkerEvent): void;
 	/** Ask the gate. Never rejects: any failure is a deny. */

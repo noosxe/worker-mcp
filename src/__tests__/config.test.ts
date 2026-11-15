@@ -880,3 +880,91 @@ describe("classifier settings", () => {
 		assert.ok(!printed.includes("[redacted]"));
 	});
 });
+
+const withFile = (body: unknown) => {
+	const file = path.join(root, "c.json");
+	fs.writeFileSync(file, JSON.stringify(body), { mode: 0o600 });
+	return ["--config", file];
+};
+
+describe("sandbox config", () => {
+	test("defaults: minimum none, no default pinned, no extra paths", () => {
+		const c = load();
+		assert.deepStrictEqual(c.sandbox, {
+			minimum: "none",
+			extraRo: [],
+			extraRw: [],
+		});
+	});
+
+	test("file, env and flag layer; extra paths accumulate in the file", () => {
+		const args = withFile({
+			sandbox: {
+				minimum: "none",
+				default: "workspace",
+				extraRo: ["/opt/tools"],
+				extraRw: ["/var/cache/x"],
+				bwrapPath: "/usr/bin/bwrap",
+			},
+		});
+		const c = load(args);
+		assert.strictEqual(c.sandbox.default, "workspace");
+		assert.deepStrictEqual(c.sandbox.extraRo, ["/opt/tools"]);
+		assert.deepStrictEqual(c.sandbox.extraRw, ["/var/cache/x"]);
+		assert.strictEqual(c.sandbox.bwrapPath, "/usr/bin/bwrap");
+		const viaEnv = load(args, {
+			...env,
+			WORKER_MCP_SANDBOX_DEFAULT: "none",
+			WORKER_MCP_SANDBOX_MINIMUM: "none",
+		});
+		assert.strictEqual(viaEnv.sandbox.default, "none");
+		const viaFlag = load([...args, "--sandbox-minimum", "workspace"], {
+			...env,
+			WORKER_MCP_SANDBOX_MINIMUM: "none",
+		});
+		assert.strictEqual(viaFlag.sandbox.minimum, "workspace");
+	});
+
+	test("WORKER_MCP_BWRAP is the fallback for bwrapPath; the file wins", () => {
+		const e = { ...env, WORKER_MCP_BWRAP: "/nix/store/x-bubblewrap/bin/bwrap" };
+		assert.strictEqual(
+			load([], e).sandbox.bwrapPath,
+			"/nix/store/x-bubblewrap/bin/bwrap",
+		);
+		assert.strictEqual(
+			load(withFile({ sandbox: { bwrapPath: "/usr/bin/bwrap" } }), e).sandbox
+				.bwrapPath,
+			"/usr/bin/bwrap",
+		);
+	});
+
+	test("invalid values name the key", () => {
+		for (const bad of [
+			{ minimum: "strict" },
+			{ extraRo: ["relative/path"] },
+			{ extraRw: ["/"] },
+			{ extraRw: ["/a/../etc"] },
+			{ extraRo: [""] },
+			{ unknown: true },
+			{ bwrapPath: "" },
+		]) {
+			assert.throws(
+				() => load(withFile({ sandbox: bad })),
+				ConfigError,
+				JSON.stringify(bad),
+			);
+		}
+		assert.throws(
+			() => load([], { ...env, WORKER_MCP_SANDBOX_MINIMUM: "full" }),
+			/WORKER_MCP_SANDBOX_MINIMUM.*sandbox\.minimum/,
+		);
+	});
+
+	test("a default below the minimum is refused", () => {
+		assert.throws(
+			() =>
+				load(withFile({ sandbox: { minimum: "workspace", default: "none" } })),
+			/sandbox\.default is none but sandbox\.minimum is workspace/,
+		);
+	});
+});

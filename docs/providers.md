@@ -22,8 +22,11 @@ status, the command in flight and the approvals, and opens its worker through
 | `openWorker`       | `src/core/host.ts`                       | Opens a worker through a provider; when `open()` fails it kills whatever the provider started. `close()` stops the provider, kills its processes, removes its dir. |
 | `FakeProvider`     | `src/providers/fake/`                    | An in-process provider scripted by the prompt, for core tests.                                                                                                     |
 
-A provider never spawns on its own: it gives `host.spawn` a `ChildSpec` and
-gets a `ManagedChild`. So the environment allowlist, process group, framing
+A provider never spawns on its own: it gives `host.spawn` a command and
+gets a `ManagedChild`. The core decides the sandbox: when the worker runs in
+`workspace`, `ChildRegistry` wraps the command in bubblewrap (`core/sandbox.ts`).
+A provider only declares what its agent needs from `$HOME` in an optional
+`sandboxProfile` (`roHome`, `rwHome`, `overlayHome`), for example pi's `~/.pi`. So the environment allowlist, process group, framing
 caps and kill escalation cannot be skipped. `open()` resolves only once the
 provider has proof its gate is active; otherwise it rejects and the core kills
 the child. `requestApproval` never rejects: any failure is a deny.

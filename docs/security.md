@@ -98,6 +98,87 @@ for the coordinator.
   under its own session directory.
 - The server does not read or write anything under `~/.pi`.
 
+## The workspace sandbox
+
+The gate reduces what a worker does without being asked. Only a sandbox
+reduces what it _can_ do. `sandbox: "workspace"` runs the worker process
+(`pi` and every tool it starts) inside [bubblewrap](https://github.com/containers/bubblewrap)
+on Linux:
+
+| Inside the sandbox                                                       |                                                                                                                                                              |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The whole filesystem                                                     | read-only                                                                                                                                                    |
+| The workspace (`cwd`, by its real path)                                  | read-write                                                                                                                                                   |
+| `/tmp`                                                                   | an empty private tmpfs                                                                                                                                       |
+| `$HOME`                                                                  | an empty tmpfs: `~/.ssh`, `~/.gnupg`, `~/.aws`, browser profiles and other repositories are not there                                                        |
+| `$XDG_RUNTIME_DIR`                                                       | an empty tmpfs: the user's agent sockets (ssh, gpg) are not reachable                                                                                        |
+| The agent's own config (pi: `~/.pi`) and Nix profiles (`~/.nix-profile`) | read-only, put back over the empty home                                                                                                                      |
+| pi's `~/.pi/agent`                                                       | a throwaway writable layer over the read-only files (pi takes a lock file there even to read its settings); nothing written there reaches the real directory |
+| The worker's private directory (holds the gate)                          | read-only                                                                                                                                                    |
+| `sandbox.extraRo`, `sandbox.extraRw`                                     | read-only, read-write                                                                                                                                        |
+| Process, IPC and hostname namespaces                                     | new: the worker sees only its own processes                                                                                                                  |
+
+- **Cleanup is airtight.** The sandbox dies with the server (`--die-with-parent`
+  and a PID namespace): even if the server is killed with SIGKILL, the worker
+  and every process it started, in any process group, are killed. `--new-session`
+  stops a worker from injecting keystrokes into the server's terminal.
+- **Protected paths are read-only inside the workspace too**, as a second line
+  behind the gate's hard limits: `.git/hooks`, `.git/config`, `.claude`,
+  `.mcp.json`, `.envrc`, `.husky`, `.pi` and the `.env*` files in the
+  workspace root, when they exist. A protected path that does not exist yet is
+  left to the gate (the sandbox would have to create it), and so is a `.env`
+  below the root. The list is the one the gate uses.
+- **Git worktrees.** When `cwd` is a linked worktree (its `.git` is a file),
+  the repository's git directory is outside the workspace; the sandbox mounts
+  it read-write so `git commit` works, with its `hooks` and `config` read-only.
+  The `.git` file is writable by a worker, so it is not trusted: the directory
+  must look like a git directory and point back at this workspace, otherwise
+  the worker gets nothing. A subdirectory of a repository, and a submodule, get
+  a read-only `.git`; the main checkout's files are never mounted.
+- **Symlinked workspaces** are mounted by their real path.
+
+### What it does not do
+
+- **The network is not restricted.** A worker needs it to reach its model API,
+  and a namespace around `pi` cannot tell `pi`'s own calls from its tools'.
+  Whatever the worker can read, it can send out.
+- **The worker can still read its own API key**: `pi` needs its auth file, which
+  stays visible (read-only), and the key may be in its environment.
+- **The workspace is writable**, and so is everything in it that is not
+  protected: build scripts, `package.json` scripts and git history can be
+  changed. Review what a worker leaves behind before running it.
+- System sockets that are not in the user's runtime directory (a container
+  runtime's socket, the system D-Bus) are reachable, because the root is
+  mounted read-only, not hidden. A read-only bind does not stop a worker from
+  using a socket.
+- It is not a defence against a kernel or bubblewrap bug, nor against a
+  malicious `pi` binary.
+- **Linux only.** macOS has no sandbox: `sandbox.minimum` must stay `none`
+  there (a `workspace` minimum would make every spawn fail), and workers run
+  with the gate and the environment allowlist alone.
+
+### Settings
+
+- `sandbox.minimum` (`none` or `workspace`, default `none`): `spawn_worker`
+  cannot ask for less; a lower request is raised and reported in `clamped`.
+- `sandbox.default`: what a spawn gets when it asks for nothing. Default:
+  `workspace` when the sandbox works, otherwise `none`.
+- When the sandbox does not work: with minimum `workspace` the spawn fails with
+  `SANDBOX_UNAVAILABLE`; with minimum `none` the worker runs unsandboxed and the
+  spawn result says so in `notes`. `list_providers` shows `sandbox: {available,
+  reason, minimum, default}`.
+- `sandbox.extraRo`, `sandbox.extraRw`: absolute paths to mount, for tools or
+  caches the worker needs. Paths that do not exist are skipped.
+- `sandbox.bwrapPath`, else `WORKER_MCP_BWRAP`, else `bwrap` on `PATH`. The Nix
+  package sets `WORKER_MCP_BWRAP` to its own bubblewrap.
+- At startup the server runs bubblewrap once with a trivial command to check that
+  unprivileged user namespaces work (some systems turn them off, for example
+  through an AppArmor profile or a sysctl) and remembers the result.
+
+A `pi` binary, its configuration and the workspace are the only places a worker
+sees under `$HOME`. If `pi` is installed under `$HOME` (for example
+`~/.local/bin/pi`), add that directory to `sandbox.extraRo`.
+
 ## Auto mode and classifiers
 
 `gate.mode: auto` sends calls the rules escalate to an external HTTP classifier
@@ -135,8 +216,10 @@ It does not change what is protected:
   its auth file under `HOME`, or a key passed in the environment. No gate or
   sandbox around a single process can stop it from sending that key out through
   an allowed call. Use a key with a narrow scope and spend limit.
-- There is no process sandbox yet. Workers can read and write whatever the
-  server's user can, subject to the gate.
+- Without the sandbox (`sandbox: "none"`, or on macOS) a worker can read and
+  write whatever the server's user can, subject to the gate. See
+  [The workspace sandbox](#the-workspace-sandbox) for what `workspace` changes
+  and what it leaves open.
 - The gate's nonce is not a secret from the worker. It keeps stray or forged
   messages out of the gate dialog, but a tool that can read the worker's
   `/proc/<pid>/environ` can read it. The boundary against a hostile worker is a

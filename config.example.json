@@ -16,6 +16,10 @@
 	"env": {
 		"allow": ["ANTHROPIC_API_KEY", "HTTPS_PROXY"]
 	},
+	"sandbox": {
+		"minimum": "none",
+		"extraRo": ["/opt/tools"]
+	},
 	"gate": {
 		"maxAutoApprove": "MEDIUM",
 		"approvalTimeoutMs": 600000,

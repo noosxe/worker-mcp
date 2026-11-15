@@ -57,7 +57,6 @@ describe("core/host: opening workers through a provider", () => {
 					argv: [FAKE_PI],
 					cwd: iso.cwd,
 					stdio: "jsonl",
-					sandbox: "none",
 				});
 				await provider.child.started;
 				throw new Error("gate never became active");
@@ -93,7 +92,6 @@ describe("core/host: opening workers through a provider", () => {
 					argv: [FAKE_PI],
 					cwd: iso.cwd,
 					stdio: "jsonl",
-					sandbox: "none",
 				});
 				return fake.open(spec, host);
 			},

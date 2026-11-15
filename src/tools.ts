@@ -191,9 +191,17 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 				reason: check.reason,
 				capabilities: provider?.capabilities,
 			}));
+			const status = await manager.sandboxStatus();
+			const settings = manager.config.sandbox;
+			const sandbox = {
+				available: status.available,
+				reason: status.reason,
+				minimum: settings.minimum,
+				default: settings.default ?? (status.available ? "workspace" : "none"),
+			};
 			return ok(
-				`${providers.length} provider(s): ${providers.map((p) => `${p.id} (${p.available ? "available" : "unavailable"})`).join(", ")}.`,
-				{ providers },
+				`${providers.length} provider(s): ${providers.map((p) => `${p.id} (${p.available ? "available" : "unavailable"})`).join(", ")}. Sandbox: ${status.available ? `available (default ${sandbox.default}, minimum ${sandbox.minimum})` : `unavailable (${status.reason})`}.`,
+				{ providers, sandbox },
 			);
 		}),
 	);
@@ -208,26 +216,32 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			outputSchema: SpawnOut,
 			annotations: ANNOTATIONS.spawn_worker,
 		},
-		guarded(async ({ cwd, provider, name, model, systemPrompt, policy }) => {
-			const session = await manager.createSession(
-				name,
-				cwd,
-				model,
-				systemPrompt,
-				policy,
-				provider,
-			);
-			const report = session.policyReport;
-			const label = session.name ? ` (name ${session.name})` : "";
-			return ok(
-				`Started worker ${session.sessionId}${label} in ${session.cwd} (provider ${session.providerId}${session.model ? `, model ${session.model}` : ""}, ${session.status}). Next: call start_run with this workerId.`,
-				{
-					worker: ctx.workerData(session),
-					clamped: report?.clamped ?? [],
-					notes: report?.notes ?? [],
-				},
-			);
-		}),
+		guarded(
+			async ({ cwd, provider, name, model, systemPrompt, policy, sandbox }) => {
+				const session = await manager.createSession(
+					name,
+					cwd,
+					model,
+					systemPrompt,
+					policy,
+					provider,
+					sandbox,
+				);
+				const report = session.policyReport;
+				const label = session.name ? ` (name ${session.name})` : "";
+				return ok(
+					`Started worker ${session.sessionId}${label} in ${session.cwd} (provider ${session.providerId}${session.model ? `, model ${session.model}` : ""}, ${session.status}). Next: call start_run with this workerId.`,
+					{
+						worker: ctx.workerData(session),
+						clamped: [
+							...(report?.clamped ?? []),
+							...session.sandboxReport.clamped,
+						],
+						notes: [...(report?.notes ?? []), ...session.sandboxReport.notes],
+					},
+				);
+			},
+		),
 	);
 
 	server.registerTool(

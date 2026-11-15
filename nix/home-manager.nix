@@ -155,6 +155,12 @@ let
       inherit (cfg) defaultModel;
     };
     limits = lib.optionalAttrs (cfg.allowedRoots != [ ]) { inherit (cfg) allowedRoots; };
+    sandbox =
+      lib.filterAttrs (_: v: v != null) {
+        inherit (cfg.sandbox) minimum default bwrapPath;
+      }
+      // lib.optionalAttrs (cfg.sandbox.extraRo != [ ]) { inherit (cfg.sandbox) extraRo; }
+      // lib.optionalAttrs (cfg.sandbox.extraRw != [ ]) { inherit (cfg.sandbox) extraRw; };
     env = lib.optionalAttrs (passthrough != [ ]) { allow = passthrough; };
     gate =
       lib.filterAttrs (_: v: v != null) {
@@ -426,6 +432,58 @@ in
       };
     };
 
+    sandbox = {
+      minimum = mkOption {
+        type = types.nullOr (
+          types.enum [
+            "none"
+            "workspace"
+          ]
+        );
+        default = null;
+        description = ''
+          The least a worker may run with; `spawn_worker` cannot ask for less.
+          `workspace` (bubblewrap, Linux only) lets a worker write only its
+          workspace and hides the home directory. It makes a spawn fail when
+          the sandbox does not work, so it is refused on macOS, which has no
+          sandbox. Server default (null): `none`.
+        '';
+      };
+      default = mkOption {
+        type = types.nullOr (
+          types.enum [
+            "none"
+            "workspace"
+          ]
+        );
+        default = null;
+        description = ''
+          What a spawn gets when it names no sandbox. Server default (null):
+          `workspace` where it works, otherwise `none`.
+        '';
+      };
+      extraRo = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Absolute paths mounted read-only into the sandbox, besides the read-only system and the provider's own configuration.";
+        example = [ "/opt/toolchain" ];
+      };
+      extraRw = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Absolute paths mounted writable into the sandbox, such as a shared build cache.";
+        example = [ "/var/cache/build" ];
+      };
+      bwrapPath = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          The bubblewrap binary. Default (null): the package's own
+          bubblewrap on Linux, which it finds through `WORKER_MCP_BWRAP`.
+        '';
+      };
+    };
+
     classifiers = mkOption {
       type = types.listOf classifierType;
       default = [ ];
@@ -465,6 +523,18 @@ in
       {
         assertion = lib.all (p: lib.hasPrefix "/" p) cfg.allowedRoots;
         message = "programs.worker-mcp.allowedRoots: each entry must be an absolute path.";
+      }
+      {
+        assertion = lib.all (p: lib.hasPrefix "/" p) (cfg.sandbox.extraRo ++ cfg.sandbox.extraRw);
+        message = "programs.worker-mcp.sandbox: each extraRo and extraRw entry must be an absolute path.";
+      }
+      {
+        assertion = cfg.sandbox.bwrapPath == null || lib.hasPrefix "/" cfg.sandbox.bwrapPath;
+        message = "programs.worker-mcp.sandbox.bwrapPath must be an absolute path.";
+      }
+      {
+        assertion = cfg.sandbox.minimum != "workspace" || pkgs.stdenv.hostPlatform.isLinux;
+        message = "programs.worker-mcp.sandbox.minimum = \"workspace\" needs Linux: macOS has no sandbox, so a worker could never be spawned. Leave it at \"none\".";
       }
       {
         assertion = cfg.claude.command == null || lib.hasPrefix "/" cfg.claude.command;

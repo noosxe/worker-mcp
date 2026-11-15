@@ -154,6 +154,22 @@ export const WorkerOut = z.object({
 export type WorkerData = z.infer<typeof WorkerOut>;
 
 export const ListProvidersOut = z.object({
+	sandbox: z
+		.object({
+			available: z
+				.boolean()
+				.describe("The workspace sandbox (bubblewrap) works on this server."),
+			reason: z.string().optional().describe("Why it is not available."),
+			minimum: z
+				.enum(["none", "workspace"])
+				.describe("The least a spawn may run with."),
+			default: z
+				.enum(["none", "workspace"])
+				.describe("What a spawn gets when it names no sandbox."),
+		})
+		.describe(
+			"Whether workers can be confined to their workspace. Without it a worker can read and write anything the server user can.",
+		),
 	providers: z.array(
 		z.object({
 			id: z.string(),

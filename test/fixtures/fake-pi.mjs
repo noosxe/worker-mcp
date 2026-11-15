@@ -40,7 +40,7 @@
 //   exit-at-start               exit 1 at once, as pi does for a bad -e path
 // After loading the extensions fake-pi fires `session_start` the way pi does,
 // so a gate that reports readiness from that hook is seen on the wire.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -280,6 +280,15 @@ async function startPrompt(message) {
 	} else if (spec === "ignore-sigterm" || spec === "ignore-abort") {
 		run = { timer: null };
 		streamFor(600_000, "unreachable");
+	} else if ((m = spec.match(/^exec:([\s\S]+)$/))) {
+		// Runs a shell command with no gate in between: what a worker that got
+		// around the gate could do. Reports its exit code and output.
+		run = { timer: null };
+		const r = spawnSync("sh", ["-c", m[1]], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		finishRun(`exit=${r.status}\n${r.stdout}${r.stderr}`);
 	} else if (spec === "grandchild") {
 		// Like pi's bash tool: a child in its own process group.
 		const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });

@@ -1,11 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
-import type { Config } from "../config.js";
+import type { Config, SandboxMode } from "../config.js";
 import { buildWorkerEnv } from "./env.js";
 import { LineFramer } from "./framing.js";
 import { type Logger, noopLogger } from "./log.js";
 import { TreeTracker } from "./proctree.js";
+import type { SandboxProfile, SandboxService } from "./sandbox.js";
 
 /**
  * The one place that starts worker processes. A provider describes the
@@ -15,7 +16,7 @@ import { TreeTracker } from "./proctree.js";
  * reaches descendants in other process groups.
  */
 
-export type SandboxMode = "none" | "workspace";
+export type { SandboxMode } from "../config.js";
 
 export interface ChildSpec {
 	argv: [string, ...string[]];
@@ -24,11 +25,19 @@ export interface ChildSpec {
 	env?: Record<string, string>;
 	/** Only mode in v1: JSON lines in both directions. */
 	stdio: "jsonl";
-	/** Decided by the core. Only "none" exists until the sandbox phase. */
+	/** Decided by the core, never by a provider. */
 	sandbox: SandboxMode;
-	/** Extra read-write paths for the sandbox (reserved). */
-	writablePaths?: string[];
+	/** The provider's home paths for the sandbox; set by the core. */
+	sandboxProfile?: SandboxProfile;
+	/** The worker's private directory, mounted into the sandbox; set by the core. */
+	privateDir?: string;
 }
+
+/** What a provider may say about a process: the core adds the sandbox. */
+export type ProviderChildSpec = Omit<
+	ChildSpec,
+	"sandbox" | "sandboxProfile" | "privateDir"
+>;
 
 export interface ChildExit {
 	code: number | null;
@@ -101,6 +110,8 @@ export interface ChildRegistryOptions {
 	envConfig: Pick<Config["env"], "allow" | "forceDropExempt">;
 	limits?: Partial<ChildLimits>;
 	log?: Logger;
+	/** Wraps `workspace` children in bubblewrap. Without it only `none` works. */
+	sandbox?: SandboxService;
 }
 
 /** Wait this long for the pipes to drain after the process exited. */
@@ -424,16 +435,30 @@ export class ChildRegistry {
 	}
 
 	spawn(spec: ChildSpec): ManagedChild {
-		if (spec.sandbox !== "none") {
-			throw new Error(
-				`sandbox mode "${spec.sandbox}" is not available in this build`,
-			);
-		}
 		const env = {
 			...buildWorkerEnv(this.opts.env, this.opts.envConfig),
 			...spec.env,
 		};
-		const child = new Child(spec, env, this.limits, this.log, (c) =>
+		let launch = spec;
+		if (spec.sandbox === "workspace") {
+			const sandbox = this.opts.sandbox;
+			if (!sandbox || spec.privateDir === undefined) {
+				// Never fall back to running unsandboxed.
+				throw new Error(
+					"cannot start a sandboxed worker: the sandbox is not set up",
+				);
+			}
+			launch = {
+				...spec,
+				argv: sandbox.wrap(spec.argv, {
+					cwd: spec.cwd,
+					privateDir: spec.privateDir,
+					env,
+					profile: spec.sandboxProfile,
+				}) as ChildSpec["argv"],
+			};
+		}
+		const child = new Child(launch, env, this.limits, this.log, (c) =>
 			this.children.delete(c),
 		);
 		this.children.add(child);
