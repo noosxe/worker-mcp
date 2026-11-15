@@ -534,7 +534,7 @@ only uncertain calls, or ones it cannot answer, reach the coordinator.
   why (`escalatedBecause`) and what the classifiers answered.
 - Every decision is appended to a JSONL audit file (`audit.file`, default
   `<stateDir>/audit.jsonl`, mode 0600, rotated at 10 MiB, three kept). It holds
-  metadata only: a digest of the arguments and a short preview, never full
+  metadata only: a digest of the arguments, a short preview, the `providerCallId` and, for a call sent to the coordinator, its `approvalId`, never full
   arguments, file contents or tokens. If it cannot be written, decisions go on,
   the problem is logged once and `list_workers` reports `auditDegraded: true`.
   Set `audit.enabled: false` to turn it off.

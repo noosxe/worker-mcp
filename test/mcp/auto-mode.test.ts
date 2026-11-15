@@ -64,6 +64,7 @@ describe(`auto mode end to end (${RUNTIME})`, () => {
 	let transport: StdioClientTransport;
 	let tokenFile: string;
 	const seen: Seen[] = [];
+	let escalatedApproval = "";
 
 	const call = async (name: string, args: Record<string, unknown>) =>
 		(await client.callTool({ name, arguments: args })) as any;
@@ -146,6 +147,7 @@ describe(`auto mode end to end (${RUNTIME})`, () => {
 		const first = await runOnce("rm -rf maybe");
 		assert.strictEqual(first.state, "awaiting_approval");
 		const [pending] = first.pendingApprovals;
+		escalatedApproval = pending.approvalId;
 		assert.strictEqual(pending.escalatedBecause, "low_confidence");
 		assert.strictEqual(pending.consulted[0].by, "http:local");
 		assert.strictEqual(pending.consulted[0].confidence, 0.4);
@@ -188,6 +190,13 @@ describe(`auto mode end to end (${RUNTIME})`, () => {
 			assert.strictEqual(line.arguments, undefined);
 			assert.strictEqual(line.input, undefined);
 		}
+		const joined = lines.filter((l) => l.approvalId === escalatedApproval);
+		assert.ok(
+			joined.length >= 2,
+			"the escalation and its answer carry approvalId",
+		);
+		assert.ok(joined.every((l) => typeof l.providerCallId === "string"));
+		assert.ok(lines.every((l) => l.actionId === undefined));
 		const list = await data("list_workers", {});
 		assert.strictEqual(list.auditDegraded, false);
 	});

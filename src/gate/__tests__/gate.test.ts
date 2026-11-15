@@ -34,7 +34,7 @@ const classifier = (
 const entry = (n: number): GateLogEntry => ({
 	ts: "t",
 	requestId: `r${n}`,
-	actionId: `a${n}`,
+	providerCallId: `a${n}`,
 	provider: "pi",
 	tool: "bash",
 	kind: "shell",

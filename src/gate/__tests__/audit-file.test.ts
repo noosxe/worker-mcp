@@ -126,7 +126,7 @@ describe("the gate writes metadata only", () => {
 		const out = await gate.decide(
 			{ provider: "pi", toolName: "bash", input: { command: "rm file" } },
 			"call1",
-			{ runId: "r_1" },
+			{ runId: "r_1", approvalId: "a_testid0001" },
 		);
 		gate.recordResolution("call1", "allow", "coordinator", "approved");
 		audit.close();
@@ -144,6 +144,15 @@ describe("the gate writes metadata only", () => {
 			(out as { requestId: string }).requestId,
 		);
 		assert.strictEqual(lines[1].runId, "r_1");
+		assert.strictEqual(lines[1].providerCallId, "call1");
+		assert.strictEqual(lines[1].approvalId, "a_testid0001");
+		assert.strictEqual(
+			lines[2].approvalId,
+			"a_testid0001",
+			"the resolution joins too",
+		);
+		assert.strictEqual(lines[0].approvalId, undefined, "allowed: no approval");
+		for (const l of lines) assert.strictEqual(l.actionId, undefined);
 		assert.strictEqual(lines[1].escalatedBecause, "manual_mode");
 		assert.strictEqual(lines[2].decidedBy, "coordinator");
 		for (const l of lines) assert.ok(l.preview.length <= 200);
