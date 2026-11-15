@@ -17,7 +17,7 @@
       eachSystem = f: nixpkgs.lib.genAttrs (import systems) (system: f system nixpkgs.legacyPackages.${system});
 
       version = "0.5.0";
-      pnpmHash = "sha256-dYJSwnVYod72q3vg2herI+M0s79HF9099UMbmzQ1AJI=";
+      pnpmHash = "sha256-CDaTLWmJiDUenuC3A8S3/IEGHEH/DnXZEQzhP/M9y/U=";
 
       worker-mcp-for =
         pkgs:
@@ -56,9 +56,17 @@ EOF
               '';
               hash = pnpmHash;
             }).overrideAttrs
-              (old: {
+              (old:
+                let
+                  jqLine = ''jq --sort-keys "del(.. | .checkedAt?)" $f | sponge $f'';
+                in
+                # Fail loudly when nixpkgs changes that line: the replacement
+                # below would silently do nothing, and the guard would be gone.
+                assert pkgs.lib.assertMsg (pkgs.lib.hasInfix jqLine old.fixupPhase)
+                  "flake.nix: fetchPnpmDeps' fixupPhase no longer contains the jq line this flake patches. Check whether the guard is still needed and update or remove it.";
+                {
                 fixupPhase = builtins.replaceStrings
-                  [ ''jq --sort-keys "del(.. | .checkedAt?)" $f | sponge $f'' ]
+                  [ jqLine ]
                   [
                     ''
                       if jqOut=$(jq --sort-keys "del(.. | .checkedAt?)" $f 2>/dev/null); then
