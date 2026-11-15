@@ -24,6 +24,48 @@ const ALL_MARKERS = [
 	DENY_MARKER,
 ];
 
+const TERMINAL = new Set(["completed", "failed", "cancelled", "timed_out"]);
+
+/** The structured view of a tool result; fails with the error text if it is an error. */
+function viewOf(result: any, what: string): any {
+	const text = JSON.stringify(result.result?.content ?? result);
+	assert.notStrictEqual(
+		result.result?.isError,
+		true,
+		`${what} failed: ${text}`,
+	);
+	assert.ok(result.result?.structuredContent, `${what} has no view: ${text}`);
+	return result.result.structuredContent;
+}
+
+/**
+ * Follow a run to a terminal state. A wait without a cursor returns early
+ * while an approval is still reported, so keep waiting from the returned seq.
+ */
+async function settle(
+	server: RawServer,
+	view: any,
+	deadlineMs = 30_000,
+): Promise<any> {
+	const deadline = Date.now() + deadlineMs;
+	let current = view;
+	while (!TERMINAL.has(current.state)) {
+		assert.ok(
+			Date.now() < deadline,
+			`run ${view.runId} not terminal, last state ${current.state}`,
+		);
+		current = viewOf(
+			await server.callTool(TOOLS.waitRun, {
+				runId: view.runId,
+				sinceSeq: current.seq,
+				waitMs: 5_000,
+			}),
+			"wait_run",
+		);
+	}
+	return current;
+}
+
 /**
  * Drives an escalated bash call (approved) and an escalated write call
  * (rejected, with a reason) through the server over stdio, and returns what
@@ -65,11 +107,9 @@ async function drive(
 				prompt: gatedBash(command),
 				waitMs: 10_000,
 			});
-			assert.notStrictEqual(auto.result.isError, true);
-			assert.notStrictEqual(
-				auto.result.structuredContent.state,
-				"awaiting_approval",
-			);
+			const autoView = viewOf(auto, "auto-decided start_run");
+			assert.notStrictEqual(autoView.state, "awaiting_approval");
+			await settle(server, autoView);
 		}
 
 		const bash = await server.callTool(TOOLS.startRun, {
@@ -77,16 +117,13 @@ async function drive(
 			prompt: gatedBash(`rm -rf build # ${CMD_MARKER}`),
 			waitMs: 10_000,
 		});
-		const bashView = bash.result.structuredContent;
+		const bashView = viewOf(bash, "bash start_run");
 		assert.strictEqual(bashView.state, "awaiting_approval");
-		await server.callTool(TOOLS.approve, {
+		const approved = await server.callTool(TOOLS.approve, {
 			approvalId: bashView.pendingApprovals[0].approvalId,
 		});
-		await server.callTool(TOOLS.waitRun, {
-			workerId: name,
-			runId: bashView.runId,
-			waitMs: 10_000,
-		});
+		viewOf(approved, "approve_action");
+		await settle(server, bashView);
 
 		// A write outside the workspace is escalated.
 		const write = await server.callTool(TOOLS.startRun, {
@@ -97,17 +134,14 @@ async function drive(
 			})}`,
 			waitMs: 10_000,
 		});
-		const writeView = write.result.structuredContent;
+		const writeView = viewOf(write, "write start_run");
 		assert.strictEqual(writeView.state, "awaiting_approval");
-		await server.callTool(TOOLS.reject, {
+		const rejected = await server.callTool(TOOLS.reject, {
 			approvalId: writeView.pendingApprovals[0].approvalId,
 			reason: REASON_MARKER,
 		});
-		await server.callTool(TOOLS.waitRun, {
-			workerId: name,
-			runId: writeView.runId,
-			waitMs: 10_000,
-		});
+		viewOf(rejected, "reject_action");
+		await settle(server, writeView);
 		const log = await server.request("resources/read", {
 			uri: `worker-mcp://workers/${sessionId}/log`,
 		});
