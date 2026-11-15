@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **stderr is metadata only.** The `[INTERCEPTED]`, `[AUTO-APPROVED]` and
+  `[AUTO-DENIED]` lines used to carry the whole tool input (a full shell
+  command, or the file content of a `write`); Claude Code keeps that stderr on
+  disk. They now carry the tool name, risk label, approval id, call id and a
+  short digest of the input. Worker notices, run error text and the reason of a
+  rejection are logged by size only, and unhandled-error logs print the first
+  line of the message instead of the whole error object.
+- **New `WORKER_MCP_LOG_LEVEL`** (`debug`, `info`, `warn`, `error`; default
+  `info`). The payloads above, and the worker's own stderr lines, are written
+  only at `debug`; before, the worker's stderr lines were always written.
+- The audit file was checked and is unchanged: a digest of the arguments and a
+  preview of at most 200 characters, never full arguments.
+
 ## 0.6.0
 
 ### Breaking

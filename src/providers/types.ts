@@ -150,7 +150,14 @@ export type WorkerEvent =
 			ok: boolean;
 			preview: string;
 	  }
-	| { type: "notice"; runId?: string; level: "info" | "warn"; text: string }
+	| {
+			type: "notice";
+			runId?: string;
+			level: "info" | "warn";
+			text: string;
+			/** The text carries the worker's own words: logged only at `debug`. */
+			untrusted?: boolean;
+	  }
 	| {
 			type: "run_finished";
 			runId: string;

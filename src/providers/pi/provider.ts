@@ -432,6 +432,7 @@ class PiWorker implements WorkerHandle {
 				type: "notice",
 				level: "warn",
 				text: `pi rejected ${String(msg.command)}: ${String(msg.error ?? "")}`,
+				untrusted: true,
 			});
 		}
 	}
@@ -458,6 +459,7 @@ class PiWorker implements WorkerHandle {
 					runId: this.run?.runId,
 					level: req.notifyType === "info" || !req.notifyType ? "info" : "warn",
 					text: req.message ?? "",
+					untrusted: true,
 				});
 				return;
 			case "input":
@@ -537,6 +539,7 @@ class PiWorker implements WorkerHandle {
 			runId: this.run?.runId,
 			level: "warn",
 			text: `pi extension error: ${String(msg.error ?? "")}`,
+			untrusted: true,
 		});
 		if (!text.includes(this.gateFile)) return;
 		// The gate itself is broken: nothing may run ungated.
