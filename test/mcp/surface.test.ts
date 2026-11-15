@@ -208,6 +208,7 @@ describe("tool surface", () => {
 			const done = await call(client, "wait_run", {
 				runId: view.runId,
 				waitMs: 10_000,
+				sinceSeq: (approved.structuredContent as any).seq,
 			});
 			assert.strictEqual((done.structuredContent as any).state, "completed");
 			assert.match(
