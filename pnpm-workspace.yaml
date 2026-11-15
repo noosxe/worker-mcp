@@ -2,3 +2,15 @@ allowBuilds:
   esbuild: true
 
 minimumReleaseAge: 1440
+
+# Transitive advisories under @modelcontextprotocol/sdk that the SDK's own
+# ranges do not yet exclude. Remove an entry once the SDK requires a patched
+# version. `pnpm audit --audit-level high` runs in CI.
+overrides:
+  body-parser: ">=2.4.0 <3"
+  fast-uri: ">=3.1.9 <4"
+  hono: ">=4.13.16 <5"
+  "@hono/node-server": ">=2.1.6 <3"
+  ip-address: ">=10.7.4 <11"
+  proxy-addr: ">=2.0.8 <3"
+  qs: ">=6.16.1 <7"
