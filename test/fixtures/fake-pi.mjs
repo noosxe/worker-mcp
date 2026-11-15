@@ -326,7 +326,13 @@ process.stdin.on(
 	"data",
 	createLineSplitter((line) => {
 		const msg = JSON.parse(line);
-		record({ kind: "recv", type: msg.type });
+		record({
+			kind: "recv",
+			type: msg.type,
+			...(msg.type === "set_model"
+				? { provider: msg.provider, modelId: msg.modelId }
+				: {}),
+		});
 		if (msg.type === "prompt") {
 			send(response(msg.id, "prompt"));
 			void startPrompt(msg.message);

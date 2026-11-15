@@ -185,6 +185,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 				id,
 				displayName: provider?.displayName,
 				default: id === first,
+				defaultModel: manager.defaultModel(id),
 				available: check.available,
 				version: check.version,
 				reason: check.reason,
@@ -219,7 +220,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			const report = session.policyReport;
 			const label = session.name ? ` (name ${session.name})` : "";
 			return ok(
-				`Started worker ${session.sessionId}${label} in ${session.cwd} (provider ${session.providerId}, ${session.status}). Next: call start_run with this workerId.`,
+				`Started worker ${session.sessionId}${label} in ${session.cwd} (provider ${session.providerId}${session.model ? `, model ${session.model}` : ""}, ${session.status}). Next: call start_run with this workerId.`,
 				{
 					worker: ctx.workerData(session),
 					clamped: report?.clamped ?? [],

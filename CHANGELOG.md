@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Claude Code plugin, default model and module options
+
+- **Default model**: `providers.pi.defaultModel` (`WORKER_MCP_PI_DEFAULT_MODEL`,
+  `--pi-default-model`) is used when `spawn_worker` omits `model`; an explicit
+  `model` wins. It shows in `list_providers` (`defaultModel`), in the
+  `spawn_worker` result and in `--print-config`.
+- **Claude Code plugin** in the repository: `.claude-plugin/plugin.json`, a
+  root `.mcp.json`, a `marketplace.json` (`/plugin marketplace add
+  noosxe/worker-mcp`) and the skill. Plugin options ask for the allowed
+  directories, the pi path and the default model. `skills/worker-mcp/SKILL.md`
+  is rewritten for the 13-tool surface (default model, `remember`, auto mode and
+  `escalatedBecause`). The plugin is not in the npm or Nix package.
+- **Nix**: `lib.mkClaudePlugin { pkgs, command, env }` builds the plugin
+  folder. The Home Manager module gets `piPath`, `defaultModel`, `allowedRoots`,
+  `legacyTools`, `envPassthrough`, `env`, `envFiles` (read by a generated
+  launcher; their names are passed through to workers), `claude.enable`,
+  `claude.name` and `claude.command`. `claude.enable` links the plugin as one
+  symlink into the Claude Code skills directory.
+
 ### Auto mode, classifiers and a Home Manager module
 
 - **Auto mode** (`gate.mode: auto`, default `manual`): calls the rules
