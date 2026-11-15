@@ -9,8 +9,7 @@ const read = (file: string) =>
 
 describe("Claude Code plugin files", () => {
 	const manifest = read(".claude-plugin/plugin.json");
-	const mcp = read(".mcp.json");
-	const server = mcp.mcpServers["worker-mcp"];
+	const server = manifest.mcpServers["worker-mcp"];
 
 	test("the manifest names the plugin and its options", () => {
 		assert.strictEqual(manifest.name, "worker-mcp");
@@ -23,7 +22,7 @@ describe("Claude Code plugin files", () => {
 		);
 	});
 
-	test(".mcp.json runs worker-mcp with variables the server understands", () => {
+	test("the manifest runs worker-mcp with variables the server understands", () => {
 		assert.strictEqual(server.command, "worker-mcp");
 		const known = new Set<string>(Object.values(ENV_VARS).map((v) => v.name));
 		for (const [name, value] of Object.entries<string>(server.env)) {
@@ -32,6 +31,10 @@ describe("Claude Code plugin files", () => {
 				assert.ok(manifest.userConfig[key], `${name} uses option ${key}`);
 			}
 		}
+	});
+
+	test("there is no repository-root .mcp.json, which would be project config", () => {
+		assert.ok(!fs.existsSync(new URL("../.mcp.json", import.meta.url)));
 	});
 
 	test("the marketplace lists the plugin at the repository root", () => {

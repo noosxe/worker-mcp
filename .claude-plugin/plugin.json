@@ -9,6 +9,17 @@
 	"repository": "https://github.com/noosxe/worker-mcp",
 	"license": "MIT",
 	"keywords": ["mcp", "agents", "workers", "pi"],
+	"mcpServers": {
+		"worker-mcp": {
+			"command": "worker-mcp",
+			"env": {
+				"WORKER_MCP_ALLOWED_ROOTS": "${user_config.allowed_roots}",
+				"WORKER_MCP_PI_PATH": "${user_config.pi_path}",
+				"WORKER_MCP_PI_DEFAULT_MODEL": "${user_config.default_model}",
+				"WORKER_MCP_LEGACY_TOOLS": "0"
+			}
+		}
+	},
 	"userConfig": {
 		"allowed_roots": {
 			"type": "string",

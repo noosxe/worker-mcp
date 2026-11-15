@@ -181,7 +181,7 @@ pkgs.runCommand "worker-mcp-module-eval"
         test -f ${plugin}/.claude-plugin/plugin.json
         test -f ${plugin}/skills/worker-mcp/SKILL.md
         test ! -L ${plugin}/.mcp.json
-        jq -e '.name == "worker-mcp" and (has("userConfig") | not)' ${plugin}/.claude-plugin/plugin.json
+        jq -e '.name == "worker-mcp" and (has("userConfig") | not) and (has("mcpServers") | not)' ${plugin}/.claude-plugin/plugin.json
         jq -e '.mcpServers["worker-mcp"].command == "${launcher}"' ${plugin}/.mcp.json
         test -z "$(find ${plugin} -type l)"
         # A custom command replaces the launcher; the config dir follows the claude-code module.

@@ -19,10 +19,15 @@
 }:
 let
   json = pkgs.formats.json { };
-  # `userConfig` is for installs without Nix; here `env` and `command` do its job.
+  # `userConfig` and the inline server are for installs without Nix; here
+  # `env`, `command` and the generated `.mcp.json` do their job (a server
+  # declared in the manifest would replace the one in `.mcp.json`).
   manifest = builtins.removeAttrs (builtins.fromJSON (
     builtins.readFile ../.claude-plugin/plugin.json
-  )) [ "userConfig" ];
+  )) [
+    "userConfig"
+    "mcpServers"
+  ];
 in
 assert pkgs.lib.assertMsg (pkgs.lib.hasPrefix "/" command)
   "mkClaudePlugin: command must be an absolute path";
