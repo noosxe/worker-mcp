@@ -20,7 +20,6 @@ describe("normalizePolicy", () => {
 			],
 			classifiers: "off",
 		});
-		assert.strictEqual(n.converted, false);
 		assert.deepStrictEqual(n.policy, {
 			autoApproveUpTo: RiskLevel.MEDIUM,
 			classifiers: "off",
@@ -42,61 +41,19 @@ describe("normalizePolicy", () => {
 		assert.deepStrictEqual(normalizePolicy({}).policy.overrides, []);
 	});
 
-	test("converts v1: thresholds merge, block becomes escalate", () => {
-		const n = normalizePolicy({
-			autoApproveUpTo: 0,
-			notifyUpTo: 1,
-			overrides: [
-				{ pattern: "git *", action: "allow" },
-				{ pattern: "rm *", action: "block" },
-			],
-		});
-		assert.strictEqual(n.converted, true);
-		assert.strictEqual(n.policy.autoApproveUpTo, RiskLevel.MEDIUM);
-		assert.ok(n.notes.some((x) => /notifyUpTo/.test(x)));
-		// Each v1 override matches the command or the tool name: two v2 ones.
-		assert.deepStrictEqual(
-			n.policy.overrides.map((o) => [o.match, o.action]),
-			[
-				[{ tool: "git *" }, "allow"],
-				[{ command: "git *" }, "allow"],
-				[{ tool: "rm *" }, "escalate"],
-				[{ command: "rm *" }, "escalate"],
-			],
-		);
-	});
-
-	test("converts v1 pathPattern and the old tool names", () => {
-		const n = normalizePolicy({
-			autoApproveUpTo: 0,
-			notifyUpTo: 0,
-			overrides: [
-				{
-					pattern: "write_file",
-					pathPattern: "*/src/*",
-					action: "allow",
-					maxRiskLevel: 1,
-				},
-			],
-		});
-		assert.deepStrictEqual(n.policy.overrides[0], {
-			match: { tool: "write", path: "*/src/*" },
-			action: "allow",
-			maxRiskLevel: RiskLevel.MEDIUM,
-		});
-		assert.deepStrictEqual(n.policy.overrides[1].match, {
-			command: "write_file",
-			path: "*/src/*",
-		});
-	});
-
-	test("v1 with only autoApproveUpTo still converts", () => {
-		const n = normalizePolicy({
-			autoApproveUpTo: 2,
-			overrides: [{ pattern: "x", action: "allow" }],
-		});
-		assert.strictEqual(n.converted, true);
-		assert.strictEqual(n.policy.autoApproveUpTo, RiskLevel.HIGH);
+	test("rejects the v1 shape", () => {
+		for (const bad of [
+			{ notifyUpTo: 1 },
+			{ overrides: [{ pattern: "git *", action: "allow" }] },
+			{
+				overrides: [
+					{ match: { tool: "bash" }, pathPattern: "*/src/*", action: "allow" },
+				],
+			},
+			{ overrides: [{ match: { command: "rm *" }, action: "block" }] },
+		]) {
+			assert.throws(() => normalizePolicy(bad), PolicyError);
+		}
 	});
 
 	test("rejects anything else", () => {

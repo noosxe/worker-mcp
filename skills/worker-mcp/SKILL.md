@@ -61,7 +61,3 @@ Pass `policy` to `spawn_worker`, or change it later with `set_risk_policy`. The 
 ## Audit
 
 Each run's view lists what ran without asking (`gate.untrustedNotable`). `get_gate_log { workerId, decidedBy: "rules" }` shows every call the rules or a classifier let through (`decidedBy` is `rules`, `http:<name>`, `cache`, `coordinator`, `timeout` or `cancel`). Look at it after loosening a policy or when using auto mode.
-
-## Deprecated names
-
-The 0.4 pi-named tools (`spawn_pi_session`, `send_pi_command`, …) may still be listed as aliases. Use the tools above.

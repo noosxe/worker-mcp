@@ -12,8 +12,8 @@ import { RuntimeDir } from "../session/runtime-dir.js";
 import { Session } from "../session/session.js";
 import { unwrap } from "./unwrap.js";
 
-const send = async (s: Session, command: string, summarize?: boolean) =>
-	unwrap(await s.sendCommand(command, summarize));
+const send = async (s: Session, command: string) =>
+	unwrap((await s.waitText(await s.startRun(command))) as string);
 const wait = async (
 	s: Session,
 	run: Run,
@@ -84,13 +84,6 @@ describe("Session over the fake provider", () => {
 		await s.terminate();
 	});
 
-	test("summarize is ignored and noted", async () => {
-		const s = await start();
-		const out = await send(s, "hi", true);
-		assert.match(out, /^fake reply: hi\n\nNote: `summarize` is deprecated/);
-		await s.terminate();
-	});
-
 	test("start() failing leaves a crashed session that says why", async () => {
 		const s = new Session(
 			"bad",
@@ -114,7 +107,7 @@ describe("Session over the fake provider", () => {
 		assert.strictEqual(s.isAlive(), false);
 		await assert.rejects(
 			send(s, "hi"),
-			/no running pi process.*Respawn it with spawn_pi_session/s,
+			/no running pi process.*Respawn it with spawn_worker/s,
 		);
 		assert.notStrictEqual(s.status, "IDLE");
 	});
@@ -289,25 +282,13 @@ describe("Session over the fake provider", () => {
 			await s.terminate();
 		});
 
-		test("the earlier policy shape still works", async () => {
-			const s = await start({
-				autoApproveUpTo: RiskLevel.LOW,
-				notifyUpTo: RiskLevel.MEDIUM,
-				overrides: [],
-			});
-			assert.strictEqual(s.policyReport?.converted, true);
-			const out = await send(s, tool("bash", { command: "mkdir b" }));
-			assert.match(out, /^bash ran with /);
-			await s.terminate();
-		});
-
 		test("an invalid policy is rejected when the session is built", () => {
 			assert.throws(
 				() =>
 					new Session("bad", "/work", undefined, undefined, {
 						autoApproveUpTo: 9,
 					}),
-				/Invalid riskPolicy/,
+				/Invalid policy/,
 			);
 		});
 

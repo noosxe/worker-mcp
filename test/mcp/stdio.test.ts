@@ -17,6 +17,11 @@ behaviourTests(`MCP stdio (${RUNTIME}): behaviour`, {
 	connect: connectStdio,
 });
 
+/** The worker's text of a run result. */
+const finalTextOf = (result: object) =>
+	(result as { structuredContent: { untrustedFinalText: string } })
+		.structuredContent.untrustedFinalText;
+
 describe(`MCP stdio (${RUNTIME}): process lifecycle`, () => {
 	let iso: Isolation;
 	const servers: RawServer[] = [];
@@ -36,10 +41,10 @@ describe(`MCP stdio (${RUNTIME}): process lifecycle`, () => {
 		return server;
 	}
 
-	async function spawnWorker(server: RawServer, sessionId: string) {
+	async function spawnWorker(server: RawServer, name: string) {
 		const known = iso.starts().length;
 		const res = await server.callTool(TOOLS.spawn, {
-			sessionId,
+			name,
 			cwd: iso.cwd,
 		});
 		assert.notStrictEqual(res.result.isError, true, textOf(res.result));
@@ -49,8 +54,12 @@ describe(`MCP stdio (${RUNTIME}): process lifecycle`, () => {
 	test("stdout carries nothing but JSON-RPC", async () => {
 		const server = await start();
 		await spawnWorker(server, "pure");
-		await server.callTool(TOOLS.send, { sessionId: "pure", command: "hi" });
-		await server.callTool(TOOLS.send, { sessionId: "nope", command: "hi" });
+		await server.callTool(TOOLS.startRun, {
+			waitMs: 2000,
+			workerId: "pure",
+			prompt: "hi",
+		});
+		await server.callTool(TOOLS.startRun, { workerId: "nope", prompt: "hi" });
 		server.child.stdin!.end();
 		await server.exited;
 		assert.ok(server.stdoutLines.length >= 4);
@@ -95,9 +104,9 @@ describe(`MCP stdio (${RUNTIME}): process lifecycle`, () => {
 		iso.allowLeak(pid); // cleanup kills it if the assertion below fails
 		// The send never answers; the request is abandoned with the server.
 		server
-			.callTool(TOOLS.send, {
-				sessionId: "stubborn",
-				command: "scenario:ignore-sigterm",
+			.callTool(TOOLS.startRun, {
+				workerId: "stubborn",
+				prompt: "scenario:ignore-sigterm",
 			})
 			.catch(() => {});
 		await waitUntil(
@@ -105,42 +114,44 @@ describe(`MCP stdio (${RUNTIME}): process lifecycle`, () => {
 			5000,
 			"the scenario to start",
 		);
-		await server.callTool(TOOLS.terminate, { sessionId: "stubborn" });
+		await server.callTool(TOOLS.terminate, { workerId: "stubborn" });
 		await waitUntil(() => pidGone(pid), 3000, "fake-pi to exit");
 	});
 
 	test("terminate kills the worker's detached grandchild", async () => {
 		const server = await start();
 		await spawnWorker(server, "grand");
-		const res = await server.callTool(TOOLS.send, {
-			sessionId: "grand",
-			command: "scenario:grandchild",
+		const res = await server.callTool(TOOLS.startRun, {
+			workerId: "grand",
+			prompt: "scenario:grandchild",
+			waitMs: 10_000,
 		});
 		const grandchild = Number(
-			textOf(res.result).match(/grandchild pid: (\d+)/)?.[1],
+			finalTextOf(res.result).match(/grandchild pid: (\d+)/)?.[1],
 		);
 		assert.ok(grandchild > 0);
-		await server.callTool(TOOLS.terminate, { sessionId: "grand" });
+		await server.callTool(TOOLS.terminate, { workerId: "grand" });
 		await waitUntil(() => pidGone(grandchild), 2000, "grandchild to exit");
 	});
 
 	test("SIGTERM to the server kills a worker's grandchild and a worker that ignores SIGTERM", async () => {
 		const server = await start();
 		await spawnWorker(server, "tree");
-		const res = await server.callTool(TOOLS.send, {
-			sessionId: "tree",
-			command: "scenario:grandchild",
+		const res = await server.callTool(TOOLS.startRun, {
+			workerId: "tree",
+			prompt: "scenario:grandchild",
+			waitMs: 10_000,
 		});
 		const grandchild = Number(
-			textOf(res.result).match(/grandchild pid: (\d+)/)?.[1],
+			finalTextOf(res.result).match(/grandchild pid: (\d+)/)?.[1],
 		);
 		assert.ok(grandchild > 0);
 		const stubbornPid = await spawnWorker(server, "tree-stubborn");
 		iso.allowLeak(stubbornPid); // cleanup kills it if the assertion below fails
 		server
-			.callTool(TOOLS.send, {
-				sessionId: "tree-stubborn",
-				command: "scenario:ignore-sigterm",
+			.callTool(TOOLS.startRun, {
+				workerId: "tree-stubborn",
+				prompt: "scenario:ignore-sigterm",
 			})
 			.catch(() => {});
 		await waitUntil(

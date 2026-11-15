@@ -971,3 +971,38 @@ describe("sandbox config", () => {
 		);
 	});
 });
+
+describe("legacyTools (no longer used)", () => {
+	test("nothing warns when it is not set", () => {
+		assert.deepStrictEqual(loadConfig([], env).warnings, []);
+	});
+
+	test("a config file that sets it still loads, with one warning", () => {
+		const file = writeFile({ legacyTools: false });
+		const loaded = loadConfig(["--config", file], env);
+		assert.strictEqual("legacyTools" in loaded.config, false);
+		assert.strictEqual(loaded.warnings.length, 1);
+		assert.match(loaded.warnings[0], /legacyTools.*no longer used/);
+	});
+
+	test("the environment variable is ignored, with one warning", () => {
+		for (const value of ["0", "1", "maybe"]) {
+			const loaded = loadConfig([], { ...env, WORKER_MCP_LEGACY_TOOLS: value });
+			assert.strictEqual("legacyTools" in loaded.config, false);
+			assert.strictEqual(loaded.warnings.length, 1);
+			assert.match(
+				loaded.warnings[0],
+				/WORKER_MCP_LEGACY_TOOLS.*no longer used/,
+			);
+		}
+	});
+
+	test("both together still give one warning", () => {
+		const file = writeFile({ legacyTools: true });
+		const loaded = loadConfig(["--config", file], {
+			...env,
+			WORKER_MCP_LEGACY_TOOLS: "0",
+		});
+		assert.strictEqual(loaded.warnings.length, 1);
+	});
+});

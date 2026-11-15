@@ -32,7 +32,6 @@ export const ApprovalOut = z.object({
 	approvalId: z
 		.string()
 		.describe("Pass this to approve_action or reject_action."),
-	actionId: z.string().describe("Deprecated: the same as approvalId."),
 	runId: z.string(),
 	tool: z.string().describe("The worker's tool name."),
 	kind: z.string().describe("shell, read, list, search, write or edit."),

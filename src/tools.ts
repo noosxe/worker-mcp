@@ -237,7 +237,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 							...(report?.clamped ?? []),
 							...session.sandboxReport.clamped,
 						],
-						notes: [...(report?.notes ?? []), ...session.sandboxReport.notes],
+						notes: [...session.sandboxReport.notes],
 					},
 				);
 			},
@@ -352,8 +352,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			outputSchema: PendingOut,
 			annotations: ANNOTATIONS.get_pending_actions,
 		},
-		guarded(async ({ workerId, sessionId, runId }) => {
-			const ref = workerId ?? sessionId;
+		guarded(async ({ workerId: ref, runId }) => {
 			let runs;
 			if (runId !== undefined) {
 				runs = [ctx.findRun(runId)];
@@ -382,25 +381,22 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			outputSchema: AnswerOut,
 			annotations: ANNOTATIONS.approve_action,
 		},
-		guarded(
-			async ({ approvalId, actionId, sessionId, summarize, remember }) => {
-				const id = (approvalId ?? actionId) as string;
-				const session = sessionForApproval(ctx, id, sessionId);
-				const remembered =
-					remember === "worker" ? session.rememberApproval(id) : false;
-				const run = session.approveAction(id, summarize);
-				const note =
-					remember === "worker"
-						? remembered
-							? " Identical calls from this worker are now allowed without asking."
-							: " This call cannot be remembered (a hard limit, a protected path or CRITICAL), so it will ask again."
-						: "";
-				return ok(
-					`Approved action ${id}.${note} This returns at once: call wait_run with runId ${run.id} to follow the run.`,
-					{ approvalId: id, runId: run.id, remembered, run: ctx.viewRun(run) },
-				);
-			},
-		),
+		guarded(async ({ approvalId: id, workerId, remember }) => {
+			const session = sessionForApproval(ctx, id, workerId);
+			const remembered =
+				remember === "worker" ? session.rememberApproval(id) : false;
+			const run = session.approveAction(id);
+			const note =
+				remember === "worker"
+					? remembered
+						? " Identical calls from this worker are now allowed without asking."
+						: " This call cannot be remembered (a hard limit, a protected path or CRITICAL), so it will ask again."
+					: "";
+			return ok(
+				`Approved action ${id}.${note} This returns at once: call wait_run with runId ${run.id} to follow the run.`,
+				{ approvalId: id, runId: run.id, remembered, run: ctx.viewRun(run) },
+			);
+		}),
 	);
 
 	server.registerTool(
@@ -413,10 +409,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			outputSchema: AnswerOut,
 			annotations: ANNOTATIONS.reject_action,
 		},
-		guarded(async ({ approvalId, actionId, sessionId, reason, summarize }) => {
-			const id = (approvalId ?? actionId) as string;
-			const session = sessionForApproval(ctx, id, sessionId);
-			const run = session.rejectAction(id, reason, summarize);
+		guarded(async ({ approvalId: id, workerId, reason }) => {
+			const session = sessionForApproval(ctx, id, workerId);
+			const run = session.rejectAction(id, reason);
 			return ok(
 				`Rejected action ${id}. This returns at once: call wait_run with runId ${run.id} to follow the run.`,
 				{ approvalId: id, runId: run.id, run: ctx.viewRun(run) },
@@ -454,15 +449,15 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			outputSchema: SetPolicyOut,
 			annotations: ANNOTATIONS.set_risk_policy,
 		},
-		guarded(async ({ workerId, sessionId, policy, riskPolicy }) => {
-			const session = manager.getSession((workerId ?? sessionId) as string);
-			const report = session.applyRiskPolicy(policy ?? riskPolicy);
+		guarded(async ({ workerId, policy }) => {
+			const session = manager.getSession(workerId);
+			const report = session.applyRiskPolicy(policy);
 			return ok(
 				`Risk policy updated for worker ${session.sessionId}. ${describePolicy(report)}`,
 				{
 					effectivePolicy: policyData(report.policy),
 					clamped: report.clamped,
-					notes: report.notes,
+					notes: [],
 				},
 			);
 		}),

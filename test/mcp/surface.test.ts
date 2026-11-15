@@ -1,5 +1,4 @@
 import assert from "node:assert";
-import * as fs from "node:fs";
 import { describe, test } from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -59,24 +58,6 @@ const NEUTRAL = [
 	"get_gate_log",
 	"terminate_worker",
 ];
-const ALIASES = [
-	"spawn_pi_session",
-	"send_pi_command",
-	"cancel_pi_command",
-	"terminate_pi_session",
-	"list_pi_sessions",
-	"get_auto_approved_log",
-];
-
-const ALIAS_OF: Record<string, string> = {
-	spawn_pi_session: "spawn_worker",
-	send_pi_command: "start_run",
-	cancel_pi_command: "cancel_run",
-	terminate_pi_session: "terminate_worker",
-	list_pi_sessions: "list_workers",
-	get_auto_approved_log: "get_gate_log",
-};
-
 // readOnly, destructive, idempotent, openWorld; undefined where it is moot.
 const DESIGN: Record<string, [boolean, boolean | undefined, boolean, boolean]> =
 	{
@@ -96,12 +77,12 @@ const DESIGN: Record<string, [boolean, boolean | undefined, boolean, boolean]> =
 	};
 
 describe("tool surface", () => {
-	test("13 neutral tools and 6 aliases are listed, with the server instructions", async () => {
+	test("The 13 tools are listed, with the server instructions", async () => {
 		await withServer(async ({ client }) => {
 			const { tools } = await client.listTools();
 			assert.deepStrictEqual(
 				tools.map((t) => t.name),
-				[...NEUTRAL, ...ALIASES],
+				NEUTRAL,
 			);
 			const instructions = client.getInstructions();
 			assert.strictEqual(instructions, INSTRUCTIONS);
@@ -135,22 +116,6 @@ describe("tool surface", () => {
 					`${name}: ${sentences} sentences`,
 				);
 				assert.doesNotMatch(t.description ?? "", /claude-|gpt-|gemini-/i);
-			}
-			for (const name of ALIASES) {
-				const t = tools.find((x) => x.name === name)!;
-				assert.match(t.description ?? "", /^Deprecated, use \w+/, name);
-				assert.strictEqual(
-					t.outputSchema,
-					undefined,
-					`${name} keeps its text result`,
-				);
-				const target = tools.find((x) => x.name === ALIAS_OF[name])!;
-				assert.ok(t.annotations?.title, `${name} has a title`);
-				assert.deepStrictEqual(
-					{ ...t.annotations, title: undefined },
-					{ ...target.annotations, title: undefined },
-					`${name} has the annotations of ${ALIAS_OF[name]}`,
-				);
 			}
 		});
 	});
@@ -359,114 +324,44 @@ describe("tool surface", () => {
 	});
 });
 
-describe("aliases", () => {
-	test("WORKER_MCP_LEGACY_TOOLS=0 lists only the neutral tools and explains a call", async () => {
+describe("tool arguments and waits", () => {
+	test("start_run waits at most the wait limit", async () => {
 		await withServer(
 			async ({ client, iso }) => {
-				const { tools } = await client.listTools();
-				assert.deepStrictEqual(
-					tools.map((t) => t.name),
-					NEUTRAL,
-				);
-				const r = await call(client, "spawn_pi_session", { cwd: iso.cwd });
-				assert.strictEqual(r.isError, true);
-				assert.match(
-					rawTextOf(r),
-					/spawn_pi_session is a deprecated alias.*WORKER_MCP_LEGACY_TOOLS=0.*spawn_worker/,
-				);
-				// The neutral tools still work.
-				await callOk(client, "spawn_worker", { cwd: iso.cwd, name: "n" });
-			},
-			{ WORKER_MCP_LEGACY_TOOLS: "0" },
-		);
-	});
-
-	test("a legacy spawn and send give the old text, and the worker is the same one", async () => {
-		await withServer(async ({ client, iso }) => {
-			const spawned = await callOk(client, "spawn_pi_session", {
-				sessionId: "old",
-				cwd: iso.cwd,
-			});
-			assert.match(
-				spawned,
-				/^Successfully initialized and started worker w_\w+ \(name old\)/,
-			);
-			const sent = await callOk(client, "send_pi_command", {
-				sessionId: "old",
-				command: "hello",
-			});
-			assert.strictEqual(sent, "fake-pi reply: hello");
-			const listed = (await call(client, "list_workers", {}))
-				.structuredContent as any;
-			assert.strictEqual(listed.workers[0].name, "old");
-			const legacy = JSON.parse(await callOk(client, "list_pi_sessions", {}));
-			assert.strictEqual(legacy[0].name, "old");
-		});
-	});
-
-	test("send_pi_command waits at most the wait limit, then names the run", async () => {
-		await withServer(
-			async ({ client, iso }) => {
-				await callOk(client, "spawn_pi_session", {
-					sessionId: "lim",
-					cwd: iso.cwd,
+				await callOk(client, "spawn_worker", { name: "lim", cwd: iso.cwd });
+				const t0 = Date.now();
+				const r = await call(client, "start_run", {
+					workerId: "lim",
+					prompt: "scenario:slow:60000",
+					waitMs: 50_000,
 				});
-				const r = await callOk(client, "send_pi_command", {
-					sessionId: "lim",
-					command: "scenario:slow:60000",
-					timeout: 600_000,
-				});
-				assert.match(
-					r,
-					/^RUNNING: .* after 300ms\..*wait_run with runId r_\w+/,
-				);
-				await call(client, "terminate_pi_session", { sessionId: "lim" });
+				assert.ok(Date.now() - t0 < 5000, "returned near the 300 ms bound");
+				assert.strictEqual((r.structuredContent as any).state, "running");
+				await call(client, "terminate_worker", { workerId: "lim" });
 			},
 			{ WORKER_MCP_MAX_WAIT_MS: "300" },
 		);
 	});
 
-	test("get_auto_approved_log lists allowed calls whose preview contains the pattern", async () => {
+	test("get_gate_log lists the calls the gate allowed", async () => {
 		await withServer(async ({ client, iso }) => {
-			await callOk(client, "spawn_pi_session", {
-				sessionId: "aal",
-				cwd: iso.cwd,
+			await callOk(client, "spawn_worker", { name: "gl", cwd: iso.cwd });
+			await callOk(client, "start_run", {
+				workerId: "gl",
+				prompt: `scenario:tool:read:${JSON.stringify({ path: "README.md" })}`,
+				waitMs: 10_000,
 			});
-			await callOk(client, "send_pi_command", {
-				sessionId: "aal",
-				command: `scenario:tool:read:${JSON.stringify({ path: "README.md" })}`,
+			const log = await call(client, "get_gate_log", { workerId: "gl" });
+			const entries = (log.structuredContent as any).entries;
+			assert.strictEqual(entries.length, 1);
+			assert.strictEqual(entries[0].decision, "allow");
+			assert.strictEqual(entries[0].decidedBy, "rules");
+			assert.match(rawTextOf(log), /<worker_output /);
+			const none = await call(client, "get_gate_log", {
+				workerId: "gl",
+				decidedBy: "coordinator",
 			});
-			const all = JSON.parse(
-				await callOk(client, "get_auto_approved_log", { sessionId: "aal" }),
-			);
-			assert.strictEqual(all.length, 1);
-			assert.match(
-				rawTextOf(
-					await call(client, "get_auto_approved_log", { sessionId: "aal" }),
-				),
-				/<worker_output worker=\\"w_\w+\\"/,
-			);
-			const none = JSON.parse(
-				await callOk(client, "get_auto_approved_log", {
-					sessionId: "aal",
-					pattern: "zzz",
-				}),
-			);
-			assert.deepStrictEqual(none, []);
-		});
-	});
-
-	test("the deprecated argument keys are still accepted by the neutral tools", async () => {
-		await withServer(async ({ client, iso }) => {
-			await callOk(client, "spawn_pi_session", {
-				sessionId: "keys",
-				cwd: iso.cwd,
-			});
-			await callOk(client, "set_risk_policy", {
-				sessionId: "keys",
-				riskPolicy: { autoApproveUpTo: 0 },
-			});
-			await callOk(client, "get_pending_actions", { sessionId: "keys" });
+			assert.deepStrictEqual((none.structuredContent as any).entries, []);
 		});
 	});
 });
@@ -598,31 +493,17 @@ describe("resources", () => {
 		});
 	});
 
-	test("the 0.4 URIs still work: logs, and history as the latest run's transcript", async () => {
+	test("the old session URIs are gone", async () => {
 		await withServer(async ({ client, iso }) => {
 			await callOk(client, "spawn_worker", { cwd: iso.cwd, name: "old" });
 			const id = (
 				(await call(client, "list_workers", {})).structuredContent as any
 			).workers[0].workerId;
-			const read = async (uri: string) =>
-				(await client.readResource({ uri })).contents[0] as { text: string };
-			assert.strictEqual(
-				(await read(`worker-mcp://sessions/${id}/history`)).text,
-				"No runs yet.",
-			);
-			await callOk(client, "start_run", {
-				workerId: id,
-				prompt: "hi there",
-				waitMs: 10_000,
-			});
-			const history = await read(`worker-mcp://sessions/${id}/history`);
-			assert.match(history.text, /fake-pi reply: hi there/);
-			assert.match(history.text, /<worker_output run=/);
-			const logs = await read(`worker-mcp://sessions/${id}/logs`);
-			assert.match(logs.text, /^<worker_output worker=/);
-			await assert.rejects(
-				client.readResource({ uri: `worker-mcp://sessions/${id}/other` }),
-			);
+			for (const part of ["history", "logs"]) {
+				await assert.rejects(
+					client.readResource({ uri: `worker-mcp://sessions/${id}/${part}` }),
+				);
+			}
 		});
 	});
 
@@ -639,38 +520,5 @@ describe("resources", () => {
 				/RUN_NOT_FOUND/,
 			);
 		});
-	});
-});
-
-describe("config key", () => {
-	test("legacyTools is on by default, settable in the file and by the variable, and printed", () => {
-		const iso = createIsolation();
-		try {
-			assert.strictEqual(loadConfig([], iso.env).config.legacyTools, true);
-			assert.strictEqual(
-				loadConfig([], { ...iso.env, WORKER_MCP_LEGACY_TOOLS: "off" }).config
-					.legacyTools,
-				false,
-			);
-			const file = `${iso.root}/c.json`;
-			fs.writeFileSync(file, '{"legacyTools":false}', { mode: 0o600 });
-			assert.strictEqual(
-				loadConfig(["--config", file], iso.env).config.legacyTools,
-				false,
-			);
-			assert.strictEqual(
-				loadConfig(["--config", file], {
-					...iso.env,
-					WORKER_MCP_LEGACY_TOOLS: "1",
-				}).config.legacyTools,
-				true,
-			);
-			assert.throws(
-				() => loadConfig([], { ...iso.env, WORKER_MCP_LEGACY_TOOLS: "maybe" }),
-				/env WORKER_MCP_LEGACY_TOOLS.*legacyTools/,
-			);
-		} finally {
-			void iso.cleanup();
-		}
 	});
 });
