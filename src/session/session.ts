@@ -1,6 +1,7 @@
 import { type Config, defaultConfig } from "../config.js";
 import { ChildRegistry } from "../core/child.js";
 import { type OpenedWorker, openWorker } from "../core/host.js";
+import { debugEnabled, describeError, shortDigest } from "../core/log.js";
 import { RepeatCheck } from "../core/repeat-check.js";
 import { type Run, RunStore, type TerminalState } from "../core/run.js";
 import type { GateOutcome } from "../gate/classifier.js";
@@ -70,6 +71,8 @@ export interface PendingAction {
 	/** A hard limit (a protected path): only the coordinator can allow it. */
 	hardLimit?: boolean;
 }
+
+const safeJson = (v: unknown): string => JSON.stringify(v) ?? "undefined";
 
 const SUMMARY_MAX_CHARS = 120;
 
@@ -285,6 +288,11 @@ export class Session {
 		this.log(`Session initialized for directory: ${cwd}`);
 	}
 
+	/** Payload-carrying lines (tool inputs, worker text): only at `debug`. */
+	private debug(message: string) {
+		if (debugEnabled()) this.log(`[debug] ${message}`);
+	}
+
 	private log(message: string) {
 		const timestamp = new Date().toISOString();
 		const formatted = `[${timestamp}] ${message}`;
@@ -380,7 +388,7 @@ export class Session {
 				emit: (event) => this.onEvent(event),
 				approve: (call, signal) => this.approve(call, signal),
 				log: {
-					debug: (m) => this.log(`[debug] ${m}`),
+					debug: (m) => this.debug(m),
 					info: (m) => this.log(m),
 					warn: (m) => this.log(`[warn] ${m}`),
 					error: (m) => this.log(`[error] ${m}`),
@@ -388,9 +396,7 @@ export class Session {
 			});
 		} catch (e) {
 			this.status = "CRASHED";
-			this.log(
-				`Failed to start: ${e instanceof Error ? e.message : String(e)}`,
-			);
+			this.log(`Failed to start: ${describeError(e)}`);
 			throw e;
 		}
 		this.alive = true;
@@ -428,6 +434,7 @@ export class Session {
 				return;
 			case "tool_started":
 				this.log(`[tool] ${event.toolName} started`);
+				this.debug(`[tool] ${event.toolName} input: ${safeJson(event.input)}`);
 				if (mine) {
 					const what = summariseInput(event.input);
 					this.runs.addActivity(
@@ -437,7 +444,15 @@ export class Session {
 				}
 				return;
 			case "notice":
-				this.log(`[${event.level}] ${event.text}`);
+				if (event.untrusted) {
+					// The text is the worker's own: its size at info, the text at debug.
+					this.log(
+						`[${event.level}] notice from the worker (${event.text.length} characters)`,
+					);
+					this.debug(`[${event.level}] ${event.text}`);
+				} else {
+					this.log(`[${event.level}] ${event.text}`);
+				}
 				return;
 			case "run_finished":
 				if (mine) this.onRunFinished(active, event);
@@ -479,7 +494,10 @@ export class Session {
 		}
 		const usage = event.usage;
 		if (event.outcome === "error") {
-			this.log(`Run failed: ${event.error}`);
+			this.log(
+				`Run ${run.id} failed (${(event.error ?? "").length} characters of error text)`,
+			);
+			this.debug(`Run ${run.id} failed: ${event.error}`);
 			this.finish(active, "failed", {
 				error: event.error ?? "the run failed",
 				usage,
@@ -577,9 +595,7 @@ export class Session {
 		this.log(`Run ${active.run.id} abort requested (${active.cause.state}).`);
 		active.abort.abort();
 		this.worker?.handle.abortRun("abort requested").catch((err) => {
-			this.log(
-				`Failed to abort: ${err instanceof Error ? err.message : String(err)}`,
-			);
+			this.log(`Failed to abort: ${describeError(err)}`);
 		});
 		active.graceTimer = setTimeout(() => {
 			const c = active.cause ?? cause;
@@ -642,7 +658,10 @@ export class Session {
 		const line = `${outcome.call.rawName} [${label}] ${summariseInput(outcome.call.input)}`;
 		if (outcome.decision === "allow") {
 			this.log(
-				`[AUTO-APPROVED] [${label}] Action ${call.callId}: ${message} (${outcome.reason})`,
+				`[AUTO-APPROVED] [${label}] ${call.toolName} call ${call.callId} input ${shortDigest(call.input)}`,
+			);
+			this.debug(
+				`[AUTO-APPROVED] call ${call.callId}: ${message} (${outcome.reason})`,
 			);
 			run?.noteGate("allowed", line);
 			this.autoApprovedTotal++;
@@ -667,7 +686,10 @@ export class Session {
 		}
 		if (outcome.decision === "deny") {
 			this.log(
-				`[AUTO-DENIED] [${label}] Action ${call.callId}: ${message} (${outcome.reason})`,
+				`[AUTO-DENIED] [${label}] ${call.toolName} call ${call.callId} input ${shortDigest(call.input)}`,
+			);
+			this.debug(
+				`[AUTO-DENIED] call ${call.callId}: ${message} (${outcome.reason})`,
 			);
 			run?.noteGate("denied", `${line}: ${outcome.reason}`);
 			if (this.autoDenied.length < Session.MAX_AUTO_APPROVED_SHOWN) {
@@ -752,8 +774,9 @@ export class Session {
 				return;
 			}
 			this.log(
-				`[INTERCEPTED] [${label}] Action ${id} (call ${call.callId}) awaiting coordinator approval: ${message}`,
+				`[INTERCEPTED] [${label}] ${call.toolName} action ${id} (call ${call.callId}, input ${shortDigest(call.input)}) awaiting coordinator approval`,
 			);
+			this.debug(`[INTERCEPTED] action ${id}: ${message}`);
 			run.noteGate(
 				"escalated",
 				`${call.toolName} [${label}] ${summariseInput(call.input)}`,
@@ -1046,7 +1069,10 @@ export class Session {
 	}
 
 	public rejectAction(actionId: string, reason?: string): Run {
-		this.log(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
+		this.log(
+			`Rejecting action ${actionId} (${reason ? `reason of ${reason.length} characters` : "no reason"})`,
+		);
+		this.debug(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
 		return this.answer(
 			actionId,
 			{

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { ConfigError, formatConfig, loadConfig } from "./config.js";
+import { describeError } from "./core/log.js";
 import { createServer } from "./server.js";
 import { SessionManager } from "./session/session-manager.js";
 
@@ -112,7 +113,7 @@ function shutdown(code: number, reason: string, isSignal = false) {
 	sessionManager
 		.terminateAll()
 		.catch((error) => {
-			console.error("Error while terminating workers:", error);
+			console.error(`Error while terminating workers: ${describeError(error)}`);
 		})
 		.finally(() => process.exit(code));
 }
@@ -126,7 +127,7 @@ async function main() {
 	// the process alive.
 	process.stdin.on("end", () => shutdown(0, "Standard input closed."));
 	process.stdin.on("error", (error) => {
-		console.error("Standard input error:", error);
+		console.error(`Standard input error: ${describeError(error)}`);
 		shutdown(1, "Standard input failed.");
 	});
 	await server.connect(transport);
@@ -149,15 +150,15 @@ process.on("SIGHUP", () => {
 process.on("SIGINT", () => shutdown(0, "Shutdown signal received.", true));
 process.on("SIGTERM", () => shutdown(0, "Shutdown signal received.", true));
 process.on("unhandledRejection", (reason) => {
-	console.error("Unhandled rejection:", reason);
+	console.error(`Unhandled rejection: ${describeError(reason)}`);
 	shutdown(1, "Unhandled rejection.");
 });
 process.on("uncaughtException", (error) => {
-	console.error("Uncaught exception:", error);
+	console.error(`Uncaught exception: ${describeError(error)}`);
 	shutdown(1, "Uncaught exception.");
 });
 
 main().catch((error) => {
-	console.error("Fatal error in main:", error);
+	console.error(`Fatal error in main: ${describeError(error)}`);
 	shutdown(1, "Fatal error.");
 });

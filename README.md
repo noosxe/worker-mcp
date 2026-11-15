@@ -575,6 +575,13 @@ Lowest to highest:
   gate, is created when the first worker starts, and is removed on shutdown.
   Directories left by a killed server are removed at the next start only when
   their pid is no longer running.
+- **Logging.** Claude Code keeps an MCP server's stderr on disk, so the server
+  writes metadata only to stderr: tool names, risk labels, approval and call
+  ids, counts, and a short digest of a tool input for correlation. Tool inputs
+  (commands, file contents), worker output and stderr lines, reject reasons and
+  classifier reasons appear only when `WORKER_MCP_LOG_LEVEL=debug`. The levels
+  are `debug`, `info` (the default), `warn` and `error`; an unknown value means
+  `info`. This is an environment variable only, not a config key.
 - `stateDir` holds the audit log (see [Auto mode](#auto-mode-and-the-audit-log)); it is a protected path.
 - `gate.maxAutoApprove` (`LOW`, `MEDIUM` or `HIGH`, never `CRITICAL`) is the
   highest risk level a coordinator's policy may auto-approve. Policies given to
