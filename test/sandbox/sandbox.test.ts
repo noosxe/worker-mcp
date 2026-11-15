@@ -72,6 +72,55 @@ const MOUNT_BASE = ["/mnt", "/srv", "/media", "/opt"].find((d) =>
 	fs.existsSync(d),
 );
 
+/** The outer sandbox of the alias test: the same home mounted a second time. */
+const outerArgs = (base: string, home: string, alias: string) => [
+	"--bind",
+	"/",
+	"/",
+	"--dev",
+	"/dev",
+	"--proc",
+	"/proc",
+	"--tmpfs",
+	base,
+	"--bind",
+	home,
+	alias,
+];
+
+/**
+ * Whether a sandbox can start inside another one: some systems (Ubuntu's
+ * AppArmor policy) let bwrap create a user namespace but not a nested one.
+ */
+const nestedSkip: string | false = (() => {
+	if (!bwrap || !probe.available || !MOUNT_BASE) {
+		return "no directory to mount the alias on, or no working bubblewrap";
+	}
+	const r = spawnSync(
+		bwrap,
+		[
+			...outerArgs(MOUNT_BASE, "/", `${MOUNT_BASE}/nested-check`).slice(0, 7),
+			"--",
+			bwrap,
+			"--ro-bind",
+			"/",
+			"/",
+			"--unshare-pid",
+			"--proc",
+			"/proc",
+			"--dev",
+			"/dev",
+			"--",
+			process.execPath,
+			"--version",
+		],
+		{ encoding: "utf8" },
+	);
+	return r.status === 0
+		? false
+		: `bubblewrap cannot nest here: ${(r.stderr || "no output").trim().split("\n")[0].slice(0, 200)}`;
+})();
+
 describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 	let iso: Isolation;
 	const servers: RawServer[] = [];
@@ -386,52 +435,35 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 
 	test(
 		"another path to the home directory is hidden too",
-		{
-			skip: MOUNT_BASE ? false : "no directory to mount the alias on",
-		},
+		{ skip: nestedSkip },
 		() => {
 			fs.mkdirSync(path.join(iso.home, ".ssh"), { recursive: true });
 			fs.writeFileSync(path.join(iso.home, ".ssh", "id_alias"), "x\n");
 			const priv = fs.mkdtempSync(path.join(iso.root, "priv-"));
+			const base = MOUNT_BASE as string;
 			// An outer sandbox mounts the same home a second time, as persistent
 			// storage does (/home and /persistent/home).
-			const alias = `${MOUNT_BASE}/alias-home`;
-			const run = (script: string) =>
-				spawnSync(
+			const alias = `${base}/alias-home`;
+			const r = spawnSync(
+				bwrap as string,
+				[
+					...outerArgs(base, iso.home, alias),
+					"--",
+					process.execPath,
+					path.join(REPO_ROOT, "test", "fixtures", "alias-probe.mjs"),
 					bwrap as string,
-					[
-						"--bind",
-						"/",
-						"/",
-						"--dev",
-						"/dev",
-						"--proc",
-						"/proc",
-						"--tmpfs",
-						"/mnt",
-						"--bind",
-						iso.home,
-						alias,
-						"--",
-						process.execPath,
-						script,
-						bwrap as string,
-						iso.home,
-						alias,
-						iso.cwd,
-						priv,
-					],
-					{ encoding: "utf8" },
-				);
-			const r = run(
-				path.join(REPO_ROOT, "test", "fixtures", "alias-probe.mjs"),
+					iso.home,
+					alias,
+					iso.cwd,
+					priv,
+				],
+				{ encoding: "utf8" },
 			);
-			if (r.status !== 0 && /namespace|permitted|denied/i.test(r.stderr)) {
-				// Nested sandboxes are not allowed here: nothing to test.
-				return;
-			}
 			assert.strictEqual(r.status, 0, r.stderr);
 			const got = JSON.parse(r.stdout.trim().split("\n").at(-1) as string);
+			// The probe really ran inside the inner sandbox: never an empty pass.
+			assert.strictEqual(got.status, 0, got.err);
+			assert.ok(got.out.startsWith("probe-ran\n"), got.out);
 			assert.ok(got.hidden.includes(alias), `alias not hidden: ${got.hidden}`);
 			assert.match(got.out, /via-home: .*No such file/);
 			assert.match(got.out, /via-alias: .*No such file/);
