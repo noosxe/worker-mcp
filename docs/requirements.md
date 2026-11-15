@@ -1,61 +1,47 @@
 # Requirements: worker-mcp
 
-`worker-mcp` is a Model Context Protocol (MCP) server that empowers a highly intelligent coordinator agent (such as Gemini Pro/Claude 3.5 Sonnet) to orchestrate, monitor, and guide lower-intelligence, locally hosted worker agents.
+`worker-mcp` is a Model Context Protocol (MCP) server that lets a coordinating agent (Claude Code, the Claude desktop app, any MCP client) spawn, supervise and guide third-party coding agents running locally. The agents are **workers**; each kind of agent is a **provider**. pi is the provider today.
 
-Rather than building a custom agent execution loop from scratch, `worker-mcp` delegates the local agent runtime execution to the **`pi` coding agent** (from `@earendil-works/pi-coding-agent`), running it either programmatically via its SDK or in a subprocess using its built-in JSON-RPC mode (`pi --mode rpc`).
-
-Because local smaller models running inside the `pi` agent require significant guidance and supervisor verification, `worker-mcp` acts as a supervisory wrapper, providing tight loop controls, interactive permission gating, and state inspection.
+The server is a runner, not an agent: it owns process control, runs, gating and limits, and leaves the thinking to the worker and the coordinator.
 
 ---
 
-## 1. Functional Requirements
+## 1. Functional requirements
 
-### 1.1. Pi Session Lifecycle Management
+### 1.1. Worker lifecycle
 
-The coordinator agent must be able to spin up and control `pi` agent sessions.
+- Spawn a worker of a chosen provider in an absolute workspace directory, with an optional name, model, system prompt and risk policy (`spawn_worker`). The server makes the id.
+- List the live workers with their status, current run and pending approvals (`list_workers`); stop one and free its name and slot (`terminate_worker`).
+- List the providers and whether each is usable (`list_providers`).
+- Bound the number of workers, close idle ones, and restrict workspaces to configured roots.
 
-- **Spawn Pi Session**: Spawn a new `pi` agent instance.
-  - Inputs: Unique session ID, target workspace directory (`cwd`), model overrides (e.g., Ollama model, Claude, etc.), and custom system prompt.
-  - Operation: Under the hood, this spawns a `pi --mode rpc` process in the specified directory or instantiates the programmatic `AgentSession` from the Pi SDK.
-- **Terminate Session**: Gracefully shut down or force-stop a running `pi` session.
-- **Session Listing & Status**: Query the list of active sessions and their current status (`Idle`, `Running Task`, `Awaiting Coordinator Approval`, `Crashed`, `Finished`).
+### 1.2. Runs
 
-### 1.2. Interactive Control & Handholding (Permission Gating)
+- Give a worker a task as a run and return at once (`start_run`); wait in short calls (`wait_run`); read results, paged, also after the worker is gone (`get_run`); cancel (`cancel_run`).
+- No call blocks longer than the configured wait limit (50 s by default), so a long task never loses its result to a client timeout.
 
-Since the `pi` worker agent is running local tools (bash command execution, file read/write/edit), the coordinator needs to supervise its work.
+### 1.3. Supervision
 
-- **Event Interception**: `worker-mcp` must listen to the JSON-RPC event stream of the `pi` agent process.
-- **Intercepting Tool Calls**: When `pi` attempts to run a tool (e.g. executing a shell script, making edits to code):
-  - **Pause** the execution of that tool.
-  - Emit an MCP event/resource update notifying the coordinator of a pending action.
-  - Provide the tool name, arguments, and context to the coordinator.
-- **Approve / Deny / Modify Action**: The coordinator must be able to:
-  - Approve the execution.
-  - Deny the execution, returning a simulated error or refusal back to the `pi` agent loop.
-  - Provide guidance or feedback prompts that are injected directly into the `pi` conversation flow to correct its course.
+- Intercept every tool call a worker makes, classify its risk and apply the worker's policy within the server's ceiling. Calls that need the coordinator wait as pending approvals (`get_pending_actions`, `approve_action`, `reject_action`); an unanswered approval is denied after a timeout.
+- Let the coordinator change a worker's policy at runtime (`set_risk_policy`) and review every gate decision (`get_gate_log`).
+- Protected paths (agent and shell configuration, credentials) are never auto-approved.
 
-### 1.3. Communication & Logging Stream
+### 1.4. Visibility
 
-- **Stream Events**: Stream thinking tokens, output messages, tool executions, and file diffs from the `pi` process to the coordinator in real-time.
-- **History Inspection**: Expose the session history (messages exchanged between the `pi` agent and the LLM) as a readable MCP resource.
-- **Inject System Prompt/Message**: Allow the coordinator to manually append context or system prompts to a session at any time.
-
-### 1.4. Workspace Inspection
-
-- **Shared Workspace Access**: Since both the coordinator (via `worker-mcp`) and the `pi` worker operate in the same filesystem, `worker-mcp` should expose tools to let the coordinator inspect, read, and write files in the worker's target workspace, ensuring the coordinator can verify the worker's outputs or prepare files for them.
+- Expose, for people and debugging, a worker's log, a run's transcript and a worker's gate log as MCP resources, and announce changes to the resource list.
 
 ---
 
-## 2. Non-Functional Requirements
+## 2. Non-functional requirements
 
-### 2.1. Protocol Compatibility
+- **MCP compliance**: stdio transport, strict input schemas, `structuredContent` that matches an `outputSchema` plus one text block, tool annotations, server `instructions`. Errors are `isError` results with a stable code and a next step.
+- **Untrusted output**: everything a worker wrote is labelled as untrusted wherever it reaches the coordinator.
+- **Robust processes**: parse the worker's protocol robustly, capture errors, kill the whole process tree, never leave runaway children, bound output size and run time.
+- **Minimal environment**: workers get an allowlisted environment, never the server's secrets.
+- **Provider neutrality**: the tools and results name no provider; a provider is a module behind one internal interface (see [providers.md](providers.md)).
+- **No persistence**: workers live with the server.
+- **Compatibility**: runs on Node and Bun. The 0.4 tool names remain as deprecated aliases for one minor release (`WORKER_MCP_LEGACY_TOOLS`).
 
-- **MCP Compliance**: Fully compatible with the Model Context Protocol (MCP).
-  - Expose tools like `spawn_pi_session`, `send_pi_command`, `approve_action`, `reject_action`, and `list_pi_sessions`.
-  - Expose active sessions, log streams, and current tool call statuses as MCP resources.
+## 3. Out of scope (for now)
 
-### 2.2. Robust Process Isolation & Communication
-
-- **Robust JSONL Parsing**: Correctly parse the `\n`-delimited JSON Lines (JSONL) protocol used by `pi --mode rpc`, avoiding issues with Unicode splits.
-- **Error Recovery**: If the `pi` process crashes, hangs, or encounters an LLM timeout, `worker-mcp` must capture the error logs, terminate any runaway child processes, and report the state cleanly back to the coordinator.
-- **Resource Limiting**: Limit the maximum duration of a single `pi` execution or set process limits (e.g., max execution time, maximum file write size) to prevent infinite loops.
+A sandbox around workers, an HTTP risk classifier, cross-restart resume, and providers other than pi.

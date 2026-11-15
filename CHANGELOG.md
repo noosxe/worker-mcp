@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+### Neutral tool surface (0.5.0)
+
+The server is provider-neutral: pi is a provider behind the same tools. The
+tools are renamed and their results are structured. The deprecated names stay
+for one minor release.
+
+- **13 tools**: `list_providers`, `spawn_worker`, `start_run`, `wait_run`,
+  `get_run`, `cancel_run`, `get_pending_actions`, `approve_action`,
+  `reject_action`, `list_workers`, `set_risk_policy`, `get_gate_log` and
+  `terminate_worker`. New: `list_providers`, `spawn_worker` (takes
+  `provider`, `name`, `model`, `systemPrompt` and `policy`), `list_workers`,
+  `get_gate_log` and `terminate_worker`. `approve_action` has no `remember`
+  option in this release.
+- **Structured results.** Every neutral tool returns `structuredContent` that
+  matches its `outputSchema`, plus one text block: a summary line, then the
+  same data as JSON. Fields a worker wrote sit under keys named `untrusted…`
+  (`untrustedFinalText`, `untrustedActivity`, `untrustedCommand`,
+  `untrustedPaths`, `untrustedPreview`, `untrustedTranscript`,
+  `untrustedNotable`), and are wrapped in `<worker_output>` tags in the text
+  block.
+- **Annotations and descriptions.** Each tool has a title, a 2-5 sentence
+  description and `readOnlyHint`, `destructiveHint`, `idempotentHint` and
+  `openWorldHint`, set honestly for the tools that let a worker act. Model
+  examples are generic (`<provider>/<model>`).
+- **Server `instructions`**: a short coordinator guide (the flow, the 50 s
+  wait, approvals, and the rule that worker output is data) sent on connect.
+- **Aliases.** The six 0.4 tools `spawn_pi_session`, `send_pi_command`,
+  `cancel_pi_command`, `terminate_pi_session`, `list_pi_sessions` and
+  `get_auto_approved_log` still work, with their old text results, and are
+  removed in 0.6.0. Each description starts "Deprecated, use X:". They are
+  listed only while `WORKER_MCP_LEGACY_TOOLS` is on (config key `legacyTools`,
+  default on in 0.5.x, shown by `--print-config`); with `0` a call to one
+  returns an error that names the replacement. `send_pi_command` waits at most
+  `limits.maxWaitMs` and then returns the run id; `get_auto_approved_log`
+  matches `pattern` against the preview. The old argument keys `sessionId`
+  (on `spawn_pi_session`, and on the neutral tools that kept their names),
+  `riskPolicy` and `actionId` are still accepted, deprecated.
+- **Resources v2**, for people and debugging: templates
+  `worker-mcp://workers/{workerId}/log`, `worker-mcp://runs/{runId}/transcript`
+  and `worker-mcp://gate/{workerId}`, with `notifications/resources/list_changed`
+  when a worker starts or closes. The old `worker-mcp://sessions/{id}/history`
+  (now the latest run's transcript, as Markdown) and `.../logs` are served until
+  0.6.0. Worker-written content in every resource is wrapped as untrusted.
+- **Docs.** README rewritten, with "Use from Claude Code and the Claude desktop
+  app" and the pitfalls list; `docs/mcp-api.md` replaces `docs/protocols.md`
+  (pi's protocol is in `docs/providers/pi.md`); architecture and requirements
+  updated; the worker-mcp skill describes the run workflow. The dev shell
+  prints its banner to stderr.
+
+Breaking changes in 0.5.0 (together with the run model and limits below):
+
+- `approve_action` and `reject_action` no longer return the worker's output;
+  call `wait_run`.
+- MCP tasks are gone.
+- `summarize` is gone (ignored, with a note).
+- Workers are not restored after a restart.
+- `notifyUpTo` is gone (accepted and ignored).
+- Worker ids are server-generated; names are the caller's handle.
+- `get_pending_actions` returns `approvals` (structured), an empty list when
+  none, not the text `null`.
+- `list_pi_sessions` entries carry `workerId`, `name` and `pendingActions` (a
+  count).
+- Worker text in results is wrapped as untrusted.
+- A worker whose process died is removed at once (it used to stay listed as
+  `CRASHED`).
+- `send_pi_command` stops waiting after at most `limits.maxWaitMs`.
+- A `waitMs` above 50 000 is refused instead of clamped.
+- The pi-named tools and the `sessions/…` resource URIs are deprecated and
+  go in 0.6.0.
+
 ### Validation and limits
 
 - Every tool validates its input with a strict zod schema: unknown arguments
