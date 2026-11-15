@@ -109,7 +109,13 @@ export function questionsBody(): Record<string, unknown> {
 }
 
 interface Answers {
-	risk: { score: number; confidence: number };
+	risk: {
+		score: number;
+		/** The confidence jev itself reported for the risk answer. */
+		confidence: number;
+		/** Probabilities of levels 0..3, when the answer had valid ones. */
+		probabilities?: number[];
+	};
 	approval: number;
 	user_requested: number;
 	from_untrusted: number;
@@ -127,15 +133,21 @@ const inRange = (v: unknown, lo: number, hi: number): v is number =>
 const PROBABILITY_SUM_TOLERANCE = 0.02;
 const SCORE_TOLERANCE = 0.25;
 
+interface RiskReading {
+	position: number;
+	probabilities?: number[];
+}
+
 /**
- * The risk position on the 0-3 scale, or the reason it cannot be trusted.
+ * The risk position on the 0-3 scale (and the probabilities it came from, if
+ * any), or the reason it cannot be trusted.
  * TypeSafe documents `score` as the probability-weighted mean of the level
  * numbers, but the scale of a real response has not been seen. So when
  * `probabilities` are there (an array, or an object keyed "0".."3") the
  * position is computed from them, and a `score` that disagrees is not
  * believed. A `score` alone is read as 0-3: that is unverified.
  */
-function riskPosition(a: Record<string, unknown>): number | string {
+function riskPosition(a: Record<string, unknown>): RiskReading | string {
 	let probs: unknown[] | undefined;
 	if (Array.isArray(a.probabilities)) probs = a.probabilities;
 	else if (isObject(a.probabilities)) {
@@ -145,6 +157,7 @@ function riskPosition(a: Record<string, unknown>): number | string {
 		if (Object.keys(a.probabilities).length !== RISK_MAX + 1) probs = [];
 	}
 	let computed: number | undefined;
+	let values: number[] | undefined;
 	if (probs !== undefined) {
 		if (
 			probs.length !== RISK_MAX + 1 ||
@@ -152,7 +165,7 @@ function riskPosition(a: Record<string, unknown>): number | string {
 		) {
 			return "risk probabilities are not four values from 0 to 1";
 		}
-		const values = probs as number[];
+		values = probs as number[];
 		const sum = values.reduce((x, y) => x + y, 0);
 		if (Math.abs(sum - 1) > PROBABILITY_SUM_TOLERANCE) {
 			return `risk probabilities sum to ${f(sum)}, not 1`;
@@ -165,7 +178,7 @@ function riskPosition(a: Record<string, unknown>): number | string {
 	if (computed === undefined) {
 		if (a.score === undefined)
 			return "risk has neither score nor probabilities";
-		return a.score as number;
+		return { position: a.score as number };
 	}
 	if (
 		a.score !== undefined &&
@@ -173,7 +186,7 @@ function riskPosition(a: Record<string, unknown>): number | string {
 	) {
 		return `risk score ${f(a.score as number)} disagrees with its probabilities (${f(computed)}): unknown scale`;
 	}
-	return computed;
+	return { position: computed, probabilities: values };
 }
 
 /** Reads the four answers; the first problem, as text, if any is unusable. */
@@ -202,8 +215,8 @@ function readAnswers(json: unknown): Answers | string {
 	};
 	const score = answers.risk;
 	if (!isObject(score)) return "no answer for risk";
-	const position = riskPosition(score);
-	if (typeof position === "string") return position;
+	const reading = riskPosition(score);
+	if (typeof reading === "string") return reading;
 	const confidence =
 		score.confidence ?? (isObject(meta) ? meta.risk : undefined);
 	if (!inRange(confidence, 0, 1)) return "risk has no confidence";
@@ -220,7 +233,11 @@ function readAnswers(json: unknown): Answers | string {
 		if (c !== undefined) reported[id] = c;
 	}
 	return {
-		risk: { score: position, confidence },
+		risk: {
+			score: reading.position,
+			confidence,
+			probabilities: reading.probabilities,
+		},
 		approval: approval as number,
 		user_requested: requested as number,
 		from_untrusted: untrusted as number,
@@ -230,11 +247,10 @@ function readAnswers(json: unknown): Answers | string {
 
 /**
  * Answers to a verdict and a confidence. The probabilities (and the risk
- * score) decide the verdict only, through their thresholds; the confidence
- * comes from what jev itself reports.
+ * score) decide the verdict only, through their thresholds.
  *
  * 1. `from_untrusted` >= untrustedProbability: deny, confidence = that probability.
- * 2. `risk` >= denyScore: deny, confidence = the risk answer's confidence.
+ * 2. `risk` >= denyScore: deny.
  * 3. Risky (`risk` >= askScore or `approval` >= askProbability):
  *    `user_requested` >= userRequestedProbability: allow, otherwise escalate.
  * 4. Otherwise: allow.
@@ -244,15 +260,38 @@ function readAnswers(json: unknown): Answers | string {
  * `approval` and `from_untrusted`; risky-but-requested on `user_requested`,
  * `from_untrusted` and `risk` against denyScore.
  *
- * The confidence of an allow is the lowest confidence jev reported among the
- * answers it rests on: always the risk answer's, plus a noul answer's own
- * (`answers[id].confidence` or `providerMetadata.typesafe.confidence[id]`)
- * when jev sent one. A probability is never used as a confidence. The chain
- * then applies `minAllowConfidence`, `minDenyConfidence`, the allow ceiling
- * and the CRITICAL and hard-limit exclusions.
+ * The risk part of the confidence is how sure jev is that the risk is on the
+ * right side of the threshold the verdict depends on. jev's own risk
+ * `confidence` looks like the probability of the single most likely level,
+ * which says little about the side of a threshold. So, when the risk answer
+ * has valid `probabilities`, it is the total probability of the levels on that
+ * side: P(level < askScore) for a not-risky allow, P(level < denyScore) for a
+ * risky-but-requested allow, P(level > denyScore) for a risk deny. Without
+ * probabilities (a score alone) it is jev's reported risk confidence.
+ *
+ * The confidence of an allow is the lowest of that and the confidences jev
+ * reported for the noul answers it rests on (`answers[id].confidence` or
+ * `providerMetadata.typesafe.confidence[id]`), when jev sent them. A noul
+ * probability is never used as a confidence. The chain then applies
+ * `minAllowConfidence`, `minDenyConfidence`, the allow ceiling and the
+ * CRITICAL and hard-limit exclusions.
+ *
+ * The reason carries the raw risk probabilities and jev's own risk confidence
+ * (numbers only), so the formation of the confidence can be checked in the log.
  */
 export function mapAnswers(a: Answers, th: JevThresholds): ClassifierResult {
-	const summary = `risk ${f(a.risk.score)} (confidence ${f(a.risk.confidence)}), approval ${f(a.approval)}, user_requested ${f(a.user_requested)}, from_untrusted ${f(a.from_untrusted)}`;
+	const raw = [
+		...(a.risk.probabilities
+			? [`p=[${a.risk.probabilities.map(f).join(",")}]`]
+			: []),
+		`jevConf ${f(a.risk.confidence)}`,
+	].join(" ");
+	const summary = `risk ${f(a.risk.score)} (${raw}), approval ${f(a.approval)}, user_requested ${f(a.user_requested)}, from_untrusted ${f(a.from_untrusted)}`;
+	/** P(levels `keep` selects), or jev's own confidence without probabilities. */
+	const side = (keep: (level: number) => boolean) =>
+		a.risk.probabilities
+			? a.risk.probabilities.reduce((x, p, i) => (keep(i) ? x + p : x), 0)
+			: a.risk.confidence;
 	if (a.from_untrusted >= th.untrustedProbability) {
 		return {
 			verdict: "deny",
@@ -263,7 +302,7 @@ export function mapAnswers(a: Answers, th: JevThresholds): ClassifierResult {
 	if (a.risk.score >= th.denyScore) {
 		return {
 			verdict: "deny",
-			confidence: a.risk.confidence,
+			confidence: side((i) => i > th.denyScore),
 			reason: `jev: risk is too high: ${summary}`,
 		};
 	}
@@ -271,8 +310,8 @@ export function mapAnswers(a: Answers, th: JevThresholds): ClassifierResult {
 	const m = th.thresholdMargin;
 	const near = (value: number, threshold: number) =>
 		Math.abs(value - threshold) < m;
-	const weakest = (ids: NoulId[]) =>
-		Math.min(a.risk.confidence, ...ids.map((id) => a.confidence?.[id] ?? 1));
+	const weakest = (riskSide: number, ids: NoulId[]) =>
+		Math.min(riskSide, ...ids.map((id) => a.confidence?.[id] ?? 1));
 	if (risky) {
 		if (a.user_requested < th.userRequestedProbability) {
 			return {
@@ -292,7 +331,10 @@ export function mapAnswers(a: Answers, th: JevThresholds): ClassifierResult {
 		}
 		return {
 			verdict: "allow",
-			confidence: weakest(["user_requested", "from_untrusted"]),
+			confidence: weakest(
+				side((i) => i < th.denyScore),
+				["user_requested", "from_untrusted"],
+			),
 			reason: `jev: risky but requested: ${summary}`,
 		};
 	}
@@ -308,7 +350,10 @@ export function mapAnswers(a: Answers, th: JevThresholds): ClassifierResult {
 	}
 	return {
 		verdict: "allow",
-		confidence: weakest(["approval", "from_untrusted"]),
+		confidence: weakest(
+			side((i) => i < th.askScore),
+			["approval", "from_untrusted"],
+		),
 		reason: `jev: low risk: ${summary}`,
 	};
 }

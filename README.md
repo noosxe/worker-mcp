@@ -614,8 +614,10 @@ only uncertain calls, or ones it cannot answer, reach the coordinator.
   escalate. `backend` is `typesafe` (default), `openrouter` or `custom` (with
   `url`); `thresholds` tune the mapping, `cacheTtlMs` optionally caches
   answers. The probabilities decide the verdict through their thresholds; the
-  confidence of an allow is the lowest confidence jev itself reports (the
-  `risk` answer's, and a noul answer's own when sent). An allow whose
+  confidence of an allow is the lowest of the probability that the risk is on
+  the right side of the threshold (from the risk `probabilities`; jev's own risk
+  `confidence` when there are none) and a noul answer's own confidence when
+  sent. The gate log shows the raw risk probabilities. An allow whose
   probabilities or score lie within `thresholds.thresholdMargin` (default
   0.05) of a threshold escalates instead. **Commands and up to 8 KiB of arguments are sent to the backend**,
   so it is off unless you configure it. Details in

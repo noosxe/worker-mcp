@@ -300,8 +300,8 @@ Applied in order (defaults; keys under `thresholds`):
 
 1. `from_untrusted` >= `untrustedProbability` (0.7): **deny**, confidence =
    that probability.
-2. `risk` >= `denyScore` (2.5): **deny**, confidence = the `risk` answer's
-   confidence.
+2. `risk` >= `denyScore` (2.5): **deny**, confidence = the risk side
+   confidence (below).
 3. A call is risky when `risk` >= `askScore` (1.5) or `approval` >=
    `askProbability` (0.75). A risky call with `user_requested` >=
    `userRequestedProbability` (0.85) is an **allow**; any other risky call is
@@ -309,11 +309,22 @@ Applied in order (defaults; keys under `thresholds`):
 4. Everything else is an **allow**.
 
 The probabilities and the `risk` score decide the verdict only, through
-their thresholds. They are not confidences. An allow's confidence is the lowest
-confidence **jev reports** among the answers the allow rests on: the `risk`
-answer's, always, and the confidence of `approval` and `from_untrusted` (not
-risky) or `user_requested` and `from_untrusted` (risky but requested) when jev
-sends one for them. The chain then applies the usual `minAllowConfidence`
+their thresholds. They are not confidences. An allow's confidence is the lowest of
+the risk side confidence and the confidences **jev reports** for the noul
+answers the allow rests on: `approval` and `from_untrusted` (not risky) or
+`user_requested` and `from_untrusted` (risky but requested), when jev sends one
+for them.
+
+The **risk side confidence** says how sure jev is that the risk is on the right
+side of the threshold the verdict depends on. jev's own risk `confidence`
+looks like the probability of the single most likely level, which says little
+about that side, so when the answer has valid `probabilities` it is the total
+probability of the levels on the side: P(level < `askScore`) for a not-risky
+allow (p0 + p1 by default), P(level < `denyScore`) for a risky-but-requested
+allow (p0 + p1 + p2), P(level > `denyScore`) for a risk deny (p3). With a
+`score` alone (no probabilities) jev's reported risk `confidence` is used. The
+reason in the gate log and `consulted[].untrustedReason` shows the raw values,
+e.g. `risk 0.17 (p=[0.83,0.17,0,0] jevConf 0.83)`. The chain then applies the usual `minAllowConfidence`
 (0.85) and `minDenyConfidence` (0.6), so a confidently low-risk call can be
 allowed even when `approval` is, say, 0.6. `gate.httpAllowCeiling` still
 applies, and CRITICAL calls and hard limits are never sent.
