@@ -142,10 +142,10 @@ interface RiskReading {
  * The risk position on the 0-3 scale (and the probabilities it came from, if
  * any), or the reason it cannot be trusted.
  * TypeSafe documents `score` as the probability-weighted mean of the level
- * numbers, but the scale of a real response has not been seen. So when
- * `probabilities` are there (an array, or an object keyed "0".."3") the
- * position is computed from them, and a `score` that disagrees is not
- * believed. A `score` alone is read as 0-3: that is unverified.
+ * numbers and `probabilities` as an object keyed "0".."3" that sums to 1 (an
+ * array is accepted too). When `probabilities` are there the position is
+ * computed from them, and a `score` that disagrees is not believed. A `score`
+ * alone is read as 0-3.
  */
 function riskPosition(a: Record<string, unknown>): RiskReading | string {
 	let probs: unknown[] | undefined;
@@ -262,8 +262,12 @@ function readAnswers(json: unknown): Answers | string {
  *
  * The risk part of the confidence is how sure jev is that the risk is on the
  * right side of the threshold the verdict depends on. jev's own risk
- * `confidence` looks like the probability of the single most likely level,
- * which says little about the side of a threshold. So, when the risk answer
+ * `confidence` is, per TypeSafe's docs, 1 - sum(p_i * |i - m|) for four
+ * levels, m being the most likely one: the spread around the top level, not
+ * which side of a threshold the call is on. TypeSafe's advice is to use it for
+ * "is it settled" and to decide on the probability of the level that drives the
+ * decision. So it is not mixed into the result when there are probabilities;
+ * when the risk answer
  * has valid `probabilities`, it is the total probability of the levels on that
  * side: P(level < askScore) for a not-risky allow, P(level < denyScore) for a
  * risky-but-requested allow, P(level > denyScore) for a risk deny. Without
@@ -271,7 +275,9 @@ function readAnswers(json: unknown): Answers | string {
  *
  * The confidence of an allow is the lowest of that and the confidences jev
  * reported for the noul answers it rests on (`answers[id].confidence` or
- * `providerMetadata.typesafe.confidence[id]`), when jev sent them. A noul
+ * `providerMetadata.typesafe.confidence[id]`), when sent. TypeSafe's noul
+ * answers have none (the probability is the whole answer); this is for
+ * compatible servers that send one. A noul
  * probability is never used as a confidence. The chain then applies
  * `minAllowConfidence`, `minDenyConfidence`, the allow ceiling and the
  * CRITICAL and hard-limit exclusions.
