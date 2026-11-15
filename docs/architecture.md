@@ -1,267 +1,77 @@
-# Architecture & API Design: worker-mcp
+# Architecture: worker-mcp
 
-This document details the software architecture, process interactions, and MCP tool/resource schemas for `worker-mcp`.
+How the server is put together: layers, the run and approval flows, and where the code lives. The tools themselves are in [mcp-api.md](mcp-api.md); the trust model is in [security.md](security.md).
 
 ---
 
-## 1. Component Architecture
-
-The system consists of three layers:
+## 1. Layers
 
 ```mermaid
 graph TD
-    subgraph Host Environment
-        C[MCP Client / Coordinator Agent] <-->|MCP JSON-RPC over stdio| S[worker-mcp Server]
-
-        subgraph Session Manager
-            S <-->|Spawn & Manage| P[Session]
-        end
-
-        subgraph Worker Runtime
-            P <-->|JSONL over Stdin/Stdout| CLI[pi coding-agent --mode rpc]
-            CLI <-->|Execute Tools| WS[Isolated Workspace Directory]
-            CLI <-->|API Calls| LLM[LLM Provider / Ollama / API]
-        end
-    end
-
-    classDef main fill:#3b82f6,stroke:#1d4ed8,color:#fff;
-    classDef secondary fill:#10b981,stroke:#047857,color:#fff;
-    class C,S main;
-    class P,CLI secondary;
+    C[MCP client / coordinator] <-->|MCP over stdio| T[Tools and resources: src/server.ts]
+    T --> M[SessionManager and Session: src/session]
+    M --> R[RunStore: src/core/run.ts]
+    M --> G[Approval gate: src/gate]
+    M <-->|WorkerProvider| P[Provider: src/providers]
+    P <-->|agent's own protocol| A[Worker process, e.g. pi --mode rpc]
+    A --> W[Workspace directory]
 ```
 
-### 1.1. Components
+| Layer        | Where                                                                                       | Role                                                                                                                                                                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool surface | `src/server.ts`, `src/tools.ts`, `src/legacy.ts`, `src/resources.ts`, `src/tool-support.ts` | Registers the 13 tools (and, while `legacyTools` is on, six deprecated aliases) and the resources. `src/schemas.ts` holds the strict zod input schemas, `src/outputs.ts` the output schemas, `src/render.ts` the untrusted-text wrapping. |
+| Sessions     | `src/session/`                                                                              | A `Session` is one worker: its status, the run in flight, its pending approvals and its gate. `SessionManager` owns the live workers, the worker limit, names, the idle reaper and the provider registry.                                 |
+| Runs         | `src/core/run.ts`                                                                           | `Run` and `RunStore`: state, bounded output, tool-call activity, approvals, waiting. Nothing here knows a provider.                                                                                                                       |
+| Gate         | `src/gate/`                                                                                 | Maps a tool call to a canonical kind, rates its risk, applies the worker's policy and the server's ceiling, keeps a bounded decision log.                                                                                                 |
+| Providers    | `src/providers/`                                                                            | One module per agent type, behind one interface. The core starts and kills processes (`src/core/child.ts`); a provider only translates a protocol. See [providers.md](providers.md) and [providers/pi.md](providers/pi.md).               |
+| Config       | `src/config.ts`                                                                             | One validated `Config` from defaults, a JSON file, `WORKER_MCP_*` variables and flags.                                                                                                                                                    |
 
-1. **MCP Client (Coordinator Agent)**: The orchestrator (e.g., Antigravity, Claude Desktop) that wants to delegate work but supervise the local execution.
-2. **`worker-mcp` Server**: The MCP server that registers tools and resources, monitors child processes, and manages the interactive supervision loop.
-3. **Session** (`src/session/session.ts`): A state wrapper in `worker-mcp` managing a single active worker session. It keeps track of command history, logs and pending approval states. It holds no protocol: the agent sits behind the provider interface (`src/providers/`), and its process is started and killed by `src/core/child.ts`. See [providers.md](providers.md).
-4. **`pi` CLI Subprocess**: The globally/locally installed `@earendil-works/pi-coding-agent` executing in RPC mode (`pi --mode rpc`).
-5. **LLM Provider**: The model runtime (e.g. Ollama for local LLMs, or cloud models via API) that the `pi` agent connects to.
-6. **Workspace**: The specific local directory where the `pi` agent is executing commands and modifying files.
+Workers are not persisted. They live and die with the server; the runtime directory (one private directory per server, holding each worker's gate file) is created when the first worker starts and removed on shutdown.
 
----
+## 2. Runs
 
-## 2. Interactive Supervision & Approval Flow
+A task given to a worker is a **run**. States: `starting`, `running`, `awaiting_approval`, then one of `completed`, `failed`, `cancelled`, `timed_out`.
 
-Because the local `pi` agent is less intelligent, we must gate high-risk actions (like bash commands or file modifications). `worker-mcp` uses a **smart gating system with risk levels** to automatically approve low-risk actions while requiring explicit coordinator approval for high-risk operations.
+- A worker has at most one run in flight. The `RunStore` (one per server) keeps every run with its output (bounded by `limits.outputBufferChars`) and its tool-call activity. A finished run stays readable for `limits.resultRetentionMs` after its worker is gone; at most `limits.maxRetainedRuns` are kept.
+- A run settles exactly once. It ends through the provider reporting completion, the worker's exit, `cancel_run`, the run timeout (`limits.maxRunMs`) or shutdown. A worker that ignores an abort is closed after a grace period.
+- `start_run` returns a `runId` (or waits up to `waitMs`). `wait_run` blocks at most `limits.maxWaitMs` and wakes early only on a terminal state or a new or expired approval. A cancelled request detaches the wait and leaves the run alone.
+- With a `progressToken`, waiting calls send progress notifications. Nothing depends on them.
+- MCP tasks are not offered.
 
-### 2.1. Risk Levels
-
-| Level        | Value | Examples                                                        | Default Behavior            |
-| ------------ | ----- | --------------------------------------------------------------- | --------------------------- |
-| **LOW**      | `0`   | `ls`, `cat f \| grep x`, `git status`, reads in the workspace   | Auto-approve                |
-| **MEDIUM**   | `1`   | file writes in the workspace, `git add`, reads outside it       | Require approval by default |
-| **HIGH**     | `2`   | `rm`, `curl`, `pnpm install`, config file writes, unknown tools | Require explicit approval   |
-| **CRITICAL** | `3`   | `sudo`, writes outside workspace, `git push --force`            | Require explicit approval   |
-
-Tool calls are first mapped to canonical kinds (`src/gate/canonical.ts`) and rated by the rule classifier (`src/gate/rules.ts`, `src/gate/shell-rules.ts`). Writes to protected paths are hard limits that no policy can auto-approve. `src/gate/gate.ts` runs the classifier chain, applies the server's `gate.maxAutoApprove` ceiling to the worker's policy and records each decision in a bounded in-memory log. See [security.md](security.md).
-
-Risk policy is configurable per session via `spawn_pi_session` (at creation) or `set_risk_policy` (at runtime). The default policy auto-approves LOW and requires approval for everything else. A policy is lowered to the ceiling (default MEDIUM) and the result says so.
-
-### 2.2. Approval Flow
-
-The following diagram describes how `worker-mcp` intercepts a tool execution, classifies its risk, and either auto-approves or asks the coordinator:
+## 3. Approval flow
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor Coordinator as Coordinator (MCP Client)
-    participant Server as worker-mcp Server
-    participant Session as Session
-    participant Pi as pi CLI (Subprocess)
-
-    Coordinator->>Server: Call tool `send_pi_command(sessionId, "Build the project")`
-    Server->>Session: Forward prompt
-    Session->>Pi: Write JSONL prompt to stdin
-    Pi->>Pi: Think & decide to execute a tool (e.g., run `npm install`)
-    Pi->>Session: Emit tool call event via stdout (JSONL)
-    Note over Session: Intercept event. Pause reading stdout.<br/>Transition session to AWAITING_APPROVAL.
-    Session->>Server: Emit event 'pending_action'
-    Server->>Coordinator: Send MCP notification / tool response with approval request
-
-    alt Approved
-        Coordinator->>Server: Call tool `approve_action(sessionId, actionId)`
-        Server->>Session: Approve
-        Session->>Pi: Write confirmation response to stdin
-        Pi->>Pi: Execute tool (`npm install`)
-        Pi->>Session: Emit tool execution result
-        Session->>Coordinator: Forward execution result
-    else Rejected
-        Coordinator->>Server: Call tool `reject_action(sessionId, actionId, reason)`
-        Server->>Session: Reject with reason
-        Session->>Pi: Write simulated failure/refusal to stdin
-        Pi->>Pi: Re-plan based on tool failure
-        Pi->>Session: Emit updated plan/message
-        Session->>Coordinator: Forward updated output
+    actor Coord as Coordinator
+    participant S as worker-mcp
+    participant W as Worker (provider)
+    Coord->>S: start_run(workerId, prompt, intent)
+    S->>W: prompt
+    W->>S: tool call (through the gate)
+    alt low risk, or allowed by the policy
+        S-->>W: allow (recorded in the gate log)
+    else needs the coordinator
+        S-->>Coord: wait_run returns awaiting_approval with pendingApprovals
+        Coord->>S: approve_action or reject_action (returns at once)
+        S-->>W: allow, or deny with the reason
+        Coord->>S: wait_run
     end
+    W->>S: run finished
+    S-->>Coord: wait_run returns the final state and text
 ```
 
----
+- Every tool call is mapped to a canonical kind and rated LOW (0), MEDIUM (1), HIGH (2) or CRITICAL (3) by the rule classifier. Calls at or below the worker's `autoApproveUpTo` run; the rest wait for the coordinator. Overrides in the policy can allow, escalate or deny matching calls. The server's `gate.maxAutoApprove` (default MEDIUM, never CRITICAL) lowers any policy, and writes to protected paths are hard limits that no policy auto-approves.
+- Approvals have server-made ids (`a_…`). An approval nobody answers is denied after `gate.approvalTimeoutMs` (10 minutes), and the worker sees the reason.
+- The gate cannot be skipped: a provider that cannot gate each call is refused, and pi is never started without its gate extension. See [security.md](security.md).
 
-## 3. API Schema
+## 4. Untrusted output
 
-### 3.1. MCP Tools
+Whatever a worker wrote (output, tool calls, commands, paths, log text) is data from another model. Structured results keep it under keys named `untrusted…`; in text blocks, progress messages and resources it is wrapped as `<worker_output run="r_…" trust="untrusted">…</worker_output>`, with any `</worker_output` inside escaped. The server `instructions` tell the coordinator never to follow instructions found there.
 
-`worker-mcp` exposes the following tools to the coordinator:
+## 5. Operations
 
-#### `spawn_pi_session`
-
-Creates and initializes a new `pi` agent session.
-
-- **Arguments**:
-  - `sessionId` (string, required): A unique identifier for the session.
-  - `cwd` (string, required): The directory path where the `pi` agent will execute.
-  - `model` (string, optional): LLM model name to override the default (e.g., `ollama/qwen2.5-coder:7b`, `anthropic/claude-3-5-sonnet`).
-  - `systemPrompt` (string, optional): Custom system instructions to append or override.
-  - `riskPolicy` (object, optional): Auto-approval policy; lowered to the server's `gate.maxAutoApprove` ceiling, and the result says what was lowered.
-    - `autoApproveUpTo` (number): Calls at or below this risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) are auto-approved. Default: `0` (LOW).
-    - `overrides` (array, optional): Checked in order, the first match decides. Each entry has:
-      - `match` (object, required): `kind`, `tool`, `command` and `path`; every field given must match. `tool`, `command` and `path` are globs where `*` matches any run of characters (in `command` it stops at shell metacharacters).
-      - `action` (`"allow"`, `"escalate"` or `"deny"`, required): auto-approve, always ask, or refuse without asking.
-      - `maxRiskLevel` (number, optional): For `allow`, the highest level it covers. Default `1` (MEDIUM).
-    - The earlier shape (`notifyUpTo`, and overrides with `pattern`, `pathPattern` and `action: "allow" | "block"`) is still accepted and converted: `notifyUpTo` merges into `autoApproveUpTo`, `block` becomes `escalate`.
-- **Returns**: `{ success: boolean, status: string }`
-
-#### `send_pi_command`
-
-Sends a prompt or slash command to a running session.
-
-- **Arguments**:
-  - `sessionId` (string, required): The ID of the target session.
-  - `command` (string, required): The text prompt or slash command (e.g., `/model`, `/reload`, or a standard prompt).
-  - `timeout` (number, optional): Maximum time in milliseconds to wait in blocking mode. If exceeded, returns with command still running. Environment variable `WORKER_MCP_COMMAND_TIMEOUT` provides a global default.
-- **Returns**: the worker's output once the run ends, or `AWAITING_APPROVAL` text when a tool call needs a decision. Legacy: prefer `start_run` and `wait_run` (section 6).
-
-#### `cancel_pi_command`
-
-Abort the currently running command in a session. Sends an abort signal to the pi agent; if it doesn't settle within 2 seconds, the process is force-terminated.
-
-- **Arguments**:
-  - `sessionId` (string, required): The ID of the session whose command to cancel.
-- **Returns**: Confirmation message.
-
-#### `terminate_pi_session`
-
-Stops a session and removes it, freeing its id for reuse. Use this to clear sessions that have crashed, wedged, or are no longer needed.
-
-- **Arguments**:
-  - `sessionId` (string, required): The ID of the session to terminate.
-- **Returns**: `{ success: boolean }`
-
-#### `list_pi_sessions`
-
-Lists all active sessions and their status.
-
-- **Arguments**: None.
-- **Returns**: An array of objects: `[{ sessionId: string, cwd: string, status: string, pendingAction: object | null }]`
-
-#### `get_pending_actions`
-
-Retrieves details of any action currently awaiting coordinator approval.
-
-- **Arguments**:
-  - `sessionId` (string, required): The target session ID.
-- **Returns**: `{ sessionId: string, actionId: string, tool: string, arguments: object, context: string }`
-
-#### `approve_action`
-
-Approves a pending tool call.
-
-- **Arguments**:
-  - `sessionId` (string, required): The target session ID.
-  - `actionId` (string, required): The ID of the intercepted tool call.
-- **Returns**: `{ success: boolean }`
-
-#### `reject_action`
-
-Denies a pending tool call and sends a rejection/error message back to the worker agent.
-
-- **Arguments**:
-  - `sessionId` (string, required): The target session ID.
-  - `actionId` (string, required): The ID of the intercepted tool call.
-  - `reason` (string, optional): The reason for rejection (which will be fed back to the LLM to help it correct course).
-- **Returns**: `{ success: boolean }`
-
-#### `set_risk_policy`
-
-Updates the risk-based auto-approval policy for a session at runtime.
-
-- **Arguments**:
-  - `sessionId` (string, required): The target session ID.
-  - `riskPolicy` (object, required): The new risk policy (same schema as `spawn_pi_session.riskPolicy`).
-- **Returns**: Summary of the applied policy.
-
-#### `get_auto_approved_log`
-
-Retrieves the audit log of actions that were auto-approved by the risk policy.
-
-- **Arguments**:
-  - `sessionId` (string, required): The target session ID.
-- **Returns**: An array of auto-approved action records, each containing `actionId`, `toolName`, `input`, `riskLevel`, `riskLabel`, `reason`, and `timestamp`.
-
----
-
-## 4. MCP Resources & Prompt Templates
-
-### 4.1. Resources
-
-- **`worker-mcp://sessions/{sessionId}/history`**: Exposes the complete JSON history of messages exchanged inside the `pi` session. Useful for the coordinator to review the exact chain of thought.
-- **`worker-mcp://sessions/{sessionId}/logs`**: A real-time log of events, tool executions, and stdout streams from the spawned process.
-
-### 4.2. Prompts (Templates)
-
-- **`supervise-task`**: A prompt template for the coordinator agent explaining how to command the worker, monitor the progress, and audit tool execution safely.
-
----
-
-## 5. Operational Design
-
-### 5.1. Locating the Pi Executable
-
-- By default, `worker-mcp` attempts to execute the `pi` binary from the system's `PATH`.
-- The binary path can be explicitly overridden by setting the `WORKER_MCP_PI_PATH` environment variable (e.g., `WORKER_MCP_PI_PATH=/usr/local/bin/pi`).
-
-### 5.2. Per-spawn Gating Extension
-
-- The gate extension source is a constant compiled into the server. Before each worker spawn, `worker-mcp` writes it to a fresh private directory (`mkdtemp` under the server's private runtime directory `<runtimeDir>/worker-mcp-<pid>`, where `runtimeDir` defaults to `$XDG_RUNTIME_DIR`, or `<stateDir>/run` when that is unset; directory mode 0700, file mode 0600) and loads it with `-e`.
-- pi is started with `--no-extensions --no-mcp --no-approve`, so it loads no discovered extensions, no MCP servers and no project-local files; only the gate runs.
-- If the gate cannot be written, or the file is missing right before the spawn, the spawn is refused. pi is never started without the gate.
-- The worker's directory is removed when the worker exits or is terminated, and the runtime directory when the server shuts down cleanly. At the next start, instance directories of pids that are no longer running are removed. Nothing is written under `~/.pi`.
-- The gate sends structured JSON payloads (`{ toolName, input }`), enabling server-side risk classification.
-
-### 5.3. No Persistence
-
-- Workers are not persisted. They live and die with the server, and `sessions.json` is neither read nor written (an old file is ignored). `SessionManager` does no I/O when constructed; the runtime directory is created when the first worker starts.
-
-### 5.4. Subprocess Lifecycle & Stderr Management
-
-- **Stderr Capture**: Stderr is piped separately from stdout. All stderr output from the `pi` child process is buffered and appended directly to the session's log stream (`worker-mcp://sessions/{sessionId}/logs`) to aid debugging.
-- **Crash Detection**: If the child process exits with a non-zero code without completing, the session state transitions to `Crashed`.
-- **State Transition back to Idle**: When `pi` emits the `agent_settled` event on stdout, `worker-mcp` updates the session status from `Running Task` back to `Idle`, notifying the coordinator that it is ready for the next command.
-
-### 5.5. Configuration
-
-Settings come from a JSON file, `WORKER_MCP_*` environment variables and flags (in that order of precedence), are validated at startup with zod, and are passed down as one `Config` object (`src/config.ts`). The full table is in the [README](../README.md#configuration). `worker-mcp --print-config` prints the effective config.
-
------------------------------ | --------- | ------------------------------------------------------------------------- |
-| `WORKER_MCP_PI_PATH` | `pi` | Path to the pi executable |
-| `WORKER_MCP_ENV_PASSTHROUGH` | unset | Extra environment variable names for workers, see [security](security.md) |
-| `WORKER_MCP_MAX_OUTPUT_CHARS` | `64000` | Largest single streamed message before the run is aborted |
-| `WORKER_MCP_RUN_TIMEOUT_MS` | `1800000` | Wall-clock limit of one run |
-| `WORKER_MCP_MAX_WAIT_MS` | `50000` | Longest `wait_run` blocks |
-| `WORKER_MCP_APPROVAL_TIMEOUT_MS` | `600000` | An unanswered approval is denied after this |
-| `WORKER_MCP_COMMAND_TIMEOUT` | unset (∞) | Default timeout (ms) for the legacy blocking `send_pi_command` |
-
----
-
-## 6. Async Execution Model
-
-A task is a **run** (`src/core/run.ts`): `starting`, `running`, `awaiting_approval`, then one of `completed`, `failed`, `cancelled`, `timed_out`.
-
-- A `Session` has at most one run in flight. The `RunStore` (one per server) holds every run, with its bounded output and tool-call activity, and keeps a finished run for `limits.resultRetentionMs` after its worker is gone, at most `limits.maxRetainedRuns` of them.
-- A run settles exactly once (`RunStore.settle`). It ends through the provider's `run_finished`, the worker's exit, `cancel_run`, the run timeout, or shutdown. A worker that ignores an abort is closed after a grace period.
-- `start_run` returns a `runId`. `wait_run` blocks at most `limits.maxWaitMs` and wakes early only on a terminal state or a new (or expired) approval. A cancelled request detaches the wait and leaves the run alone.
-- `approve_action` and `reject_action` return at once. An approval not answered within `gate.approvalTimeoutMs` is denied, and the reason reaches the worker.
-- With a `progressToken`, blocking calls send progress notifications.
-- `send_pi_command` is a wrapper: it starts a run and waits.
-- MCP tasks are not offered. A thin adapter over the `RunStore` can be added if a client needs one.
+- **Locating pi**: `providers.pi.path` (`WORKER_MCP_PI_PATH`), else `pi` on `PATH`.
+- **Per-spawn gate**: the gate extension is a constant compiled into the server. Each spawn writes it to a fresh private directory under the runtime directory (mode 0700, file 0600) and starts pi with `--no-extensions --no-mcp --no-approve` and the gate loaded. If it cannot be written, the spawn is refused. Nothing is written under `~/.pi`.
+- **Lifecycle**: a worker's process and everything it started are killed on terminate, idle close and shutdown (SIGTERM, then SIGKILL after a grace period). A worker whose process died is removed; its runs stay readable.
+- **Logs**: each worker's stderr and server-side log lines are kept in a bounded ring, exposed as the resource `worker-mcp://workers/{workerId}/log`.
+- **Configuration**: see the [README](../README.md#configuration); `worker-mcp --print-config` prints the effective values.

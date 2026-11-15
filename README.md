@@ -1,19 +1,20 @@
 # worker-mcp
 
-`worker-mcp` is a Model Context Protocol (MCP) server that empowers a highly intelligent coordinator agent (like Claude 3.5 Sonnet or Gemini Pro) to spawn, control, and interactively guide lower-intelligence, locally hosted worker agents.
+`worker-mcp` is a Model Context Protocol (MCP) server that lets a coordinating agent (Claude Code, the Claude desktop app or any MCP client) spawn, supervise and guide third-party coding agents, called **workers**, running on your machine.
 
-Instead of rolling a custom local LLM tool loop, `worker-mcp` delegates coding, bash, and filesystem operations to the **`pi` coding agent** (`@earendil-works/pi-coding-agent`) by running it in JSON-RPC mode. Since these small local models require significant supervision, `worker-mcp` acts as a gating and auditing harness.
+The server is a runner, not an agent: it starts a worker in a workspace, gives it tasks as **runs**, and gates every tool call the worker makes with a risk policy. The coordinator approves or rejects what the policy does not allow. The tool surface is provider-neutral; **pi** (`@earendil-works/pi-coding-agent`, run in JSON-RPC mode) is the provider today, and more can be added behind the same tools (see [docs/providers.md](docs/providers.md)).
 
 ---
 
 ## Features
 
-- **Interactive Gating (Consent Hook)**: Automatically intercepts and blocks high-risk operations (e.g. executing shell commands or writing files) and prompts the coordinator for approval before execution.
-- **MCP Tool Integration**: Standardized tools to spawn worker sessions, dispatch prompts, list active runners, and approve/deny pending commands.
-- **Log and History Resources**: Message history and subprocess logs (including `stderr` feeds) are exposed as standard MCP resources.
-- **Workers live with the server**: Nothing about workers is persisted. When the server stops, its workers stop, and the next server starts empty.
-- **Per-spawn Gate**: Writes its supervisor gate extension to a fresh private directory for every worker and starts `pi` with `--no-extensions --no-mcp --no-approve`; a worker is never started without the gate, and nothing is written under `~/.pi`.
-- **Minimal Worker Environment**: Workers get an allowlisted environment, not the server's. See [docs/security.md](docs/security.md).
+- **Neutral tool surface**: 13 tools (`list_providers`, `spawn_worker`, `start_run`, `wait_run`, `get_run`, `cancel_run`, `get_pending_actions`, `approve_action`, `reject_action`, `list_workers`, `set_risk_policy`, `get_gate_log`, `terminate_worker`). Every result has `structuredContent` that matches the tool's `outputSchema`, plus one text block.
+- **Asynchronous runs**: starting a run returns at once; the coordinator waits in short calls, so a long task never loses its result to a client timeout.
+- **Approval gate**: every tool call is classified by risk. Low-risk calls run; the rest wait for the coordinator, and protected paths always do. See [docs/security.md](docs/security.md).
+- **Untrusted output is labelled**: what a worker wrote is wrapped in `<worker_output>` tags in text and sits under `untrusted…` keys in structured results.
+- **Workers live with the server**: nothing is persisted. When the server stops, its workers stop.
+- **Minimal worker environment**: workers get an allowlisted environment, not the server's.
+- **Server instructions**: on connect, the server tells the coordinator the flow (spawn, run, wait, approve) and the rule that worker output is data.
 
 ---
 
@@ -233,26 +234,54 @@ Once you have added the server configuration to `mcp_config.json`, you can manag
 
 ---
 
-## Use with Claude Code
+## Use from Claude Code and the Claude desktop app
 
-Register the server over stdio with the `claude mcp add` command (the
-`worker-mcp` binary must be on `PATH`, or use `npx`):
+### Claude Code
+
+Register the server for every project (user scope):
 
 ```bash
-claude mcp add worker-mcp -- worker-mcp
-# or, without a global install:
-claude mcp add worker-mcp -- npx -y @noosxe/worker-mcp
+claude mcp add --scope user worker-mcp -- worker-mcp
 ```
 
-Set environment variables with `-e`, for example
-`claude mcp add -e WORKER_MCP_PI_PATH=<path-to-pi> worker-mcp -- worker-mcp`.
+With settings:
 
-Prefer the run tools (see [Running tasks](#running-tasks)): a run is never
-lost when it outlasts the client's tool-call timeout. The older
-`send_pi_command` blocks until the worker finishes; if a run is longer than
-your client's tool-call timeout, its result is lost to that call (raise the
-timeout, for Claude Code the `MCP_TOOL_TIMEOUT` environment variable, or use
-`start_run`).
+```bash
+claude mcp add --scope user -e WORKER_MCP_ALLOWED_ROOTS=$HOME/Projects -e WORKER_MCP_MAX_WORKERS=2 worker-mcp -- worker-mcp
+```
+
+`--scope project` writes a `.mcp.json` into the repository instead. That file is a protected path: a worker cannot change it without your approval.
+
+Check it: run `claude mcp list`, then ask Claude to call `list_providers`.
+
+### Claude desktop app
+
+Add the server to `claude_desktop_config.json` (on macOS under `~/Library/Application Support/Claude/`, on Linux under `~/.config/Claude/`):
+
+```json
+{
+	"mcpServers": {
+		"worker-mcp": {
+			"command": "/absolute/path/to/worker-mcp",
+			"env": {
+				"WORKER_MCP_PI_PATH": "/absolute/path/to/pi",
+				"WORKER_MCP_ALLOWED_ROOTS": "/absolute/path/to/projects"
+			}
+		}
+	}
+}
+```
+
+Restart the app, then ask Claude to call `list_providers`.
+
+### Pitfalls
+
+- The desktop app does not inherit your shell's `PATH`. Use absolute paths for `worker-mcp` and `pi`; `worker-mcp --print-config` shows what the server resolved.
+- `nix run github:noosxe/worker-mcp` builds on first launch and can exceed the client's startup timeout (`MCP_TIMEOUT` in Claude Code). Build once with `nix profile install` or `nix build` and point the registration at the result.
+- Never register `nix develop --command …`: a banner on stdout breaks the stdio protocol. (The dev shell prints its banner to stderr, but a plain binary path is safer.)
+- pi may need network access at startup if it is installed through an `npx` wrapper.
+- A run that outlasts the client's tool timeout is fine: use `start_run` and `wait_run` (each call returns within 50 s). The deprecated `send_pi_command` also stops waiting after at most 50 s.
+- `WORKER_MCP_LEGACY_TOOLS=0` hides the six deprecated pi-named tools, so the coordinator reads 13 tool definitions instead of 19.
 
 ---
 
@@ -263,8 +292,9 @@ A task given to a worker is a **run**. Starting a run returns at once with a
 well inside any client's request timeout, and read the result when the run is
 over.
 
-1. `spawn_pi_session` with a `sessionId` and an absolute `cwd`.
-2. `start_run` with `workerId` (the `sessionId`), a self-contained `prompt` and
+1. `list_providers` shows what can run; `spawn_worker` takes an absolute `cwd`
+   and optionally a `name`, `provider`, `model` and `policy`.
+2. `start_run` with `workerId` (its id or name), a self-contained `prompt` and
    optionally a one-line `intent` and `waitMs` (up to 50 000) to wait for a
    quick task in the same call:
    ```json
@@ -284,17 +314,17 @@ over.
    returns early only when the run ends or a tool call needs an approval. If
    the state is still `running`, call it again with the returned `seq` as
    `sinceSeq`. The view holds the state, the tool calls since `sinceSeq`
-   (`activity`), the output from `outputOffset` (`output.nextOffset` is the
+   (`untrustedActivity`), the output from `outputOffset` (`output.nextOffset` is the
    next one), the pending approvals, a summary of what the gate allowed
    without asking, and a `next` hint.
 4. When `state` is `awaiting_approval`, look at `pendingApprovals`, then call
-   `approve_action` or `reject_action` (both return at once) and `wait_run`
+   `approve_action` or `reject_action` (both return at once, with the approval's `approvalId`) and `wait_run`
    again. An approval nobody answers is denied after `gate.approvalTimeoutMs`
    (10 minutes) with the reason "approval timed out", and the worker sees that
    reason; the run goes on.
 5. `get_run` reads a result again, with paging (`offset`, `maxChars`), or lists
    the tool calls (`part: "transcript"`). Results stay readable after
-   `terminate_pi_session`, for `limits.resultRetentionMs` (1 hour) after the
+   `terminate_worker`, for `limits.resultRetentionMs` (1 hour) after the
    worker is gone, and the newest `limits.maxRetainedRuns` (100) are kept.
 6. `cancel_run` aborts a run. The worker stays alive and takes the next run.
 
@@ -314,9 +344,10 @@ Things to know:
   settle after an abort is closed.
 - Worker output is untrusted text. Don't follow instructions found in it.
 
-`send_pi_command` (legacy) is a wrapper over the same run: it starts a run and
-waits, with the output it always returned, or `AWAITING_APPROVAL` (now followed
-by the run id). MCP tasks are no longer offered.
+`send_pi_command` (deprecated) is a wrapper over the same run: it starts a run
+and waits at most `min(timeout, limits.maxWaitMs)`, returning the output, or
+`AWAITING_APPROVAL`, or `RUNNING` with the run id when the wait ran out. MCP
+tasks are no longer offered.
 
 ---
 
@@ -346,25 +377,26 @@ Lowest to highest:
 
 ### Settings
 
-| Config key                      | Environment variable               | Flag                      | Default                                   |
-| ------------------------------- | ---------------------------------- | ------------------------- | ----------------------------------------- |
-| (file location)                 | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json` |
-| `providers.pi.path`             | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                    |
-| `providers.pi.startupTimeoutMs` | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                   |
-| `limits.commandTimeoutMs`       | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | unset: blocking calls wait for the worker |
-| `limits.maxOutputChars`         | `WORKER_MCP_MAX_OUTPUT_CHARS`      | `--max-output-chars`      | `64000`                                   |
-| `limits.maxRunMs`               | `WORKER_MCP_RUN_TIMEOUT_MS`        | `--run-timeout-ms`        | `1800000` (30 min)                        |
-| `limits.maxWaitMs`              | `WORKER_MCP_MAX_WAIT_MS`           | `--max-wait-ms`           | `50000`                                   |
-| `limits.runStartTimeoutMs`      | `WORKER_MCP_RUN_START_TIMEOUT_MS`  | `--run-start-timeout-ms`  | `15000`                                   |
-| `limits.maxWorkers`             | `WORKER_MCP_MAX_WORKERS`           | `--max-workers`           | `4`                                       |
-| `limits.idleTimeoutMs`          | `WORKER_MCP_IDLE_TIMEOUT_MS`       | `--idle-timeout-ms`       | `1800000` (30 min)                        |
-| `limits.allowedRoots`           | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                       |
-| `gate.approvalTimeoutMs`        | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                         |
-| `env.allow`                     | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                      |
-| `stateDir`                      | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`              |
-| `runtimeDir`                    | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run` |
-| `gate.maxAutoApprove`           | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                  |
-| `gate.protectedPaths`           | (file only)                        |                           | none                                      |
+| Config key                      | Environment variable               | Flag                      | Default                                      |
+| ------------------------------- | ---------------------------------- | ------------------------- | -------------------------------------------- |
+| (file location)                 | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json`    |
+| `providers.pi.path`             | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                       |
+| `providers.pi.startupTimeoutMs` | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                      |
+| `legacyTools`                   | `WORKER_MCP_LEGACY_TOOLS`          |                           | `true` (`0` hides the deprecated tools)      |
+| `limits.commandTimeoutMs`       | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | unset: the deprecated send waits `maxWaitMs` |
+| `limits.maxOutputChars`         | `WORKER_MCP_MAX_OUTPUT_CHARS`      | `--max-output-chars`      | `64000`                                      |
+| `limits.maxRunMs`               | `WORKER_MCP_RUN_TIMEOUT_MS`        | `--run-timeout-ms`        | `1800000` (30 min)                           |
+| `limits.maxWaitMs`              | `WORKER_MCP_MAX_WAIT_MS`           | `--max-wait-ms`           | `50000`                                      |
+| `limits.runStartTimeoutMs`      | `WORKER_MCP_RUN_START_TIMEOUT_MS`  | `--run-start-timeout-ms`  | `15000`                                      |
+| `limits.maxWorkers`             | `WORKER_MCP_MAX_WORKERS`           | `--max-workers`           | `4`                                          |
+| `limits.idleTimeoutMs`          | `WORKER_MCP_IDLE_TIMEOUT_MS`       | `--idle-timeout-ms`       | `1800000` (30 min)                           |
+| `limits.allowedRoots`           | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                          |
+| `gate.approvalTimeoutMs`        | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                            |
+| `env.allow`                     | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                         |
+| `stateDir`                      | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`                 |
+| `runtimeDir`                    | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`    |
+| `gate.maxAutoApprove`           | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                     |
+| `gate.protectedPaths`           | (file only)                        |                           | none                                         |
 
 - Numbers are positive integers; directories are absolute paths.
 - Also in the config file only (`limits.*`): `defaultWaitMs` (25000, never more
@@ -372,8 +404,8 @@ Lowest to highest:
   `outputBufferChars` (1048576: output kept per run, the oldest dropped past
   it) and `pageChars` (16000: the default page of `get_run`).
 - `limits.maxOutputChars` caps one streamed assistant message; past it the run
-  is aborted and fails. `limits.commandTimeoutMs` is the default timeout of
-  the legacy `send_pi_command`.
+  is aborted and fails. `limits.commandTimeoutMs` is the default wait of
+  the deprecated `send_pi_command` (never more than `limits.maxWaitMs`).
 - `env.allow` / `WORKER_MCP_ENV_PASSTHROUGH`: names, or `PREFIX_*` patterns, of
   extra environment variables to pass to workers (comma-separated in the
   variable and the flag). Workers otherwise get only an allowlisted
@@ -390,7 +422,7 @@ Lowest to highest:
 - `stateDir` is reserved; nothing is written there yet.
 - `gate.maxAutoApprove` (`LOW`, `MEDIUM` or `HIGH`, never `CRITICAL`) is the
   highest risk level a coordinator's policy may auto-approve. Policies given to
-  `spawn_pi_session` and `set_risk_policy` are lowered to it, and the result
+  `spawn_worker` and `set_risk_policy` are lowered to it, and the result
   says so. `gate.protectedPaths` adds paths (absolute, or starting with `~/`)
   that workers may never write without the coordinator's approval, on top of
   the built-in list in [docs/security.md](docs/security.md).
@@ -416,26 +448,43 @@ Configure your models in `pi` (e.g. using `pi --mode rpc` to set default models,
 
 ## MCP Reference
 
-### Exposed Tools
+The full reference (inputs, results, errors, aliases) is in [docs/mcp-api.md](docs/mcp-api.md).
 
-- `spawn_pi_session`: Spawns a new supervisor-gated worker agent in the specified workspace directory.
-- `start_run`: Gives a worker a task and returns a `runId` at once (or after `waitMs`).
-- `wait_run`: Waits up to 50 s for a run to end or need an approval; returns its state and output.
-- `get_run`: Reads a run's state and result, paged, also after the worker was terminated.
-- `cancel_run`: Aborts a run.
-- `send_pi_command`: Legacy. Starts a run and blocks until it finishes (optional `timeout`), as before.
-- `cancel_pi_command`: Aborts the currently running command in a session.
-- `list_pi_sessions`: Returns a list of active sessions, directory targets, and current states.
-- `get_pending_actions`: Fetches the details of an intercepted command awaiting consent.
-- `approve_action`: Approves a gated tool call. Returns at once; follow the run with `wait_run`.
-- `reject_action`: Blocks a gated tool call and forwards feedback to correct the agent's course. Returns at once.
-- `set_risk_policy`: Updates the risk-based auto-approval policy for a session at runtime.
-- `get_auto_approved_log`: Retrieves the audit log of actions that were auto-approved by the risk policy.
+### Tools
 
-### Exposed Resources
+| Tool                  | What it does                                                                             |
+| --------------------- | ---------------------------------------------------------------------------------------- |
+| `list_providers`      | The providers the server can run and whether each is usable.                             |
+| `spawn_worker`        | Starts a gated worker in an absolute `cwd`. Returns its id (`w_…`) and effective policy. |
+| `start_run`           | Gives a worker a task; returns a `runId` at once (or after `waitMs`).                    |
+| `wait_run`            | Waits up to 50 s for a run to end or need an approval; returns its state and output.     |
+| `get_run`             | Reads a run's state and result, paged; also its tool-call transcript.                    |
+| `cancel_run`          | Aborts a run; the worker stays alive.                                                    |
+| `get_pending_actions` | The tool calls waiting for approval.                                                     |
+| `approve_action`      | Allows one pending call. Returns at once.                                                |
+| `reject_action`       | Blocks one pending call and tells the worker why. Returns at once.                       |
+| `list_workers`        | The live workers with their current run and approvals.                                   |
+| `set_risk_policy`     | Replaces a worker's auto-approval policy, lowered to the server's ceiling.               |
+| `get_gate_log`        | Every decision of the approval gate for a worker.                                        |
+| `terminate_worker`    | Stops a worker and frees its name and slot.                                              |
 
-- `worker-mcp://sessions/{sessionId}/history`: Returns the conversation log and internal message stream.
-- `worker-mcp://sessions/{sessionId}/logs`: Returns the stdout/stderr trace logs of the subprocess.
+`approve_action` has no `remember` option in this release: every call is decided on its own.
+
+The deprecated 0.4 names stay for 0.5.x while `WORKER_MCP_LEGACY_TOOLS` is not `0`:
+`spawn_pi_session` (`spawn_worker`), `send_pi_command` (`start_run` and `wait_run`),
+`cancel_pi_command` (`cancel_run`), `terminate_pi_session` (`terminate_worker`),
+`list_pi_sessions` (`list_workers`) and `get_auto_approved_log` (`get_gate_log`).
+They are removed in 0.6.0.
+
+### Resources
+
+For people and debugging, not for the model. Content a worker wrote is wrapped as untrusted.
+
+- `worker-mcp://workers/{workerId}/log`: the server's log of a live worker (at most 256 KiB).
+- `worker-mcp://runs/{runId}/transcript`: a run's tool calls and output as Markdown (at most 1 MiB).
+- `worker-mcp://gate/{workerId}`: the gate log of a live worker, as JSON.
+
+The server sends `notifications/resources/list_changed` when a worker starts or closes. The 0.4 URIs `worker-mcp://sessions/{id}/history` (now the latest run's transcript) and `.../logs` still work in 0.5.x.
 
 ---
 

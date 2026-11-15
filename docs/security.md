@@ -69,7 +69,7 @@ for the coordinator.
   the lexer cannot parse with confidence is HIGH too. A pipe into a shell and
   `eval`/`exec` are CRITICAL.
 - **The coordinator's policy has a ceiling.** `gate.maxAutoApprove` (default
-  MEDIUM, at most HIGH) bounds what `spawn_pi_session` and `set_risk_policy`
+  MEDIUM, at most HIGH) bounds what `spawn_worker` and `set_risk_policy`
   can auto-approve: `autoApproveUpTo` and every `allow` override are lowered to
   it, and the result says what was lowered. A prompt-injected coordinator
   therefore cannot talk the server into auto-approving HIGH or CRITICAL calls.
