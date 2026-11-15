@@ -16,21 +16,21 @@ What a coordinator sees: tools, results, errors, resources and the deprecated al
 
 R = read-only, D = destructive, I = idempotent, O = open world (the annotations; a blank D is moot for a read-only tool). Hints are set honestly for tools that let a worker act.
 
-| Tool                  | Input                                                                                | Structured result                                                                  |  R  |  D  |  I  |  O  |
-| --------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- | :-: | :-: | :-: | :-: |
-| `list_providers`      | none                                                                                 | `providers[]`: `id`, `default`, `available`, `version?`, `reason?`, `capabilities` |  ✓  |     |  ✓  |     |
-| `spawn_worker`        | `cwd`, `provider?`, `name?`, `model?`, `systemPrompt?`, `policy?`                    | `worker`, `clamped[]`, `notes[]`                                                   |     |  ✗  |     |  ✓  |
-| `start_run`           | `workerId`, `prompt` (≤ 200 000), `intent?` (≤ 500), `waitMs?` (0–50 000, default 0) | run view                                                                           |     |  ✓  |     |  ✓  |
-| `wait_run`            | `runId`, `waitMs?` (default 25 000), `sinceSeq?`, `outputOffset?`                    | run view                                                                           |  ✓  |     |  ✓  |     |
-| `get_run`             | `runId`, `part?` (`final`, `transcript`), `offset?`, `maxChars?`                     | run view with `part`, and `untrustedTranscript[]` for `transcript`                 |  ✓  |     |  ✓  |     |
-| `cancel_run`          | `runId`                                                                              | run view                                                                           |     |  ✓  |  ✓  |     |
-| `get_pending_actions` | `workerId?`, `runId?`                                                                | `approvals[]`                                                                      |  ✓  |     |  ✓  |     |
-| `approve_action`      | `approvalId`                                                                         | `approvalId`, `runId`, `run`                                                       |     |  ✓  |  ✓  |  ✓  |
-| `reject_action`       | `approvalId`, `reason?` (≤ 500, reaches the worker)                                  | `approvalId`, `runId`, `run`                                                       |     |  ✗  |  ✓  |     |
-| `list_workers`        | none                                                                                 | `workers[]`                                                                        |  ✓  |     |  ✓  |     |
-| `set_risk_policy`     | `workerId`, `policy`                                                                 | `effectivePolicy`, `clamped[]`, `notes[]`                                          |     |  ✗  |  ✓  |     |
-| `get_gate_log`        | `workerId`, `limit?` (≤ 200), `decidedBy?`                                           | `entries[]` (each has `approvalId` for a call sent to you, and `providerCallId`)   |  ✓  |     |  ✓  |     |
-| `terminate_worker`    | `workerId`                                                                           | `workerId`, `closedRuns[]`                                                         |     |  ✓  |  ✓  |     |
+| Tool                  | Input                                                                                | Structured result                                                                                                  |  R  |  D  |  I  |  O  |
+| --------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | :-: | :-: | :-: | :-: |
+| `list_providers`      | none                                                                                 | `providers[]`: `id`, `default`, `available`, `version?`, `reason?`, `capabilities`                                 |  ✓  |     |  ✓  |     |
+| `spawn_worker`        | `cwd`, `provider?`, `name?`, `model?`, `systemPrompt?`, `policy?`                    | `worker`, `clamped[]`, `notes[]`                                                                                   |     |  ✗  |     |  ✓  |
+| `start_run`           | `workerId`, `prompt` (≤ 200 000), `intent?` (≤ 500), `waitMs?` (0–50 000, default 0) | run view                                                                                                           |     |  ✓  |     |  ✓  |
+| `wait_run`            | `runId`, `waitMs?` (default 25 000), `sinceSeq?`, `outputOffset?`                    | run view                                                                                                           |  ✓  |     |  ✓  |     |
+| `get_run`             | `runId`, `part?` (`final`, `transcript`), `offset?`, `maxChars?`                     | run view with `part`, and `untrustedTranscript[]` for `transcript`                                                 |  ✓  |     |  ✓  |     |
+| `cancel_run`          | `runId`                                                                              | run view                                                                                                           |     |  ✓  |  ✓  |     |
+| `get_pending_actions` | `workerId?`, `runId?`                                                                | `approvals[]`                                                                                                      |  ✓  |     |  ✓  |     |
+| `approve_action`      | `approvalId`, `remember?` (`none` or `worker`)                                       | `approvalId`, `runId`, `remembered`, `run`                                                                         |     |  ✓  |  ✓  |  ✓  |
+| `reject_action`       | `approvalId`, `reason?` (≤ 500, reaches the worker)                                  | `approvalId`, `runId`, `run`                                                                                       |     |  ✗  |  ✓  |     |
+| `list_workers`        | none                                                                                 | `workers[]`, `auditDegraded`                                                                                       |  ✓  |     |  ✓  |     |
+| `set_risk_policy`     | `workerId`, `policy`                                                                 | `effectivePolicy`, `clamped[]`, `notes[]`                                                                          |     |  ✗  |  ✓  |     |
+| `get_gate_log`        | `workerId`, `limit?` (≤ 200), `decidedBy?` (`rules`, `cache`, `http:<name>`, …)      | `entries[]` (each has `approvalId` for a call sent to you, `providerCallId`, `consulted[]` and `escalatedBecause`) |  ✓  |     |  ✓  |     |
+| `terminate_worker`    | `workerId`                                                                           | `workerId`, `closedRuns[]`                                                                                         |     |  ✓  |  ✓  |     |
 
 Notes:
 
@@ -38,7 +38,7 @@ Notes:
 - **Approval**: `approvalId`, `runId`, `tool`, `kind`, `untrustedCommand?`, `untrustedPaths[]`, `riskLabel`, `reason`, `hardLimit?`, `expiresInMs`. `actionId` is a deprecated copy of `approvalId`.
 - **Worker view**: `workerId`, `name`, `provider`, `cwd`, `model?`, `status`, `sandbox` (always `none` in this release), `capabilities`, `effectivePolicy`, `currentRunId`, `pendingApprovals` (a count) and `recentRuns[]` (newest last).
 - **Policy** (`policy`): `autoApproveUpTo` (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL` or 0–3), `overrides[]` (at most 50; `match` with `kind`, `tool`, `command`, `path` globs; `action` `allow`, `escalate` or `deny`; `maxRiskLevel`) and `classifiers`. The server lowers it to `gate.maxAutoApprove` and reports what it lowered in `clamped`. The 0.4 shape (`notifyUpTo`; overrides with `pattern`, `pathPattern`, `block`) is accepted and converted.
-- `approve_action` has no `remember` option: every call is decided on its own.
+- `approve_action` with `remember: "worker"` also allows identical calls (same tool, command, paths and arguments) from that worker without asking, until it is terminated or its policy changes. Never for hard limits, protected paths or CRITICAL calls; `remembered` in the result says whether it applied. Such a reuse shows as `decidedBy: "cache"` in the gate log.
 - The neutral tools that keep their old names also accept the old argument keys, deprecated: `sessionId` for `workerId` (`get_pending_actions`, `approve_action`, `reject_action`, `set_risk_policy`), `riskPolicy` for `policy`, `actionId` for `approvalId`, and an ignored `summarize`.
 
 ## Deprecated aliases (0.5.x)

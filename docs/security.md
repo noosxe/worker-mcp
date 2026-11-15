@@ -98,6 +98,30 @@ for the coordinator.
   under its own session directory.
 - The server does not read or write anything under `~/.pi`.
 
+## Auto mode and classifiers
+
+`gate.mode: auto` sends calls the rules escalate to an external HTTP classifier
+before the coordinator (see [classifier-api.md](classifier-api.md), provisional).
+It does not change what is protected:
+
+- Hard limits and CRITICAL calls are never sent to a classifier and can never
+  be allowed by it. A classifier's `allow` needs confidence of at least 0.85
+  and a risk level up to `gate.httpAllowCeiling` (default HIGH, never CRITICAL).
+  Failure means escalate (or deny with `gate.onClassifierFailure: deny`), never
+  allow. A classifier that is down, slow or answers wrongly is skipped by a
+  circuit breaker.
+- Transport: https, or http on loopback only; no redirects; no proxy variable;
+  3 s timeout; responses over 16 KiB refused. The bearer token comes from a
+  file that must be mode 0600 or stricter and owned by the server's user, and
+  never from the environment, tool arguments, logs or the audit file. The token
+  file is a protected path workers cannot read without approval.
+- Commands, paths and up to 8 KiB of arguments leave the process. Use a local
+  or self-hosted classifier.
+- `approve_action` with `remember: "worker"` allows identical later calls from
+  one worker. It is refused for hard limits, protected paths and CRITICAL calls.
+- Every decision is appended to an audit file (mode 0600, in the protected
+  state directory, rotated): digests and short previews, no full arguments.
+
 ## What it does not protect
 
 - **The risk classifier is a convenience, not a sandbox.** It is a rule-based
