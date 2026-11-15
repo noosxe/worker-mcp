@@ -536,6 +536,136 @@ describe("jev dialect: mapAnswers", () => {
 	});
 });
 
+const probAns = (
+	probabilities: number[],
+	jevConf: number,
+	approval: number,
+	user_requested: number,
+	from_untrusted: number,
+	noul?: Record<string, number>,
+) => ({
+	risk: {
+		score: probabilities.reduce((x, p, i) => x + i * p, 0),
+		confidence: jevConf,
+		probabilities,
+	},
+	approval,
+	user_requested,
+	from_untrusted,
+	confidence: noul,
+});
+
+const serveProbs = (probabilities: number[]) =>
+	serve((_r, res) =>
+		send(res, {
+			answers: {
+				risk: { type: "score", confidence: 0.83, probabilities },
+				approval: { type: "noul", noul: 0.56 },
+				user_requested: { type: "noul", noul: 0.89 },
+				from_untrusted: { type: "noul", noul: 0.06 },
+			},
+		}),
+	);
+
+describe("jev dialect: risk confidence from probabilities", () => {
+	const th = { ...DEFAULT_JEV_THRESHOLDS };
+	const cases: [
+		string,
+		Parameters<typeof mapAnswers>[0],
+		"allow" | "deny" | "escalate",
+		number | undefined,
+	][] = [
+		[
+			"benign call: jev confidence 0.83 but p0+p1 is 1",
+			probAns([0.83, 0.17, 0, 0], 0.83, 0.56, 0.89, 0.06),
+			"allow",
+			1,
+		],
+		[
+			"split across the askScore line (position 1.5)",
+			probAns([0.1, 0.4, 0.4, 0.1], 0.4, 0.2, 0.3, 0.05),
+			"escalate",
+			undefined,
+		],
+		[
+			"mostly below the line: allow side mass 0.8, under minAllowConfidence",
+			probAns([0.3, 0.5, 0.2, 0], 0.5, 0.2, 0.9, 0.05),
+			"allow",
+			0.8,
+		],
+		[
+			"risky but requested: p0+p1+p2",
+			probAns([0, 0.2, 0.75, 0.05], 0.75, 0.2, 0.95, 0.05),
+			"allow",
+			0.95,
+		],
+		[
+			"deny with a high p3",
+			probAns([0, 0, 0.05, 0.95], 0.95, 0.2, 0.9, 0.05),
+			"deny",
+			0.95,
+		],
+		[
+			"deny with a low p3 (position 2.5)",
+			probAns([0, 0, 0.5, 0.5], 0.5, 0.2, 0.9, 0.05),
+			"deny",
+			0.5,
+		],
+		[
+			"score only: jev confidence is used",
+			{ ...ans(0.2, 0.9, 0.1, 0.9, 0.05) },
+			"allow",
+			0.9,
+		],
+		[
+			"noul confidences still lower the result",
+			probAns([0.83, 0.17, 0, 0], 0.83, 0.56, 0.89, 0.06, {
+				approval: 0.7,
+				from_untrusted: 0.9,
+			}),
+			"allow",
+			0.7,
+		],
+	];
+	for (const [name, a, verdict, confidence] of cases) {
+		test(name, () => {
+			const r = mapAnswers(a, th);
+			assert.strictEqual(r.verdict, verdict);
+			if (confidence !== undefined) {
+				assert.ok(
+					Math.abs((r.confidence ?? 0) - confidence) < 1e-9,
+					String(r.confidence),
+				);
+			}
+		});
+	}
+
+	test("the reason carries the raw probabilities and jev's own confidence", () => {
+		const r = mapAnswers(
+			probAns([0.83, 0.17, 0, 0], 0.83, 0.56, 0.89, 0.06),
+			th,
+		);
+		assert.ok(r.reason?.includes("p=[0.83,0.17,0,0] jevConf 0.83"), r.reason);
+		const s = mapAnswers(ans(0.2, 0.9, 0.1, 0.9, 0.05), th);
+		assert.ok(s.reason?.includes("jevConf 0.9"));
+		assert.ok(!s.reason?.includes("p=["));
+	});
+
+	test("a low-p3 deny escalates through minDenyConfidence; a benign call is allowed end to end", async () => {
+		const benign = await serveProbs([0.83, 0.17, 0, 0]);
+		const ok = await run(classifier(benign.url));
+		assert.strictEqual(ok.decision, "allow");
+		assert.ok((ok.consulted[1].confidence ?? 0) > 0.99);
+		assert.ok(
+			ok.consulted[1].reason.includes("p=[0.83,0.17,0,0] jevConf 0.83"),
+		);
+		const low = await serveProbs([0, 0, 0.5, 0.5]);
+		const out = await run(classifier(low.url));
+		assert.strictEqual(out.decision, "escalate");
+		assert.strictEqual(out.escalatedBecause, "low_confidence");
+	});
+});
+
 describe("jev dialect: transport", () => {
 	test("429 is retried while the deadline allows", async () => {
 		let n = 0;

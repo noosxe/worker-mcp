@@ -4,6 +4,14 @@
 
 ### Jev classifier dialect
 
+- **Jev risk confidence**: with valid risk `probabilities`, the risk part of an
+  allow or deny confidence is now the probability of the levels on the right
+  side of the threshold (below `askScore` for a not-risky allow, below
+  `denyScore` for a risky-but-requested allow, above `denyScore` for a deny),
+  not jev's own risk `confidence`, which tracks the single most likely level.
+  A score alone still uses jev's confidence. The raw probabilities and jev's
+  risk confidence are now in the reason in the gate log.
+
 - **Jev confidence**: an allow's confidence is now the lowest confidence jev
   reports (the `risk` answer's, plus a noul answer's own when present), no
   longer a function of the probabilities, so a confidently low-risk call can be
