@@ -62,11 +62,10 @@ export const RiskPolicy = z
 			.describe(
 				"Risk level (0=LOW, 1=MEDIUM, 2=HIGH, 3=CRITICAL) up to which calls are auto-approved. Default 0 (LOW).",
 			),
-		notifyUpTo: level.optional().describe("Deprecated and ignored."),
 		classifiers: z.enum(["on", "off"]).optional(),
 		overrides: z
 			.array(
-				z.looseObject({
+				z.strictObject({
 					match: z
 						.looseObject({
 							kind: z.string().max(32).optional(),
@@ -99,7 +98,7 @@ export const RiskPolicy = z
 			),
 	})
 	.describe(
-		"Auto-approval policy. Calls at or below autoApproveUpTo are allowed without asking; everything else waits for the coordinator. The server lowers the policy to its own ceiling (default MEDIUM) and says so in the result. Calls that touch protected paths are never auto-approved, whatever the policy says. The earlier shape (notifyUpTo; overrides with pattern, pathPattern and allow|block) is still accepted and converted.",
+		"Auto-approval policy. Calls at or below autoApproveUpTo are allowed without asking; everything else waits for the coordinator. The server lowers the policy to its own ceiling (default MEDIUM) and says so in the result. Calls that touch protected paths are never auto-approved, whatever the policy says.",
 	);
 
 const waitMs = z
@@ -150,24 +149,12 @@ export const schemas = {
 	getPendingActions: z.strictObject({
 		workerId: ref("Only this worker's approvals").optional(),
 		runId: RunId.optional().describe("Only this run's approvals."),
-		sessionId: WorkerRef.optional().describe("Deprecated: use workerId."),
 	}),
 	listWorkers: z.strictObject({}),
-	setRiskPolicy: z
-		.strictObject({
-			workerId: ref("The worker").optional(),
-			policy: RiskPolicy.optional(),
-			sessionId: WorkerRef.optional().describe("Deprecated: use workerId."),
-			riskPolicy: RiskPolicy.optional().describe("Deprecated: use policy."),
-		})
-		.refine((a) => (a.workerId ?? a.sessionId) !== undefined, {
-			message: "workerId is required",
-			path: ["workerId"],
-		})
-		.refine((a) => (a.policy ?? a.riskPolicy) !== undefined, {
-			message: "policy is required",
-			path: ["policy"],
-		}),
+	setRiskPolicy: z.strictObject({
+		workerId: ref("The worker"),
+		policy: RiskPolicy,
+	}),
 	getGateLog: z.strictObject({
 		workerId: ref("The worker"),
 		limit: z
@@ -225,130 +212,25 @@ export const schemas = {
 		maxChars: z.number().int().min(1).max(MAX_PAGE_CHARS).optional(),
 	}),
 	cancelRun: z.strictObject({ runId: RunId }),
-	spawn: z.strictObject({
-		name: name
+	approve: z.strictObject({
+		approvalId: ApprovalId,
+		workerId: ref("Optional: the worker the approval belongs to").optional(),
+		remember: z
+			.enum(["none", "worker"])
 			.optional()
 			.describe(
-				"A name for the worker, unique among live workers. Every tool taking a worker accepts it instead of the generated id.",
+				'"worker": also allow identical calls (same tool, command, paths and arguments) from this worker without asking, until it is terminated or its policy changes. Ignored for hard limits, protected paths and CRITICAL calls. Default "none".',
 			),
-		sessionId: name.optional().describe("Deprecated: the same as `name`."),
-		cwd: AbsolutePath.describe(
-			"The absolute directory path where the pi agent will execute. It must exist, be a directory and, when the server restricts workspaces, lie inside an allowed root.",
-		),
-		model: z
+	}),
+	reject: z.strictObject({
+		approvalId: ApprovalId,
+		workerId: ref("Optional: the worker the approval belongs to").optional(),
+		reason: z
 			.string()
-			.max(200)
+			.max(MAX_REASON_CHARS)
 			.optional()
 			.describe(
-				"LLM model name override, as `<provider>/<model>` (the model names pi knows).",
+				"Optional feedback or reason for rejection to guide the agent.",
 			),
-		systemPrompt: z
-			.string()
-			.max(MAX_SYSTEM_PROMPT_CHARS)
-			.optional()
-			.describe("Custom system instructions to append/override."),
-		riskPolicy: RiskPolicy.optional(),
-	}),
-	send: z.strictObject({
-		sessionId: WorkerRef.describe("The worker's id or name."),
-		command: z
-			.string()
-			.min(1)
-			.max(MAX_PROMPT_CHARS)
-			.describe(
-				"The text prompt or slash command (e.g. '/model', '/reload', or 'Implement main function').",
-			),
-		summarize: z
-			.boolean()
-			.optional()
-			.describe(
-				"Deprecated and ignored: the full output is always returned, with a note.",
-			),
-		timeout: z
-			.number()
-			.int()
-			.positive()
-			.max(86_400_000)
-			.optional()
-			.describe(
-				"Max time (ms) to wait for completion in blocking mode. If exceeded, returns with command still running.",
-			),
-	}),
-	cancelCommand: z.strictObject({
-		sessionId: WorkerRef.describe("The worker's id or name."),
-	}),
-	terminate: z.strictObject({
-		sessionId: WorkerRef.describe("The worker's id or name."),
-	}),
-	list: z.strictObject({}),
-	pending: z.strictObject({
-		sessionId: WorkerRef.optional().describe(
-			"Only this worker's approvals (id or name).",
-		),
-		runId: RunId.optional().describe("Only this run's approvals."),
-	}),
-	approve: z
-		.strictObject({
-			approvalId: ApprovalId.optional(),
-			actionId: ApprovalId.optional().describe(
-				"Deprecated: the same as approvalId.",
-			),
-			sessionId: WorkerRef.optional().describe(
-				"Optional: the worker the approval belongs to (id or name).",
-			),
-			remember: z
-				.enum(["none", "worker"])
-				.optional()
-				.describe(
-					'"worker": also allow identical calls (same tool, command, paths and arguments) from this worker without asking, until it is terminated or its policy changes. Ignored for hard limits, protected paths and CRITICAL calls. Default "none".',
-				),
-			summarize: z.boolean().optional().describe("Deprecated and ignored."),
-		})
-		.refine((a) => (a.approvalId ?? a.actionId) !== undefined, {
-			message: "approvalId is required",
-			path: ["approvalId"],
-		}),
-	reject: z
-		.strictObject({
-			approvalId: ApprovalId.optional(),
-			actionId: ApprovalId.optional().describe(
-				"Deprecated: the same as approvalId.",
-			),
-			sessionId: WorkerRef.optional().describe(
-				"Optional: the worker the approval belongs to (id or name).",
-			),
-			reason: z
-				.string()
-				.max(MAX_REASON_CHARS)
-				.optional()
-				.describe(
-					"Optional feedback or reason for rejection to guide the agent.",
-				),
-			summarize: z.boolean().optional().describe("Deprecated and ignored."),
-		})
-		.refine((a) => (a.approvalId ?? a.actionId) !== undefined, {
-			message: "approvalId is required",
-			path: ["approvalId"],
-		}),
-	setPolicy: z.strictObject({
-		sessionId: WorkerRef.describe("The worker's id or name."),
-		riskPolicy: RiskPolicy,
-	}),
-	autoApprovedLog: z.strictObject({
-		sessionId: WorkerRef.describe("The worker's id or name."),
-		pattern: z
-			.string()
-			.max(500)
-			.optional()
-			.describe(
-				"Optional filter: only return log entries whose matched override pattern equals this value.",
-			),
-		limit: z
-			.number()
-			.int()
-			.min(1)
-			.max(MAX_LOG_LIMIT)
-			.optional()
-			.describe("Return at most this many of the newest entries (max 200)."),
 	}),
 };

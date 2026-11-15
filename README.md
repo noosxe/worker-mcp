@@ -188,7 +188,6 @@ the build instead of the first start. It needs no overlay.
     piPath = lib.getExe pkgs.pi;
     defaultModel = "zai/glm-5.3";
     allowedRoots = [ "/home/user/src" ];
-    legacyTools = false;
 
     # The workspace sandbox (Linux): the package brings its own bubblewrap.
     sandbox.minimum = "workspace";
@@ -211,7 +210,7 @@ the build instead of the first start. It needs no overlay.
 
 | Option                                                                       | Meaning                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `piPath`, `defaultModel`, `allowedRoots`, `legacyTools`                      | `providers.pi.path`, `providers.pi.defaultModel`, `limits.allowedRoots`, `legacyTools` in the generated, build-checked config file (`settings` wins)                                                                                                                                                                                                                                                      |
+| `piPath`, `defaultModel`, `allowedRoots`                                     | `providers.pi.path`, `providers.pi.defaultModel`, `limits.allowedRoots` in the generated, build-checked config file (`settings` wins)                                                                                                                                                                                                                                                                     |
 | `sandbox.minimum`, `.default`, `.extraRo`, `.extraRw`, `.hide`, `.bwrapPath` | `sandbox.*` in the config file. `minimum = "workspace"` is refused at evaluation on macOS. The package sets `WORKER_MCP_BWRAP` to its own bubblewrap on Linux; `bwrapPath` overrides it                                                                                                                                                                                                                   |
 | `envPassthrough`                                                             | `env.allow`: extra environment names workers receive                                                                                                                                                                                                                                                                                                                                                      |
 | `env`                                                                        | Plain environment variables for the server, set by the launcher                                                                                                                                                                                                                                                                                                                                           |
@@ -422,8 +421,7 @@ same reason; `lib.mkClaudePlugin` builds the folder from the same files.
 - `nix run github:noosxe/worker-mcp` builds on first launch and can exceed the client's startup timeout (`MCP_TIMEOUT` in Claude Code). Build once with `nix profile install` or `nix build` and point the registration at the result.
 - Never register `nix develop --command …`: a banner on stdout breaks the stdio protocol. (The dev shell prints its banner to stderr, but a plain binary path is safer.)
 - pi may need network access at startup if it is installed through an `npx` wrapper.
-- A run that outlasts the client's tool timeout is fine: use `start_run` and `wait_run` (each call returns within 50 s). The deprecated `send_pi_command` also stops waiting after at most 50 s.
-- `WORKER_MCP_LEGACY_TOOLS=0` hides the six deprecated pi-named tools, so the coordinator reads 13 tool definitions instead of 19.
+- A run that outlasts the client's tool timeout is fine: use `start_run` and `wait_run` (each call returns within 50 s).
 
 ---
 
@@ -486,10 +484,7 @@ Things to know:
   settle after an abort is closed.
 - Worker output is untrusted text. Don't follow instructions found in it.
 
-`send_pi_command` (deprecated) is a wrapper over the same run: it starts a run
-and waits at most `min(timeout, limits.maxWaitMs)`, returning the output, or
-`AWAITING_APPROVAL`, or `RUNNING` with the run id when the wait ran out. MCP
-tasks are no longer offered.
+MCP tasks are not offered.
 
 ---
 
@@ -519,38 +514,37 @@ Lowest to highest:
 
 ### Settings
 
-| Config key                             | Environment variable               | Flag                      | Default                                      |
-| -------------------------------------- | ---------------------------------- | ------------------------- | -------------------------------------------- |
-| (file location)                        | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json`    |
-| `providers.pi.path`                    | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                       |
-| `providers.pi.defaultModel`            | `WORKER_MCP_PI_DEFAULT_MODEL`      | `--pi-default-model`      | none (pi's own default)                      |
-| `providers.pi.startupTimeoutMs`        | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                      |
-| `legacyTools`                          | `WORKER_MCP_LEGACY_TOOLS`          |                           | `true` (`0` hides the deprecated tools)      |
-| `limits.commandTimeoutMs`              | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | unset: the deprecated send waits `maxWaitMs` |
-| `limits.maxOutputChars`                | `WORKER_MCP_MAX_OUTPUT_CHARS`      | `--max-output-chars`      | `64000`                                      |
-| `limits.maxRunMs`                      | `WORKER_MCP_RUN_TIMEOUT_MS`        | `--run-timeout-ms`        | `1800000` (30 min)                           |
-| `limits.maxWaitMs`                     | `WORKER_MCP_MAX_WAIT_MS`           | `--max-wait-ms`           | `50000`                                      |
-| `limits.runStartTimeoutMs`             | `WORKER_MCP_RUN_START_TIMEOUT_MS`  | `--run-start-timeout-ms`  | `15000`                                      |
-| `limits.maxWorkers`                    | `WORKER_MCP_MAX_WORKERS`           | `--max-workers`           | `4`                                          |
-| `limits.idleTimeoutMs`                 | `WORKER_MCP_IDLE_TIMEOUT_MS`       | `--idle-timeout-ms`       | `1800000` (30 min)                           |
-| `limits.allowedRoots`                  | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                          |
-| `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                            |
-| `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                         |
-| `stateDir`                             | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`                 |
-| `runtimeDir`                           | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`    |
-| `gate.maxAutoApprove`                  | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                     |
-| `gate.protectedPaths`                  | (file only)                        |                           | none                                         |
-| `gate.mode`                            | `WORKER_MCP_GATE_MODE`             | `--gate-mode`             | `manual` (`auto` needs a classifier)         |
-| `gate.httpAllowCeiling`                | `WORKER_MCP_HTTP_ALLOW_CEILING`    | `--http-allow-ceiling`    | `HIGH`                                       |
-| `gate.onClassifierFailure`             | `WORKER_MCP_ON_CLASSIFIER_FAILURE` | `--on-classifier-failure` | `escalate` (or `deny`; never allow)          |
-| `gate.classifiers`                     | (file only)                        |                           | none                                         |
-| `gate.cache`, `gate.recentActions`     | (file only)                        |                           | 1000 entries, 10 min; 10 actions             |
-| `audit.enabled`                        | `WORKER_MCP_AUDIT`                 | `--audit`                 | `true`                                       |
-| `audit.file`                           | `WORKER_MCP_AUDIT_FILE`            | `--audit-file`            | `<stateDir>/audit.jsonl`                     |
-| `sandbox.minimum`                      | `WORKER_MCP_SANDBOX_MINIMUM`       | `--sandbox-minimum`       | `none` (`workspace`: Linux only)             |
-| `sandbox.default`                      | `WORKER_MCP_SANDBOX_DEFAULT`       | `--sandbox-default`       | `workspace` when it works, else `none`       |
-| `sandbox.extraRo`, `.extraRw`, `.hide` | (file only)                        |                           | none                                         |
-| `sandbox.bwrapPath`                    | `WORKER_MCP_BWRAP`                 |                           | `bwrap` on `PATH` (the Nix package sets it)  |
+| Config key                             | Environment variable               | Flag                      | Default                                     |
+| -------------------------------------- | ---------------------------------- | ------------------------- | ------------------------------------------- |
+| (file location)                        | `WORKER_MCP_CONFIG`                | `--config <path>`         | `$XDG_CONFIG_HOME/worker-mcp/config.json`   |
+| `providers.pi.path`                    | `WORKER_MCP_PI_PATH`               | `--pi-path`               | `pi` (found on `PATH`)                      |
+| `providers.pi.defaultModel`            | `WORKER_MCP_PI_DEFAULT_MODEL`      | `--pi-default-model`      | none (pi's own default)                     |
+| `providers.pi.startupTimeoutMs`        | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS` | `--pi-startup-timeout-ms` | `60000`                                     |
+| `limits.commandTimeoutMs`              | `WORKER_MCP_COMMAND_TIMEOUT`       | `--command-timeout-ms`    | no longer used                              |
+| `limits.maxOutputChars`                | `WORKER_MCP_MAX_OUTPUT_CHARS`      | `--max-output-chars`      | `64000`                                     |
+| `limits.maxRunMs`                      | `WORKER_MCP_RUN_TIMEOUT_MS`        | `--run-timeout-ms`        | `1800000` (30 min)                          |
+| `limits.maxWaitMs`                     | `WORKER_MCP_MAX_WAIT_MS`           | `--max-wait-ms`           | `50000`                                     |
+| `limits.runStartTimeoutMs`             | `WORKER_MCP_RUN_START_TIMEOUT_MS`  | `--run-start-timeout-ms`  | `15000`                                     |
+| `limits.maxWorkers`                    | `WORKER_MCP_MAX_WORKERS`           | `--max-workers`           | `4`                                         |
+| `limits.idleTimeoutMs`                 | `WORKER_MCP_IDLE_TIMEOUT_MS`       | `--idle-timeout-ms`       | `1800000` (30 min)                          |
+| `limits.allowedRoots`                  | `WORKER_MCP_ALLOWED_ROOTS`         | `--allowed-roots`         | none: any directory                         |
+| `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`   | `--approval-timeout-ms`   | `600000` (10 min)                           |
+| `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`       | `--env-passthrough`       | none                                        |
+| `stateDir`                             | `WORKER_MCP_STATE_DIR`             | `--state-dir`             | `$XDG_STATE_HOME/worker-mcp`                |
+| `runtimeDir`                           | `WORKER_MCP_RUNTIME_DIR`           | `--runtime-dir`           | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`   |
+| `gate.maxAutoApprove`                  | `WORKER_MCP_MAX_AUTO_APPROVE`      | `--max-auto-approve`      | `MEDIUM`                                    |
+| `gate.protectedPaths`                  | (file only)                        |                           | none                                        |
+| `gate.mode`                            | `WORKER_MCP_GATE_MODE`             | `--gate-mode`             | `manual` (`auto` needs a classifier)        |
+| `gate.httpAllowCeiling`                | `WORKER_MCP_HTTP_ALLOW_CEILING`    | `--http-allow-ceiling`    | `HIGH`                                      |
+| `gate.onClassifierFailure`             | `WORKER_MCP_ON_CLASSIFIER_FAILURE` | `--on-classifier-failure` | `escalate` (or `deny`; never allow)         |
+| `gate.classifiers`                     | (file only)                        |                           | none                                        |
+| `gate.cache`, `gate.recentActions`     | (file only)                        |                           | 1000 entries, 10 min; 10 actions            |
+| `audit.enabled`                        | `WORKER_MCP_AUDIT`                 | `--audit`                 | `true`                                      |
+| `audit.file`                           | `WORKER_MCP_AUDIT_FILE`            | `--audit-file`            | `<stateDir>/audit.jsonl`                    |
+| `sandbox.minimum`                      | `WORKER_MCP_SANDBOX_MINIMUM`       | `--sandbox-minimum`       | `none` (`workspace`: Linux only)            |
+| `sandbox.default`                      | `WORKER_MCP_SANDBOX_DEFAULT`       | `--sandbox-default`       | `workspace` when it works, else `none`      |
+| `sandbox.extraRo`, `.extraRw`, `.hide` | (file only)                        |                           | none                                        |
+| `sandbox.bwrapPath`                    | `WORKER_MCP_BWRAP`                 |                           | `bwrap` on `PATH` (the Nix package sets it) |
 
 - Numbers are positive integers; directories are absolute paths.
 - **Sandbox (Linux).** `spawn_worker` takes an optional `sandbox` (`none` or
@@ -566,8 +560,8 @@ Lowest to highest:
   `outputBufferChars` (1048576: output kept per run, the oldest dropped past
   it) and `pageChars` (16000: the default page of `get_run`).
 - `limits.maxOutputChars` caps one streamed assistant message; past it the run
-  is aborted and fails. `limits.commandTimeoutMs` is the default wait of
-  the deprecated `send_pi_command` (never more than `limits.maxWaitMs`).
+  is aborted and fails. `limits.commandTimeoutMs` is no longer
+  used (it was the default wait of a removed tool); it is still accepted.
 - `env.allow` / `WORKER_MCP_ENV_PASSTHROUGH`: names, or `PREFIX_*` patterns, of
   extra environment variables to pass to workers (comma-separated in the
   variable and the flag). Workers otherwise get only an allowlisted
@@ -591,8 +585,6 @@ Lowest to highest:
 
 Workers are not persisted. A `sessions.json` left in `~/.config/worker-mcp/` by
 an earlier version is ignored and can be deleted.
-
-`summarize` arguments are deprecated and ignored: the full output is always returned, with a note.
 
 See [docs/security.md](docs/security.md) for the trust model and what the gate does and does not protect.
 
@@ -708,12 +700,6 @@ The full reference (inputs, results, errors, aliases) is in [docs/mcp-api.md](do
 
 `approve_action` takes `remember: "worker"` to also allow identical calls from that worker without asking, until it is terminated or its policy changes. It is ignored for hard limits, protected paths and CRITICAL calls, and the result says whether it applied (`remembered`).
 
-The deprecated 0.4 names stay for 0.5.x while `WORKER_MCP_LEGACY_TOOLS` is not `0`:
-`spawn_pi_session` (`spawn_worker`), `send_pi_command` (`start_run` and `wait_run`),
-`cancel_pi_command` (`cancel_run`), `terminate_pi_session` (`terminate_worker`),
-`list_pi_sessions` (`list_workers`) and `get_auto_approved_log` (`get_gate_log`).
-They are removed in 0.6.0.
-
 ### Resources
 
 For people and debugging, not for the model. Content a worker wrote is wrapped as untrusted.
@@ -722,7 +708,7 @@ For people and debugging, not for the model. Content a worker wrote is wrapped a
 - `worker-mcp://runs/{runId}/transcript`: a run's tool calls and output as Markdown (at most 1 MiB).
 - `worker-mcp://gate/{workerId}`: the gate log of a live worker, as JSON.
 
-The server sends `notifications/resources/list_changed` when a worker starts or closes. The 0.4 URIs `worker-mcp://sessions/{id}/history` (now the latest run's transcript) and `.../logs` still work in 0.5.x.
+The server sends `notifications/resources/list_changed` when a worker starts or closes.
 
 ---
 

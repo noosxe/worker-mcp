@@ -17,13 +17,8 @@ export interface Config {
 	stateDir: string;
 	/** Directory holding the per-instance private runtime directory. */
 	runtimeDir: string;
-	/**
-	 * List the deprecated pi-named tools next to the neutral ones. On by
-	 * default in 0.5.x; `WORKER_MCP_LEGACY_TOOLS=0` drops them.
-	 */
-	legacyTools: boolean;
 	limits: {
-		/** Default blocking-call timeout in ms; null waits for the command. */
+		/** No longer used (it was the default wait of the removed blocking tool); kept so existing configs load. */
 		commandTimeoutMs: number | null;
 		/** Output size, in characters, past which a worker's output is cut off. */
 		maxOutputChars: number;
@@ -318,6 +313,7 @@ const protectedPath = z
 export const configFileSchema = z.strictObject({
 	stateDir: absolutePath.optional(),
 	runtimeDir: absolutePath.optional(),
+	/** No longer used: accepted so existing config files keep loading. */
 	legacyTools: z.boolean().optional(),
 	limits: z
 		.strictObject({
@@ -446,6 +442,7 @@ export const ENV_VARS = {
 		key: "gate.approvalTimeoutMs",
 	},
 	envPassthrough: { name: "WORKER_MCP_ENV_PASSTHROUGH", key: "env.allow" },
+	/** No longer used: accepted and ignored, with a warning. */
 	legacyTools: { name: "WORKER_MCP_LEGACY_TOOLS", key: "legacyTools" },
 	stateDir: { name: "WORKER_MCP_STATE_DIR", key: "stateDir" },
 	runtimeDir: { name: "WORKER_MCP_RUNTIME_DIR", key: "runtimeDir" },
@@ -933,19 +930,8 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 		if (raw === undefined || raw.trim() === "") continue;
 		parts.push(choiceLayer(`env ${def.env}`, name as ChoiceName, raw));
 	}
-	const legacy = get(ENV_VARS.legacyTools);
-	if (legacy !== undefined) {
-		const word = legacy.trim().toLowerCase();
-		if (["1", "true", "on", "yes"].includes(word)) {
-			parts.push({ legacyTools: true });
-		} else if (["0", "false", "off", "no"].includes(word)) {
-			parts.push({ legacyTools: false });
-		} else {
-			throw new ConfigError(
-				`Invalid config (${label(ENV_VARS.legacyTools)}) ${ENV_VARS.legacyTools.key}: ${JSON.stringify(legacy)} is not 0 or 1`,
-			);
-		}
-	}
+	if (get(ENV_VARS.legacyTools) !== undefined)
+		parts.push({ legacyTools: true });
 	return parts.reduce<FileLayer>(mergeLayers, {});
 }
 
@@ -1273,7 +1259,6 @@ function applyDefaults(
 		runtimeDir:
 			layer.runtimeDir ??
 			(env.XDG_RUNTIME_DIR ? env.XDG_RUNTIME_DIR : path.join(stateDir, "run")),
-		legacyTools: layer.legacyTools ?? true,
 		limits: {
 			commandTimeoutMs: layer.limits?.commandTimeoutMs ?? null,
 			maxOutputChars: layer.limits?.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS,
@@ -1349,6 +1334,8 @@ export interface LoadedConfig {
 	/** The config file that was read, or null when there was none. */
 	configFile: string | null;
 	flags: CliFlags;
+	/** Settings that are no longer used, one line each; the server logs them at startup. */
+	warnings: string[];
 }
 
 /**
@@ -1385,7 +1372,18 @@ export function loadConfig(
 		mergeLayers,
 		{},
 	);
-	return { config: applyDefaults(merged, env, exempt), configFile, flags };
+	const warnings: string[] = [];
+	if (merged.legacyTools !== undefined) {
+		warnings.push(
+			`${ENV_VARS.legacyTools.name} / config key legacyTools is no longer used and is ignored: the pi-named tools are gone. Remove it.`,
+		);
+	}
+	return {
+		config: applyDefaults(merged, env, exempt),
+		configFile,
+		flags,
+		warnings,
+	};
 }
 
 /** The config with nothing set: for tests and library use. */

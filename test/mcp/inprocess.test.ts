@@ -12,6 +12,7 @@ import {
 	behaviourTests,
 	callOk,
 	callView,
+	viewOf,
 	gatedBash,
 	type Connection,
 	textOf,
@@ -82,12 +83,12 @@ describe("MCP in-process: schemas and errors", () => {
 		}
 	});
 
-	test("an invalid sessionId is rejected", async () => {
+	test("an invalid worker name is rejected", async () => {
 		const { client, close } = await connect();
 		try {
 			const result = await client.callTool({
 				name: TOOLS.spawn,
-				arguments: { sessionId: "../escape", cwd: iso.cwd },
+				arguments: { name: "../escape", cwd: iso.cwd },
 			});
 			assert.strictEqual(result.isError, true);
 			assert.match(textOf(result), /^INVALID_ARGUMENT: /);
@@ -100,8 +101,8 @@ describe("MCP in-process: schemas and errors", () => {
 		const { client, close } = await connect();
 		try {
 			const result = await client.callTool({
-				name: TOOLS.send,
-				arguments: { sessionId: "nope", command: "hi" },
+				name: TOOLS.startRun,
+				arguments: { workerId: "nope", prompt: "hi" },
 			});
 			assert.strictEqual(result.isError, true);
 			assert.match(textOf(result), /^WORKER_NOT_FOUND: /);
@@ -116,7 +117,7 @@ describe("MCP in-process: schemas and errors", () => {
 		try {
 			const result = await client.callTool({
 				name: TOOLS.spawn,
-				arguments: { sessionId: "nodir", cwd: `${iso.cwd}/missing` },
+				arguments: { name: "nodir", cwd: `${iso.cwd}/missing` },
 			});
 			assert.strictEqual(result.isError, true);
 			assert.match(textOf(result), /^CWD_NOT_ALLOWED: .*does not exist/);
@@ -129,13 +130,13 @@ describe("MCP in-process: schemas and errors", () => {
 		const { client, close } = await connect();
 		try {
 			assert.strictEqual(client.getServerCapabilities()?.tasks, undefined);
-			await callOk(client, TOOLS.spawn, { sessionId: "no-task", cwd: iso.cwd });
+			await callOk(client, TOOLS.spawn, { name: "no-task", cwd: iso.cwd });
 			const result = await client.callTool({
-				name: TOOLS.send,
-				arguments: { sessionId: "no-task", command: "hello" },
+				name: TOOLS.startRun,
+				arguments: { workerId: "no-task", prompt: "hello", waitMs: 5000 },
 			});
 			assert.strictEqual("task" in result, false);
-			assert.strictEqual(textOf(result), "fake-pi reply: hello");
+			assert.strictEqual(viewOf(result).output.text, "fake-pi reply: hello");
 		} finally {
 			await close();
 		}
@@ -146,7 +147,7 @@ describe("MCP in-process: schemas and errors", () => {
 			WORKER_MCP_MAX_WAIT_MS: "300",
 		});
 		try {
-			await callOk(client, TOOLS.spawn, { sessionId: "clamp", cwd: iso.cwd });
+			await callOk(client, TOOLS.spawn, { name: "clamp", cwd: iso.cwd });
 			const started = await callView(client, TOOLS.startRun, {
 				workerId: "clamp",
 				prompt: "scenario:slow:60000",
@@ -169,7 +170,7 @@ describe("MCP in-process: schemas and errors", () => {
 			WORKER_MCP_APPROVAL_TIMEOUT_MS: "300",
 		});
 		try {
-			await callOk(client, TOOLS.spawn, { sessionId: "expire", cwd: iso.cwd });
+			await callOk(client, TOOLS.spawn, { name: "expire", cwd: iso.cwd });
 			const started = await callView(client, TOOLS.startRun, {
 				workerId: "expire",
 				prompt: gatedBash("rm -rf build"),
@@ -202,7 +203,7 @@ describe("MCP in-process: schemas and errors", () => {
 		const { client, close } = await connect();
 		try {
 			const known = iso.starts().length;
-			await callOk(client, TOOLS.spawn, { sessionId: "env", cwd: iso.cwd });
+			await callOk(client, TOOLS.spawn, { name: "env", cwd: iso.cwd });
 			const start = await iso.workerAfter(known);
 			assert.strictEqual(start.env.HOME, iso.home);
 			assert.ok(

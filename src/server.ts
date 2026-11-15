@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { explainDisabledAliases, registerLegacyTools } from "./legacy.js";
 import { registerResources } from "./resources.js";
 import type { SessionManager } from "./session/session-manager.js";
 import {
@@ -28,11 +27,6 @@ export function createServer(
 	const ctx = createContext(sessionManager, options);
 
 	registerTools(server, ctx);
-	if (sessionManager.config.legacyTools) {
-		registerLegacyTools(server, ctx);
-	} else {
-		explainDisabledAliases(server);
-	}
 	registerResources(server, sessionManager);
 	return server;
 }

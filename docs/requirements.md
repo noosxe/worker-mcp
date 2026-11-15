@@ -40,7 +40,7 @@ The server is a runner, not an agent: it owns process control, runs, gating and 
 - **Minimal environment**: workers get an allowlisted environment, never the server's secrets.
 - **Provider neutrality**: the tools and results name no provider; a provider is a module behind one internal interface (see [providers.md](providers.md)).
 - **No persistence**: workers live with the server.
-- **Compatibility**: runs on Node and Bun. The 0.4 tool names remain as deprecated aliases for one minor release (`WORKER_MCP_LEGACY_TOOLS`).
+- **Compatibility**: runs on Node and Bun.
 
 ## 3. Out of scope (for now)
 

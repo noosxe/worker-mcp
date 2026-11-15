@@ -1,6 +1,6 @@
 # MCP API
 
-What a coordinator sees: tools, results, errors, resources and the deprecated aliases. The worker side of a provider (pi's wire protocol and gate) is in [providers/pi.md](providers/pi.md).
+What a coordinator sees: tools, results, errors and resources. The worker side of a provider (pi's wire protocol and gate) is in [providers/pi.md](providers/pi.md).
 
 ## Conventions
 
@@ -35,24 +35,10 @@ R = read-only, D = destructive, I = idempotent, O = open world (the annotations;
 Notes:
 
 - **Run view**: `runId`, `workerId`, `state`, `seq`, `elapsedMs`, `pendingApprovals[]`, `untrustedActivity[]`, `untrustedFinalText`, `output` (`offset`, `nextOffset`, `totalChars`, `truncated`, `more`), `error?`, `usage?`, `gate` (counts and `untrustedNotable[]`) and a `next` hint. Call `wait_run` again with the returned `seq` as `sinceSeq` and `output.nextOffset` as `outputOffset`.
-- **Approval**: `approvalId`, `runId`, `tool`, `kind`, `untrustedCommand?`, `untrustedPaths[]`, `riskLabel`, `reason`, `hardLimit?`, `expiresInMs`. `actionId` is a deprecated copy of `approvalId`.
+- **Approval**: `approvalId`, `runId`, `tool`, `kind`, `untrustedCommand?`, `untrustedPaths[]`, `riskLabel`, `reason`, `hardLimit?`, `expiresInMs`.
 - **Worker view**: `workerId`, `name`, `provider`, `cwd`, `model?`, `status`, `sandbox` (`none` or `workspace`), `capabilities`, `effectivePolicy`, `currentRunId`, `pendingApprovals` (a count) and `recentRuns[]` (newest last).
-- **Policy** (`policy`): `autoApproveUpTo` (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL` or 0–3), `overrides[]` (at most 50; `match` with `kind`, `tool`, `command`, `path` globs; `action` `allow`, `escalate` or `deny`; `maxRiskLevel`) and `classifiers`. The server lowers it to `gate.maxAutoApprove` and reports what it lowered in `clamped`. The 0.4 shape (`notifyUpTo`; overrides with `pattern`, `pathPattern`, `block`) is accepted and converted.
+- **Policy** (`policy`): `autoApproveUpTo` (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL` or 0–3), `overrides[]` (at most 50; `match` with `kind`, `tool`, `command`, `path` globs; `action` `allow`, `escalate` or `deny`; `maxRiskLevel`) and `classifiers`. The server lowers it to `gate.maxAutoApprove` and reports what it lowered in `clamped`.
 - `approve_action` with `remember: "worker"` also allows identical calls (same tool, command, paths and arguments) from that worker without asking, until it is terminated or its policy changes. Never for hard limits, protected paths or CRITICAL calls; `remembered` in the result says whether it applied. Such a reuse shows as `decidedBy: "cache"` in the gate log.
-- The neutral tools that keep their old names also accept the old argument keys, deprecated: `sessionId` for `workerId` (`get_pending_actions`, `approve_action`, `reject_action`, `set_risk_policy`), `riskPolicy` for `policy`, `actionId` for `approvalId`, and an ignored `summarize`.
-
-## Deprecated aliases (0.5.x)
-
-Listed only while `WORKER_MCP_LEGACY_TOOLS` is not `0` (config key `legacyTools`, default on; shown by `--print-config`). Each description starts with "Deprecated, use X:". They keep their 0.4 text results. With the setting off, a call to one returns an error that says so. They are removed in 0.6.0.
-
-| Legacy                  | Use instead                | Behaviour in 0.5                                                                                                                                                         |
-| ----------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `spawn_pi_session`      | `spawn_worker`             | `sessionId` is `name`, `riskPolicy` is `policy`; provider is pi; the text includes the worker id.                                                                        |
-| `send_pi_command`       | `start_run` and `wait_run` | Waits up to `min(timeout, limits.maxWaitMs)`. Returns the wrapped final text, or `AWAITING_APPROVAL`, or `RUNNING` with the run id. `summarize` is ignored, with a note. |
-| `cancel_pi_command`     | `cancel_run`               | Cancels the worker's current run.                                                                                                                                        |
-| `terminate_pi_session`  | `terminate_worker`         |                                                                                                                                                                          |
-| `list_pi_sessions`      | `list_workers`             | JSON array with `workerId`, `name`, `cwd`, `status`, `pendingActions`, `currentRunId`.                                                                                   |
-| `get_auto_approved_log` | `get_gate_log`             | Allowed calls not decided by the coordinator; `pattern` is matched against the preview.                                                                                  |
 
 ## Resources
 
@@ -63,5 +49,3 @@ For people and debugging, not for the model. Text a worker wrote is wrapped as u
 | `worker-mcp://workers/{workerId}/log`  | `text/plain`: the worker's log ring (at most 256 KiB), listed per live worker    |
 | `worker-mcp://runs/{runId}/transcript` | `text/markdown`: tool calls and output (at most 1 MiB), listed for retained runs |
 | `worker-mcp://gate/{workerId}`         | `application/json`: the gate log ring, listed per live worker                    |
-
-The 0.4 URIs `worker-mcp://sessions/{id}/logs` (the worker log) and `worker-mcp://sessions/{id}/history` (now the latest run's transcript, as Markdown) are served until 0.6.0.

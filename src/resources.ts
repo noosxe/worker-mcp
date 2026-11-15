@@ -159,50 +159,5 @@ export function registerResources(
 		},
 	);
 
-	// The 0.4 URIs, served until 0.6: `history` is the latest run's
-	// transcript, `logs` the worker log.
-	server.registerResource(
-		"session-legacy",
-		new ResourceTemplate("worker-mcp://sessions/{sessionId}/{kind}", {
-			list: undefined,
-		}),
-		{
-			title: "Deprecated session resources",
-			description:
-				"Deprecated: sessions/{id}/history (use runs/{runId}/transcript) and sessions/{id}/logs (use workers/{id}/log).",
-		},
-		async (uri, vars) => {
-			const kind = one(vars.kind);
-			const session = manager.getSession(one(vars.sessionId));
-			if (kind === "logs") {
-				return {
-					contents: [
-						{
-							uri: uri.href,
-							mimeType: "text/plain",
-							text: workerLog(session.sessionId),
-						},
-					],
-				};
-			}
-			if (kind === "history") {
-				const latest = store.runsOf(session.sessionId).at(-1);
-				return {
-					contents: [
-						{
-							uri: uri.href,
-							mimeType: "text/markdown",
-							text: latest ? renderTranscript(latest) : "No runs yet.",
-						},
-					],
-				};
-			}
-			throw new ToolError(
-				"INVALID_ARGUMENT",
-				`Unknown resource ${uri.href}; use history or logs.`,
-			);
-		},
-	);
-
 	manager.onWorkersChanged(() => server.sendResourceListChanged());
 }

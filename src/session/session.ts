@@ -11,7 +11,6 @@ import {
 import {
 	DEFAULT_RISK_POLICY,
 	normalizePolicy,
-	type NormalizedPolicy,
 	type RiskPolicy,
 } from "../gate/policy.js";
 import { RISK_LABELS, RiskLevel } from "../gate/risk.js";
@@ -49,10 +48,7 @@ export interface AutoApprovedAction {
 	matchedOverride?: string;
 }
 
-export interface PolicyReport extends Pick<
-	NormalizedPolicy,
-	"converted" | "notes"
-> {
+export interface PolicyReport {
 	/** The policy now in force. */
 	policy: RiskPolicy;
 	/** What the server's ceiling lowered, one line each. */
@@ -210,8 +206,6 @@ export class Session {
 	private readonly approvalByCall = new Map<string, string>();
 	private currentRun: ActiveRun | null = null;
 	private terminating = false;
-	/** Set when a call asked for `summarize`, which is deprecated and ignored. */
-	private summarizeIgnored = false;
 
 	private readonly config: Config;
 	private readonly runtime: RuntimeDir | undefined;
@@ -852,12 +846,6 @@ export class Session {
 		return `\n\nDenied by the risk policy without asking (${lines.length}):\n${wrapUntrusted(runId, lines.join("\n"))}`;
 	}
 
-	private takeSummarizeNote(): string {
-		if (!this.summarizeIgnored) return "";
-		this.summarizeIgnored = false;
-		return "\n\nNote: `summarize` is deprecated and was ignored; the full output is returned.";
-	}
-
 	public getAutoApprovedLog(): AutoApprovedAction[] {
 		return [...this.autoApprovedActions];
 	}
@@ -880,7 +868,7 @@ export class Session {
 	}
 
 	/**
-	 * Replace the policy (v1 or v2 shape). It is lowered to the server's
+	 * Replace the policy. It is lowered to the server's
 	 * ceiling; the result says what was lowered. Throws on an invalid policy.
 	 */
 	public applyRiskPolicy(input: unknown): PolicyReport {
@@ -889,8 +877,6 @@ export class Session {
 		return {
 			policy,
 			clamped,
-			converted: normalized.converted,
-			notes: normalized.notes,
 		};
 	}
 
@@ -922,7 +908,7 @@ export class Session {
 		if (!this.isAlive() || !this.worker) {
 			throw new RunError(
 				"WORKER_NOT_RUNNING",
-				`Session ${this.sessionId} has no running pi process (status: ${this.status}). Respawn it with spawn_pi_session.`,
+				`Session ${this.sessionId} has no running pi process (status: ${this.status}). Respawn it with spawn_worker.`,
 			);
 		}
 		if (this.currentRun) {
@@ -996,11 +982,6 @@ export class Session {
 		return run;
 	}
 
-	/** Note that a call asked for `summarize`, which is ignored. */
-	public markSummarize(flag: boolean): void {
-		this.summarizeIgnored = flag;
-	}
-
 	/** Stop the run in flight, if any. Idempotent. */
 	public cancelRun(): void {
 		const active = this.currentRun;
@@ -1021,7 +1002,6 @@ export class Session {
 		decision: ApprovalDecision,
 		resolution: "allow" | "deny",
 		note: string,
-		summarize?: boolean,
 	): Run {
 		const entry = this.pending.get(actionId);
 		if (!entry) {
@@ -1038,7 +1018,6 @@ export class Session {
 		);
 		if (entry.timer) clearTimeout(entry.timer);
 		this.pending.delete(actionId);
-		if (summarize === true) this.summarizeIgnored = true;
 		this.runs.removeApproval(entry.run, actionId);
 		this.afterPendingChanged();
 		entry.resolve(decision);
@@ -1056,22 +1035,17 @@ export class Session {
 		return outcome ? this.approvalGate.remember(outcome) : false;
 	}
 
-	public approveAction(actionId: string, summarize?: boolean): Run {
+	public approveAction(actionId: string): Run {
 		this.log(`Approving action ${actionId}`);
 		return this.answer(
 			actionId,
 			{ kind: "allow" },
 			"allow",
 			"approved by the coordinator",
-			summarize,
 		);
 	}
 
-	public rejectAction(
-		actionId: string,
-		reason?: string,
-		summarize?: boolean,
-	): Run {
+	public rejectAction(actionId: string, reason?: string): Run {
 		this.log(`Rejecting action ${actionId} with reason: ${reason || "none"}`);
 		return this.answer(
 			actionId,
@@ -1081,25 +1055,10 @@ export class Session {
 			},
 			"deny",
 			"rejected by the coordinator",
-			summarize,
 		);
 	}
 
-	// ---- the blocking (legacy) view -------------------------------------------------
-
-	/**
-	 * Send a prompt and wait for its text, as `send_pi_command` always has:
-	 * the result when the run ends, or an `AWAITING_APPROVAL` message when it
-	 * stops at an approval. Rejects when the run fails or times out.
-	 */
-	public async sendCommand(
-		commandText: string,
-		summarize?: boolean,
-	): Promise<string> {
-		const run = await this.startRun(commandText);
-		this.summarizeIgnored = summarize === true;
-		return (await this.waitText(run)) as string;
-	}
+	// ---- the text view -------------------------------------------------
 
 	/**
 	 * Wait for the run to end or need an approval and describe it as text.
@@ -1142,7 +1101,7 @@ export class Session {
 			const body = fullOutput
 				? wrapUntrusted(run.id, fullOutput)
 				: "Agent finished task run successfully.";
-			return `${body}${notes}${this.takeSummarizeNote()}`;
+			return `${body}${notes}`;
 		}
 		const p = this.pendingAction;
 		if (!p) return `RUNNING: ${run.id} is still ${run.state}.`;

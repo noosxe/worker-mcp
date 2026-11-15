@@ -15,6 +15,10 @@ let
           type = lib.types.listOf lib.types.unspecified;
           default = [ ];
         };
+        warnings = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+        };
         home.packages = lib.mkOption {
           type = lib.types.listOf lib.types.package;
           default = [ ];
@@ -129,6 +133,10 @@ let
   };
   moved = withConfigDir.config.home.file."/home/user/.config/claude/skills/worker-mcp".source;
 
+  # `legacyTools` does nothing, but an existing configuration that sets it
+  # must still evaluate, with a warning; without it there is no warning.
+  withoutLegacy = evaluate { programs.worker-mcp.legacyTools = lib.mkForce null; };
+
   # Bad sandbox settings are refused at evaluation: a relative path, and a
   # required sandbox where there is none.
   badSandbox = evaluate {
@@ -159,6 +167,12 @@ assert lib.assertMsg (
 assert lib.assertMsg (
   builtins.length (lib.filter (a: !a.assertion) withConfigDir.config.assertions) == 0
 ) "configDir of the claude-code module must be accepted";
+assert lib.assertMsg (
+  builtins.length cfg.warnings == 1 && lib.hasInfix "legacyTools" (builtins.head cfg.warnings)
+) "legacyTools must evaluate and give exactly one warning";
+assert lib.assertMsg (
+  withoutLegacy.config.warnings == [ ]
+) "leaving legacyTools unset must give no warning";
 pkgs.runCommand "worker-mcp-module-eval"
   {
     nativeBuildInputs = [
@@ -185,7 +199,7 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .limits.maxWorkers == 2
           and .providers.pi.path == "/opt/pi/bin/pi"
           and .providers.pi.defaultModel == "zai/test-model"
-          and .legacyTools == false
+          and (has("legacyTools") | not)
           and .sandbox == { default: "workspace", extraRo: ["/opt/toolchain"], extraRw: ["/var/cache/build"], hide: ["/data/home-backup"] }
           and .env.allow == ["TEST_API_KEY"]
         ' ${file}

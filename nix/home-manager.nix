@@ -149,7 +149,7 @@ let
   passthrough = lib.unique (cfg.envPassthrough ++ lib.attrNames cfg.envFiles);
 
   # What the typed options say; `settings` is merged over it and wins.
-  typed = lib.optionalAttrs (cfg.legacyTools != null) { inherit (cfg) legacyTools; } // {
+  typed = {
     providers.pi = lib.filterAttrs (_: v: v != null) {
       path = cfg.piPath;
       inherit (cfg) defaultModel;
@@ -296,7 +296,7 @@ in
     legacyTools = mkOption {
       type = types.nullOr types.bool;
       default = null;
-      description = "Whether the deprecated pi-named tools are listed. Server default: yes. `false` hides them.";
+      description = "No longer used: the pi-named tools are gone. It is accepted so existing configurations still evaluate, but it does nothing and is not written to the config file. Setting it gives a warning; remove it.";
     };
 
     envPassthrough = mkOption {
@@ -520,6 +520,8 @@ in
   };
 
   config = mkIf cfg.enable {
+    warnings = lib.optional (cfg.legacyTools != null) "programs.worker-mcp.legacyTools is no longer used and has no effect: the pi-named tools were removed. Remove it from your configuration.";
+
     assertions = [
       {
         assertion = lib.all (p: lib.hasPrefix "/" p && !inStore p) tokenFiles;

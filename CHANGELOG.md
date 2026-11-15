@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Breaking
+
+Everything 0.5.0 kept as deprecated is removed.
+
+- **The six pi-named tools are gone**: `spawn_pi_session` (use
+  `spawn_worker`), `send_pi_command` (`start_run` and `wait_run`),
+  `cancel_pi_command` (`cancel_run`), `terminate_pi_session`
+  (`terminate_worker`), `list_pi_sessions` (`list_workers`) and
+  `get_auto_approved_log` (`get_gate_log`). A call gets the usual unknown-tool
+  error.
+- **`WORKER_MCP_LEGACY_TOOLS` and the `legacyTools` config key do nothing.** An
+  existing config file or environment that sets them still loads; the server
+  logs one warning at startup. Remove them. The Home Manager option
+  `programs.worker-mcp.legacyTools` is kept the same way: it is not written to
+  the config file and gives an evaluation warning.
+- **The old input keys are rejected** as unknown keys (`INVALID_ARGUMENT`):
+  `sessionId` (use `workerId`, or `name` on `spawn_worker`), `riskPolicy`
+  (`policy`), `actionId` (`approvalId`, now required), and `summarize` and
+  `notifyUpTo` (no replacement; they did nothing).
+- **`actionId` is gone from the approvals** `get_pending_actions` returns; read
+  `approvalId`.
+- **The policy v1 shape is rejected**: overrides with `pattern`/`pathPattern`
+  and `allow|block`, and `notifyUpTo`. Use overrides with `match` (`kind`,
+  `tool`, `command`, `path`) and `action` `allow`, `escalate` or `deny`. The
+  `set_risk_policy` result's `notes` is now always empty.
+- **The resources `worker-mcp://sessions/{id}/history` and `.../logs` are
+  gone**: use `worker-mcp://runs/{runId}/transcript` and
+  `worker-mcp://workers/{workerId}/log`.
+- **`limits.commandTimeoutMs`** (`--command-timeout-ms`) is no longer used. It
+  is still accepted so existing setups load.
+
 ### Workspace sandbox
 
 - **`sandbox: "workspace"`** (Linux, bubblewrap) for `spawn_worker`: the

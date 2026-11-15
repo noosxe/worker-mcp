@@ -14,6 +14,7 @@ import {
 	callOk,
 	callView,
 	gatedBash,
+	listWorkers,
 	pendingList,
 	rawTextOf,
 	textOf,
@@ -105,6 +106,8 @@ describe("schemas: every tool is strict and bounded", () => {
 				"waitMs fraction": { workerId: id, prompt: "x", waitMs: 1.5 },
 				"bad worker ref": { workerId: "../x", prompt: "x" },
 				"extra key": { workerId: id, prompt: "x", cwd: "/" },
+				"old key sessionId": { sessionId: id, prompt: "x" },
+				"old key summarize": { workerId: id, prompt: "x", summarize: true },
 			},
 		},
 		{
@@ -138,79 +141,15 @@ describe("schemas: every tool is strict and bounded", () => {
 			},
 		},
 		{
-			tool: TOOLS.spawn,
-			valid: { cwd: "/definitely/not/here", name: "ok-name_1" },
-			invalid: {
-				missing: { name: "x" },
-				"relative cwd": { cwd: "relative/dir" },
-				"name too long": { cwd: "/", name: long(65) },
-				"name with a slash": { cwd: "/", name: "a/b" },
-				"name with dots": { cwd: "/", name: ".." },
-				"systemPrompt too long": { cwd: "/", systemPrompt: long(20_001) },
-				"model too long": { cwd: "/", model: long(201) },
-				"too many overrides": {
-					cwd: "/",
-					riskPolicy: {
-						overrides: Array.from({ length: 51 }, () => ({
-							match: { tool: "bash" },
-							action: "escalate",
-						})),
-					},
-				},
-				"policy extra key": { cwd: "/", riskPolicy: { bogus: 1 } },
-				"extra key": { cwd: "/", workerId: id },
-			},
-		},
-		{
-			tool: TOOLS.send,
-			valid: { sessionId: id, command: "hi", timeout: 1000 },
-			invalid: {
-				missing: { sessionId: id },
-				"command too long": { sessionId: id, command: long(200_001) },
-				"timeout zero": { sessionId: id, command: "x", timeout: 0 },
-				"bad session": { sessionId: "a b", command: "x" },
-				"extra key": { sessionId: id, command: "x", prompt: "x" },
-			},
-		},
-		{
-			tool: TOOLS.cancel,
-			valid: { sessionId: id },
-			invalid: {
-				missing: {},
-				"bad session": { sessionId: "../x" },
-				"extra key": { sessionId: id, x: 1 },
-			},
-		},
-		{
-			tool: TOOLS.terminate,
-			valid: { sessionId: id },
-			invalid: {
-				missing: {},
-				"bad session": { sessionId: "w_ABCD1234/.." },
-				"extra key": { sessionId: id, x: 1 },
-			},
-		},
-		{
-			tool: TOOLS.list,
-			valid: {},
-			invalid: { "extra key": { x: 1 } },
-		},
-		{
-			tool: TOOLS.pending,
-			valid: { sessionId: id },
-			invalid: {
-				"bad run id": { runId: "nope" },
-				"bad session": { sessionId: "../x" },
-				"extra key": { x: 1 },
-			},
-		},
-		{
 			tool: TOOLS.approve,
 			valid: { approvalId: approval },
 			invalid: {
 				missing: {},
+				"old key actionId": { actionId: approval },
 				"bad id": { approvalId: "call_0_abc" },
 				"extra key": { approvalId: approval, x: 1 },
+				"old key sessionId": { approvalId: approval, sessionId: id },
+				"old key summarize": { approvalId: approval, summarize: true },
 				"bad remember": { approvalId: approval, remember: "forever" },
 			},
 		},
@@ -220,31 +159,9 @@ describe("schemas: every tool is strict and bounded", () => {
 			invalid: {
 				missing: {},
 				"reason too long": { approvalId: approval, reason: long(501) },
-				"bad id": { actionId: "x" },
+				"bad id": { approvalId: "x" },
+				"old key actionId": { actionId: approval },
 				"extra key": { approvalId: approval, x: 1 },
-			},
-		},
-		{
-			tool: TOOLS.setPolicy,
-			valid: { sessionId: id, riskPolicy: { autoApproveUpTo: 0 } },
-			invalid: {
-				missing: { sessionId: id },
-				"level out of range": {
-					sessionId: id,
-					riskPolicy: { autoApproveUpTo: 9 },
-				},
-				"policy extra key": { sessionId: id, riskPolicy: { x: 1 } },
-				"extra key": { sessionId: id, riskPolicy: {}, x: 1 },
-			},
-		},
-		{
-			tool: "get_auto_approved_log",
-			valid: { sessionId: id, limit: 200 },
-			invalid: {
-				missing: {},
-				"limit too big": { sessionId: id, limit: 201 },
-				"limit zero": { sessionId: id, limit: 0 },
-				"extra key": { sessionId: id, x: 1 },
 			},
 		},
 		{
@@ -260,10 +177,25 @@ describe("schemas: every tool is strict and bounded", () => {
 				"relative cwd": { cwd: "relative/dir" },
 				"bad provider": { cwd: "/", provider: "Not A Provider" },
 				"unknown provider": { cwd: "/", provider: "nope" },
+				"name too long": { cwd: "/", name: long(65) },
 				"name with a slash": { cwd: "/", name: "a/b" },
+				"name with dots": { cwd: "/", name: ".." },
+				"model too long": { cwd: "/", model: long(201) },
+				"too many overrides": {
+					cwd: "/",
+					policy: {
+						overrides: Array.from({ length: 51 }, () => ({
+							match: { tool: "bash" },
+							action: "escalate",
+						})),
+					},
+				},
+				"old key riskPolicy": { cwd: "/", riskPolicy: { autoApproveUpTo: 0 } },
+				"old policy key notifyUpTo": { cwd: "/", policy: { notifyUpTo: 0 } },
+				"extra key": { cwd: "/", workerId: id },
 				"systemPrompt too long": { cwd: "/", systemPrompt: long(20_001) },
 				"policy extra key": { cwd: "/", policy: { bogus: 1 } },
-				"deprecated key not accepted": { cwd: "/", sessionId: "x" },
+				"old key sessionId": { cwd: "/", sessionId: "x" },
 				"unknown sandbox mode": { cwd: "/", sandbox: "strict" },
 			},
 		},
@@ -278,6 +210,8 @@ describe("schemas: every tool is strict and bounded", () => {
 			invalid: {
 				missing: {},
 				"limit too big": { workerId: id, limit: 201 },
+				"limit zero": { workerId: id, limit: 0 },
+				"old key sessionId": { sessionId: id },
 				"bad worker": { workerId: "../x" },
 				"extra key": { workerId: id, x: 1 },
 			},
@@ -288,7 +222,8 @@ describe("schemas: every tool is strict and bounded", () => {
 			invalid: {
 				missing: {},
 				"bad worker": { workerId: "../x" },
-				"old key": { sessionId: id },
+				"old key sessionId": { sessionId: id },
+				"extra key": { workerId: id, x: 1 },
 			},
 		},
 		{
@@ -297,6 +232,8 @@ describe("schemas: every tool is strict and bounded", () => {
 			invalid: {
 				"bad run id": { runId: "nope" },
 				"bad worker": { workerId: "../x" },
+				"old key sessionId": { sessionId: id },
+				"extra key": { x: 1 },
 			},
 		},
 		{
@@ -306,6 +243,14 @@ describe("schemas: every tool is strict and bounded", () => {
 				"missing policy": { workerId: id },
 				"missing worker": { policy: {} },
 				"policy extra key": { workerId: id, policy: { x: 1 } },
+				"level out of range": { workerId: id, policy: { autoApproveUpTo: 9 } },
+				"old key sessionId": { sessionId: id, policy: {} },
+				"old key riskPolicy": { workerId: id, riskPolicy: {} },
+				"old policy key notifyUpTo": {
+					workerId: id,
+					policy: { notifyUpTo: 1 },
+				},
+				"extra key": { workerId: id, policy: {}, x: 1 },
 			},
 		},
 	];
@@ -345,9 +290,9 @@ describe("schemas: every tool is strict and bounded", () => {
 describe("error codes", () => {
 	test("unknown worker, run and approval have their own codes", async () => {
 		await withIso(async ({ client }) => {
-			const worker = await call(client, TOOLS.send, {
-				sessionId: "nobody",
-				command: "hi",
+			const worker = await call(client, TOOLS.startRun, {
+				workerId: "nobody",
+				prompt: "hi",
 			});
 			assert.strictEqual(worker.isError, true);
 			assert.strictEqual(code(worker), "WORKER_NOT_FOUND");
@@ -395,22 +340,23 @@ describe("ids and names", () => {
 		await withIso(async ({ client, iso }) => {
 			const text = await callOk(client, TOOLS.spawn, { cwd: iso.cwd });
 			assert.match(text, /worker w_[a-z0-9]{8} /);
-			const list = JSON.parse(await callOk(client, TOOLS.list, {}));
+			const list = await listWorkers(client);
 			assert.match(list[0].workerId, /^w_[a-z0-9]{8}$/);
 			assert.strictEqual(list[0].name, null);
 		});
 	});
 
-	test("a worker is reachable by id or by name, and the legacy sessionId is the name", async () => {
+	test("a worker is reachable by id or by name", async () => {
 		await withIso(async ({ client, iso }) => {
 			await callOk(client, TOOLS.spawn, { name: "alpha", cwd: iso.cwd });
-			await callOk(client, TOOLS.spawn, { sessionId: "beta", cwd: iso.cwd });
-			const list = JSON.parse(await callOk(client, TOOLS.list, {}));
+			await callOk(client, TOOLS.spawn, { name: "beta", cwd: iso.cwd });
+			const list = await listWorkers(client);
 			assert.deepStrictEqual(
-				list.map((w: { name: string }) => w.name).toSorted(),
-				["alpha", "beta"],
+				new Set(list.map((w) => w.name)),
+				new Set(["alpha", "beta"]),
 			);
-			const alpha = list.find((w: { name: string }) => w.name === "alpha");
+			const alpha = list.find((w) => w.name === "alpha");
+			assert.ok(alpha);
 			const byName = await callView(client, TOOLS.startRun, {
 				workerId: "alpha",
 				prompt: "one",
@@ -424,7 +370,7 @@ describe("ids and names", () => {
 			});
 			assert.strictEqual(byId.state, "completed");
 			assert.match(
-				await callOk(client, TOOLS.terminate, { sessionId: alpha.workerId }),
+				await callOk(client, TOOLS.terminate, { workerId: alpha.workerId }),
 				/Terminated worker/,
 			);
 			// Its name is free again.
@@ -458,7 +404,7 @@ describe("ids and names", () => {
 				assert.strictEqual(code(r), "INVALID_ARGUMENT");
 			}
 			const id = textOf(won[0]).match(/worker (w_[a-z0-9]{8})/)?.[1];
-			const list = JSON.parse(await callOk(client, TOOLS.list, {}));
+			const list = await listWorkers(client);
 			assert.deepStrictEqual(
 				list.map((w: { workerId: string }) => w.workerId),
 				[id],
@@ -486,7 +432,7 @@ describe("ids and names", () => {
 				const result = await call(client, TOOLS.spawn, { name, cwd: iso.cwd });
 				assert.strictEqual(result.isError, true, JSON.stringify(name));
 			}
-			const list = JSON.parse(await callOk(client, TOOLS.list, {}));
+			const list = await listWorkers(client);
 			assert.deepStrictEqual(list, []);
 		});
 	});
@@ -541,7 +487,7 @@ describe("get_pending_actions", () => {
 			assert.deepStrictEqual(await pendingList(client, {}), []);
 			await callOk(client, TOOLS.spawn, { name: "pend", cwd: iso.cwd });
 			assert.deepStrictEqual(
-				await pendingList(client, { sessionId: "pend" }),
+				await pendingList(client, { workerId: "pend" }),
 				[],
 			);
 			const started = await callView(client, TOOLS.startRun, {
@@ -549,11 +495,7 @@ describe("get_pending_actions", () => {
 				prompt: gatedBash("rm -rf build"),
 				waitMs: 10_000,
 			});
-			for (const args of [
-				{},
-				{ sessionId: "pend" },
-				{ runId: started.runId },
-			]) {
+			for (const args of [{}, { workerId: "pend" }, { runId: started.runId }]) {
 				const list = await pendingList(client, args);
 				assert.strictEqual(list.length, 1);
 				assert.strictEqual(list[0].tool, "bash");
@@ -562,7 +504,7 @@ describe("get_pending_actions", () => {
 			}
 			await callView(client, TOOLS.cancelRun, { runId: started.runId });
 			assert.deepStrictEqual(
-				await pendingList(client, { sessionId: "pend" }),
+				await pendingList(client, { workerId: "pend" }),
 				[],
 			);
 		});
@@ -581,7 +523,7 @@ describe("worker limits", () => {
 				});
 				assert.strictEqual(third.isError, true);
 				assert.strictEqual(code(third), "LIMIT_REACHED");
-				await callOk(client, TOOLS.terminate, { sessionId: "one" });
+				await callOk(client, TOOLS.terminate, { workerId: "one" });
 				await callOk(client, TOOLS.spawn, { name: "three", cwd: iso.cwd });
 			},
 			{ WORKER_MCP_MAX_WORKERS: "2" },
@@ -629,9 +571,9 @@ describe("worker limits", () => {
 				now += 2_000;
 				const reaped = await manager.reapIdle();
 				assert.strictEqual(reaped.length, 1);
-				const list = JSON.parse(await callOk(client, TOOLS.list, {}));
+				const list = await listWorkers(client);
 				assert.deepStrictEqual(
-					list.map((w: { name: string }) => w.name),
+					list.map((w) => w.name),
 					["busy"],
 					"the one with a run in flight stays",
 				);
@@ -652,11 +594,12 @@ describe("worker limits", () => {
 		await withIso(
 			async ({ client, iso, manager }) => {
 				await callOk(client, TOOLS.spawn, { name: "dies", cwd: iso.cwd });
-				const crashed = await call(client, TOOLS.send, {
-					sessionId: "dies",
-					command: "scenario:crash-mid-run",
+				const crashed = await callView(client, TOOLS.startRun, {
+					workerId: "dies",
+					prompt: "scenario:crash-mid-run",
+					waitMs: 10_000,
 				});
-				assert.strictEqual(crashed.isError, true);
+				assert.strictEqual(crashed.state, "failed");
 				const deadline = Date.now() + 5000;
 				while (manager.listSessions().length > 0 && Date.now() < deadline) {
 					await new Promise((r) => setTimeout(r, 25));
@@ -777,19 +720,6 @@ describe("untrusted output", () => {
 		});
 	});
 
-	test("the legacy blocking result is wrapped too", async () => {
-		await withIso(async ({ client, iso }) => {
-			await callOk(client, TOOLS.spawn, { name: "legacy", cwd: iso.cwd });
-			const result = await call(client, TOOLS.send, {
-				sessionId: "legacy",
-				command: hostile,
-			});
-			const raw = rawTextOf(result);
-			assert.match(raw, /^<worker_output run="r_\w+" trust="untrusted">/);
-			assert.strictEqual((raw.match(/<\/worker_output/gi) ?? []).length, 1);
-		});
-	});
-
 	test("an approval shows the call as fields, with the command wrapped and escaped", async () => {
 		await withIso(async ({ client, iso }) => {
 			await callOk(client, TOOLS.spawn, { name: "approval", cwd: iso.cwd });
@@ -815,7 +745,6 @@ describe("untrusted output", () => {
 				1,
 			);
 			assert.ok(a.untrustedCommand.includes("rm -rf build"));
-			// The legacy text shows the same fields.
 			await callView(client, TOOLS.cancelRun, { runId: view.runId });
 		});
 	});

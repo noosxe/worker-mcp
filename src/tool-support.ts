@@ -147,7 +147,6 @@ export function describePolicy(report: PolicyReport): string {
 			`Lowered to the server's ceiling: ${report.clamped.join("; ")}.`,
 		);
 	}
-	lines.push(...report.notes.map((n) => `Note: ${n}.`));
 	return lines.join(" ");
 }
 

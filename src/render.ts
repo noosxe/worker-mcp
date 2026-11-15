@@ -81,7 +81,6 @@ export function approvalData(
 ): ApprovalData {
 	return {
 		approvalId: a.actionId,
-		actionId: a.actionId,
 		runId,
 		tool: escapeUntrusted(a.tool),
 		kind: a.kind,

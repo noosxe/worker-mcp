@@ -54,7 +54,7 @@ Options:
       --pi-path <path>        Path to the pi binary
       --pi-default-model <model>  Model for workers spawned without one, as <provider>/<model>
       --pi-startup-timeout-ms <n>  How long a spawn waits for pi's gate (default 60000)
-      --command-timeout-ms <n>  Default wait of the deprecated send_pi_command (at most --max-wait-ms)
+      --command-timeout-ms <n>  No longer used; accepted so existing setups keep working
       --run-timeout-ms <n>    Wall-clock limit for one run (default 1800000)
       --max-wait-ms <n>       Longest a wait_run call blocks (default 50000)
       --run-start-timeout-ms <n>  How long a worker may take to accept a prompt (default 15000)
@@ -74,7 +74,6 @@ Options:
       --audit-file <path>     Audit log file (default <state dir>/audit.jsonl)
 
 Settings may also come from WORKER_MCP_* environment variables; see the README.
-WORKER_MCP_LEGACY_TOOLS=0 hides the deprecated pi-named tools (on by default).
 `);
 	process.exit(0);
 }
@@ -131,6 +130,7 @@ async function main() {
 		shutdown(1, "Standard input failed.");
 	});
 	await server.connect(transport);
+	for (const warning of loaded.warnings) console.error(`Warning: ${warning}`);
 	console.error("worker-mcp server running on stdio");
 }
 
