@@ -160,7 +160,9 @@ let
     limits =
       lib.optionalAttrs (cfg.allowedRoots != [ ]) { inherit (cfg) allowedRoots; }
       // lib.optionalAttrs (cfg.recordRetentionMs != null) { recordRetentionMs = cfg.recordRetentionMs; }
-      // lib.optionalAttrs (cfg.maxRecordedRuns != null) { maxRecordedRuns = cfg.maxRecordedRuns; };
+      // lib.optionalAttrs (cfg.maxRecordedRuns != null) { maxRecordedRuns = cfg.maxRecordedRuns; }
+      // lib.optionalAttrs (cfg.sessionRetentionMs != null) { sessionRetentionMs = cfg.sessionRetentionMs; }
+      // lib.optionalAttrs (cfg.maxSessionBytes != null) { maxSessionBytes = cfg.maxSessionBytes; };
     sandbox =
       lib.filterAttrs (_: v: v != null) {
         inherit (cfg.sandbox) minimum default bwrapPath toolIsolation;
@@ -337,7 +339,7 @@ in
         (`persistSessions`): the agent's session file, with every message,
         file content and command output the worker saw, in
         `<stateDir>/workers/<id>/` (mode 0700, files 0600). Sessions are
-        removed after 3 days or when they pass 256 MiB in total, and by
+        removed after `sessionRetentionMs` (3 days) or when they pass `maxSessionBytes` (256 MiB) in total, and by
         `terminate_worker`. They are not resumable yet. Turn it off to run
         the agent without a session file; `spawn_worker` can also turn it off
         for one worker. `WORKER_MCP_PERSIST_SESSIONS` overrides it.
@@ -362,6 +364,29 @@ in
         (`limits.maxRecordedRuns`). Default: 500.
       '';
       example = 100;
+    };
+
+    sessionRetentionMs = mkOption {
+      type = types.nullOr (types.ints.between 1 31536000000);
+      default = null;
+      description = ''
+        Delete saved worker conversations with no activity for this many
+        milliseconds (`limits.sessionRetentionMs`, at most a year). A
+        conversation held by a running server is never deleted. Default: 3
+        days.
+      '';
+      example = 86400000;
+    };
+
+    maxSessionBytes = mkOption {
+      type = types.nullOr (types.ints.between 1 1099511627776);
+      default = null;
+      description = ''
+        Most bytes all saved worker conversations may take together, oldest
+        deleted first (`limits.maxSessionBytes`, at most 1 TiB). Default:
+        256 MiB.
+      '';
+      example = 67108864;
     };
 
     legacyTools = mkOption {

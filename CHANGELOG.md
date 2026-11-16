@@ -33,8 +33,12 @@ can resume a worker yet**, so for now the files are only kept and cleaned up.
   stay hard limits at the gate.
 - **Locking and lifetime.** A server writes an `owner` claim for each worker
   and gives it up on close; a claim whose server is gone can be taken over, a
-  live one cannot. Sessions are deleted after 3 days without activity or, oldest
-  first, when they pass 256 MiB together, in the same sweep as run records, and
+  live one cannot. Sessions are deleted after `limits.sessionRetentionMs` (3
+  days, at most a year) without activity or, oldest first, when they pass
+  `limits.maxSessionBytes` (256 MiB, at most 1 TiB) together; both are settable
+  in the config file, `WORKER_MCP_SESSION_RETENTION_MS` /
+  `WORKER_MCP_MAX_SESSION_BYTES`, `--session-retention-ms` /
+  `--max-session-bytes` and the Nix module. The sweep is the one that prunes run records, and
   never while a running server holds them. `terminate_worker` deletes the
   worker's session and record; an idle close or a crash keeps them.
 

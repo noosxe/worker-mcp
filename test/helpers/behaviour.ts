@@ -1264,7 +1264,10 @@ export function behaviourTests(name: string, layer: Layer) {
 					await spawnSession(client, "progress");
 					const started = await callView(client, TOOLS.startRun, {
 						workerId: "progress",
-						prompt: "scenario:slow:400 p",
+						// Long enough that the wait below starts while the run is still
+						// going, even on a slow machine: a run that has ended already
+						// sends no progress.
+						prompt: "scenario:slow:2000 p",
 					});
 					const done = await client.callTool({
 						name: TOOLS.waitRun,

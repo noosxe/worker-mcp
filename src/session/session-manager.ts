@@ -33,9 +33,9 @@ export interface ManagerOptions {
 	sandbox?: SandboxService;
 	/** Replaces the identity of this server process (tests). */
 	boot?: Boot;
-	/** Replaces the 3 days a kept session is retained (tests). */
+	/** Replaces `limits.sessionRetentionMs` (tests). */
 	sessionRetentionMs?: number;
-	/** Replaces the 256 MiB cap on all kept sessions together (tests). */
+	/** Replaces `limits.maxSessionBytes` (tests). */
 	maxSessionBytes?: number;
 }
 
@@ -129,8 +129,9 @@ export class SessionManager {
 					dir: path.join(config.stateDir, "workers"),
 					bootId: this.boot.id,
 					boots: this.boots,
-					retentionMs: options.sessionRetentionMs,
-					maxBytes: options.maxSessionBytes,
+					retentionMs:
+						options.sessionRetentionMs ?? config.limits.sessionRetentionMs,
+					maxBytes: options.maxSessionBytes ?? config.limits.maxSessionBytes,
 					log: stderrLogger,
 					now: options.now,
 				})

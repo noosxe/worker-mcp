@@ -45,6 +45,10 @@ export interface Config {
 		recordRetentionMs: number;
 		/** Most run records kept on disk, oldest deleted first. */
 		maxRecordedRuns: number;
+		/** Saved worker conversations with no activity for this long are deleted. */
+		sessionRetentionMs: number;
+		/** Most bytes all saved conversations may take together, oldest deleted first. */
+		maxSessionBytes: number;
 		/** Output kept per run, in characters; the oldest is dropped past it. */
 		outputBufferChars: number;
 		/** Default size of one page of output returned by `get_run`. */
@@ -198,6 +202,11 @@ export const DEFAULT_RESULT_RETENTION_MS = 60 * 60_000;
 export const DEFAULT_MAX_RETAINED_RUNS = 100;
 export const DEFAULT_RECORD_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const DEFAULT_MAX_RECORDED_RUNS = 500;
+export const DEFAULT_SESSION_RETENTION_MS = 3 * 24 * 60 * 60_000;
+export const DEFAULT_MAX_SESSION_BYTES = 256 * 1024 * 1024;
+/** Upper bounds: a year, and a TiB. */
+const MAX_SESSION_RETENTION_MS = 365 * 24 * 60 * 60_000;
+const MAX_SESSION_BYTES = 1024 ** 4;
 export const DEFAULT_OUTPUT_BUFFER_CHARS = 1_048_576;
 export const DEFAULT_PAGE_CHARS = 16_000;
 export const DEFAULT_RUN_START_TIMEOUT_MS = 15_000;
@@ -354,6 +363,8 @@ export const configFileSchema = z.strictObject({
 			maxRetainedRuns: positiveInt.optional(),
 			recordRetentionMs: positiveInt.optional(),
 			maxRecordedRuns: positiveInt.optional(),
+			sessionRetentionMs: positiveInt.max(MAX_SESSION_RETENTION_MS).optional(),
+			maxSessionBytes: positiveInt.max(MAX_SESSION_BYTES).optional(),
 			outputBufferChars: positiveInt.optional(),
 			pageChars: positiveInt.optional(),
 			runStartTimeoutMs: positiveInt.optional(),
@@ -472,6 +483,14 @@ export const ENV_VARS = {
 		name: "WORKER_MCP_MAX_RECORDED_RUNS",
 		key: "limits.maxRecordedRuns",
 	},
+	sessionRetention: {
+		name: "WORKER_MCP_SESSION_RETENTION_MS",
+		key: "limits.sessionRetentionMs",
+	},
+	maxSessionBytes: {
+		name: "WORKER_MCP_MAX_SESSION_BYTES",
+		key: "limits.maxSessionBytes",
+	},
 	allowedRoots: {
 		name: "WORKER_MCP_ALLOWED_ROOTS",
 		key: "limits.allowedRoots",
@@ -545,6 +564,16 @@ const VALUE_FLAGS = {
 	maxRecordedRuns: {
 		flag: "--max-recorded-runs",
 		key: "limits.maxRecordedRuns",
+		kind: "int",
+	},
+	sessionRetention: {
+		flag: "--session-retention-ms",
+		key: "limits.sessionRetentionMs",
+		kind: "int",
+	},
+	maxSessionBytes: {
+		flag: "--max-session-bytes",
+		key: "limits.maxSessionBytes",
 		kind: "int",
 	},
 	allowedRoots: {
@@ -799,6 +828,8 @@ function stringLayer(
 		idleTimeout?: { key: string; raw: string };
 		recordRetention?: { key: string; raw: string };
 		maxRecordedRuns?: { key: string; raw: string };
+		sessionRetention?: { key: string; raw: string };
+		maxSessionBytes?: { key: string; raw: string };
 		allowedRoots?: { key: string; raw: string };
 		passthrough?: { key: string; raw: string };
 		stateDir?: string;
@@ -882,12 +913,24 @@ function stringLayer(
 		["idleTimeout", "idleTimeoutMs"],
 		["recordRetention", "recordRetentionMs"],
 		["maxRecordedRuns", "maxRecordedRuns"],
+		["sessionRetention", "sessionRetentionMs"],
+		["maxSessionBytes", "maxSessionBytes"],
 	] as const) {
 		const entry = values[name];
 		if (!entry) continue;
+		const value = parseInteger(source, entry.key, entry.raw);
+		const bound =
+			field === "sessionRetentionMs"
+				? MAX_SESSION_RETENTION_MS
+				: field === "maxSessionBytes"
+					? MAX_SESSION_BYTES
+					: undefined;
 		layer.limits = {
 			...layer.limits,
-			[field]: parseInteger(source, entry.key, entry.raw),
+			[field]:
+				bound === undefined
+					? value
+					: check(entry.key, z.number().max(bound), value),
 		};
 	}
 	if (values.commandTimeout || values.maxOutputChars) {
@@ -1007,6 +1050,16 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 			keysOf(),
 		),
 		stringLayer(
+			label(ENV_VARS.sessionRetention),
+			{ sessionRetention: num(ENV_VARS.sessionRetention) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.maxSessionBytes),
+			{ maxSessionBytes: num(ENV_VARS.maxSessionBytes) },
+			keysOf(),
+		),
+		stringLayer(
 			label(ENV_VARS.allowedRoots),
 			{ allowedRoots: num(ENV_VARS.allowedRoots) },
 			keysOf(),
@@ -1092,6 +1145,8 @@ function flagLayer(flags: CliFlags): FileLayer {
 			case "idleTimeout":
 			case "recordRetention":
 			case "maxRecordedRuns":
+			case "sessionRetention":
+			case "maxSessionBytes":
 			case "allowedRoots":
 				parts.push(stringLayer(source, { [name]: entry }, keys));
 				break;
@@ -1404,6 +1459,10 @@ function applyDefaults(
 				layer.limits?.recordRetentionMs ?? DEFAULT_RECORD_RETENTION_MS,
 			maxRecordedRuns:
 				layer.limits?.maxRecordedRuns ?? DEFAULT_MAX_RECORDED_RUNS,
+			sessionRetentionMs:
+				layer.limits?.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS,
+			maxSessionBytes:
+				layer.limits?.maxSessionBytes ?? DEFAULT_MAX_SESSION_BYTES,
 			allowedRoots: [...new Set(layer.limits?.allowedRoots ?? [])],
 		},
 		env: {

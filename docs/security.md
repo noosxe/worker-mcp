@@ -388,7 +388,7 @@ It does not change what is protected:
   can be auto-approved. With `sandbox: none` only that gate rule stands between
   a worker and the state directory. A server that holds a worker writes an
   `owner` claim next to it; one whose server died is taken over, one held by a
-  live server never is, and the retention sweep (3 days, 256 MiB, oldest first)
+  live server never is, and the retention sweep (`limits.sessionRetentionMs`, 3 days, and `limits.maxSessionBytes`, 256 MiB, oldest first)
   never deletes it. `terminate_worker` deletes the worker's conversation; an
   idle close or a crash keeps it.
 
