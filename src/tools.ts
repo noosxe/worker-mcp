@@ -240,7 +240,16 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			annotations: ANNOTATIONS.spawn_worker,
 		},
 		guarded(
-			async ({ cwd, provider, name, model, systemPrompt, policy, sandbox }) => {
+			async ({
+				cwd,
+				provider,
+				name,
+				model,
+				systemPrompt,
+				policy,
+				sandbox,
+				persistSession,
+			}) => {
 				const session = await manager.createSession(
 					name,
 					cwd,
@@ -249,6 +258,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 					policy,
 					provider,
 					sandbox,
+					persistSession,
 				);
 				const report = session.policyReport;
 				const label = session.name ? ` (name ${session.name})` : "";

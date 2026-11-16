@@ -347,7 +347,12 @@ export class SandboxService {
 	 */
 	isolateCommand(
 		command: string,
-		input: { home: string; profile: SandboxProfile },
+		input: {
+			home: string;
+			profile: SandboxProfile;
+			/** More directories to hide from the command (the worker's session directory). */
+			hide?: readonly string[];
+		},
 	): string {
 		if (!this.result?.available || !this.result.bwrap) {
 			throw new Error("the workspace sandbox is not available");
@@ -359,6 +364,9 @@ export class SandboxService {
 				const p = path.join(base, rel);
 				if (isDir(p)) hidden.add(p);
 			}
+		}
+		for (const p of input.hide ?? []) {
+			for (const q of new Set([p, real(p)])) if (isDir(q)) hidden.add(q);
 		}
 		const args = toolSandboxFlags([...hidden])
 			.map(shellQuote)
@@ -377,6 +385,10 @@ export class SandboxService {
 		input: {
 			cwd: string;
 			privateDir: string;
+			/** The worker's session directory: bound read-write. */
+			sessionDir?: string;
+			/** The state directory: hidden when it is outside `$HOME`. */
+			stateDir?: string;
 			env: Record<string, string>;
 			profile?: SandboxProfile;
 		},
@@ -390,6 +402,8 @@ export class SandboxService {
 		const plan = planSandbox({
 			cwd: input.cwd,
 			privateDir: input.privateDir,
+			sessionDir: input.sessionDir,
+			stateDir: input.stateDir,
 			home,
 			runtimeDir: input.env.XDG_RUNTIME_DIR,
 			hide: this.settings.hide,
@@ -409,6 +423,8 @@ export interface SandboxPlan {
 	/** Real path of the workspace. */
 	cwd: string;
 	privateDir: string;
+	/** The worker's session directory (real path), bound read-write; null: none. */
+	sessionDir?: string | null;
 	/**
 	 * Directories hidden behind an empty tmpfs: the home
 	 * directory and every other path that leads to its data, the runtime
@@ -445,6 +461,10 @@ export function buildBwrapArgs(plan: SandboxPlan): string[] {
 	// Read-only: pi only reads its gate file, and a worker that could rewrite
 	// it would only be changing what its next start loads.
 	args.push("--ro-bind", plan.privateDir, plan.privateDir);
+	// Read-write: pi appends its session file there. Bound after the tmpfs
+	// that hides the home directory and the state directory around it, so it
+	// is the only part of them the worker can reach.
+	if (plan.sessionDir) args.push("--bind", plan.sessionDir, plan.sessionDir);
 	for (const p of plan.extraRo) args.push("--ro-bind-try", p, p);
 	for (const p of plan.extraRw) args.push("--bind-try", p, p);
 	for (const p of plan.gitRw) args.push("--bind", p, p);
@@ -458,6 +478,9 @@ export function buildBwrapArgs(plan: SandboxPlan): string[] {
 export interface PlanInput {
 	cwd: string;
 	privateDir: string;
+	sessionDir?: string;
+	/** Hidden (with its real path) unless it is inside the home directory, which is hidden anyway. */
+	stateDir?: string;
 	home: string;
 	runtimeDir?: string;
 	/** Extra paths always hidden (`sandbox.hide`). */
@@ -664,10 +687,14 @@ export function planSandbox(input: PlanInput): SandboxPlan {
 	return {
 		cwd,
 		privateDir: real(input.privateDir),
+		sessionDir: input.sessionDir ? real(input.sessionDir) : null,
 		hidden: hiddenPaths({
 			home,
 			runtimeDir,
-			hide: input.hide ?? [],
+			hide: [
+				...(input.hide ?? []),
+				...(input.stateDir ? [input.stateDir, real(input.stateDir)] : []),
+			],
 			mounts: parseMountinfo(input.mountinfo ?? readMountinfo()),
 		}),
 		roHome: [...BASE_RO_HOME, ...input.profile.roHome].map(underHome),

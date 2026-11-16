@@ -437,21 +437,28 @@ describe("ids and names", () => {
 		});
 	});
 
-	test("ids and names are never used in file paths", async () => {
+	test("names are never used in file paths, and ids only for a worker's own session directory", async () => {
 		await withIso(async ({ client, iso, manager }) => {
 			await callOk(client, TOOLS.spawn, { name: "pathless", cwd: iso.cwd });
 			const walk = (dir: string): string[] =>
-				fs
-					.readdirSync(dir, { withFileTypes: true })
-					.flatMap((e) =>
-						e.isDirectory()
-							? [e.name, ...walk(path.join(dir, e.name))]
-							: [e.name],
-					);
+				fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+					e.isDirectory()
+						? // The worker's own directory (the server-made id) is named
+							// after it, by design: nothing inside it is, and no
+							// caller-chosen text is used there.
+							e.name === "workers"
+							? [e.name]
+							: [e.name, ...walk(path.join(dir, e.name))]
+						: [e.name],
+				);
 			const worker = manager.listSessions()[0];
 			const names = walk(iso.root);
 			assert.ok(!names.some((n) => n.includes("pathless")));
 			assert.ok(!names.some((n) => n.includes(worker.workerId)));
+			const lineages = fs.readdirSync(
+				path.join(iso.root, "state", "worker-mcp", "workers"),
+			);
+			assert.deepStrictEqual(lineages, [worker.workerId]);
 		});
 	});
 

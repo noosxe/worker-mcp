@@ -127,6 +127,8 @@ export interface SessionDeps {
 	sandboxReport?: { clamped: string[]; notes: string[] };
 	/** Run shell commands in the second sandbox (only with `workspace`). */
 	toolIsolation?: boolean;
+	/** Keep the conversation here (see `WorkerSpec.session`). */
+	session?: { dir: string; id: string };
 }
 
 /** A failure with a stable code, so the MCP tools can name it. */
@@ -208,6 +210,7 @@ export class Session {
 	/** How the worker is confined; fixed at spawn. */
 	public readonly sandbox: "none" | "workspace";
 	private readonly toolIsolation: boolean;
+	private readonly sessionSpec: { dir: string; id: string } | undefined;
 	/** What the server changed or warned about when it chose the sandbox. */
 	public readonly sandboxReport: { clamped: string[]; notes: string[] };
 
@@ -257,6 +260,7 @@ export class Session {
 		this.onGone = deps.onGone;
 		this.sandbox = deps.sandbox ?? "none";
 		this.toolIsolation = deps.toolIsolation ?? false;
+		this.sessionSpec = deps.session;
 		this.sandboxReport = deps.sandboxReport ?? { clamped: [], notes: [] };
 		this.lastActiveAt = this.now();
 		this.name = deps.name;
@@ -362,6 +366,11 @@ export class Session {
 		return this.currentRun?.run ?? null;
 	}
 
+	/** Pids of the worker's processes now running. */
+	public processIds(): number[] {
+		return this.worker?.host.pids() ?? [];
+	}
+
 	/** `start()` is in progress: the worker is not alive yet but is taken. */
 	public isStarting(): boolean {
 		return this.starting;
@@ -395,6 +404,7 @@ export class Session {
 					model: this.model,
 					systemPrompt: this.systemPrompt,
 					options: {},
+					session: this.sessionSpec,
 				},
 				children: this.children,
 				runtime: this.runtime,

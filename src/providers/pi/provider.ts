@@ -126,6 +126,7 @@ export function createPiProvider(
 		displayName: "pi",
 		capabilities: PI_CAPABILITIES,
 		sandboxProfile: PI_SANDBOX_PROFILE,
+		sessionProfile: { needsDir: true },
 		toolMap: piToolMap,
 		optionsSchema: z.strictObject({}) as unknown as z.ZodType<
 			Record<string, unknown>
@@ -158,7 +159,11 @@ export function createPiProvider(
 			const child = host.spawn({
 				argv: [
 					piPath,
-					...buildPiArgs({ gateFile, systemPrompt: spec.systemPrompt }),
+					...buildPiArgs({
+						gateFile,
+						systemPrompt: spec.systemPrompt,
+						session: spec.session,
+					}),
 				],
 				cwd: spec.cwd,
 				env: { [GATE_NONCE_ENV]: nonce },

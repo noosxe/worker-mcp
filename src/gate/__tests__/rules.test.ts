@@ -500,6 +500,25 @@ describe("protected paths are hard limits", () => {
 		}
 	});
 
+	test("a worker's saved conversation and record are hard limits for every file tool", async () => {
+		const gate = fx.gate({ policy: permissive(RiskLevel.HIGH) });
+		const dir = path.join(fx.root, "state", "workers", "w_aaaa1111");
+		for (const target of [
+			path.join(dir, "session", "2026-01-01T00-00-00_w_aaaa1111.jsonl"),
+			path.join(dir, "session"),
+			path.join(dir, "worker.json"),
+			path.join(dir, "owner"),
+			path.join(dir, "session", "..", "worker.json"),
+		]) {
+			for (const tool of ["read", "write", "edit"]) {
+				const out = await decide(gate, tool, { path: target });
+				assert.strictEqual(out.decision, "escalate", `${tool} ${target}`);
+				assert.strictEqual(out.autoAllowable, false, `${tool} ${target}`);
+				assert.ok(out.level >= RiskLevel.HIGH, `${tool} ${target}`);
+			}
+		}
+	});
+
 	test("an unprotected neighbour is not caught", async () => {
 		const gate = fx.gate();
 		for (const p of [

@@ -19,6 +19,11 @@ export interface Config {
 	stateDir: string;
 	/** Write each run's record under `<stateDir>/runs` so it can be read after a restart. */
 	persistRuns: boolean;
+	/**
+	 * Keep each worker's conversation (the provider's session file) under
+	 * `<stateDir>/workers`. A worker can also opt out with `persistSession: false`.
+	 */
+	persistSessions: boolean;
 	/** Directory holding the per-instance private runtime directory. */
 	runtimeDir: string;
 	limits: {
@@ -335,6 +340,7 @@ export const configFileSchema = z.strictObject({
 	stateDir: absolutePath.optional(),
 	runtimeDir: absolutePath.optional(),
 	persistRuns: z.boolean().optional(),
+	persistSessions: z.boolean().optional(),
 	/** No longer used: accepted so existing config files keep loading. */
 	legacyTools: z.boolean().optional(),
 	limits: z
@@ -595,6 +601,11 @@ const CHOICE_SETTINGS = {
 		flag: "--persist-runs",
 		key: "persistRuns",
 	},
+	persistSessions: {
+		env: "WORKER_MCP_PERSIST_SESSIONS",
+		flag: "--persist-sessions",
+		key: "persistSessions",
+	},
 	auditEnabled: {
 		env: "WORKER_MCP_AUDIT",
 		flag: "--audit",
@@ -670,6 +681,14 @@ function choiceLayer(source: string, name: ChoiceName, raw: string): FileLayer {
 			}
 			if (["0", "false", "off", "no"].includes(word)) {
 				return { persistRuns: false };
+			}
+			return fail(`${JSON.stringify(raw)} is not on or off`);
+		case "persistSessions":
+			if (["1", "true", "on", "yes"].includes(word)) {
+				return { persistSessions: true };
+			}
+			if (["0", "false", "off", "no"].includes(word)) {
+				return { persistSessions: false };
 			}
 			return fail(`${JSON.stringify(raw)} is not on or off`);
 		case "auditEnabled":
@@ -1107,6 +1126,7 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		stateDir: over.stateDir ?? base.stateDir,
 		runtimeDir: over.runtimeDir ?? base.runtimeDir,
 		persistRuns: over.persistRuns ?? base.persistRuns,
+		persistSessions: over.persistSessions ?? base.persistSessions,
 		legacyTools: over.legacyTools ?? base.legacyTools,
 		limits: { ...base.limits, ...over.limits },
 		env: { allow },
@@ -1356,6 +1376,7 @@ function applyDefaults(
 		logLevel: layer.logLevel ?? "info",
 		stateDir,
 		persistRuns: layer.persistRuns ?? true,
+		persistSessions: layer.persistSessions ?? true,
 		runtimeDir:
 			layer.runtimeDir ??
 			(env.XDG_RUNTIME_DIR ? env.XDG_RUNTIME_DIR : path.join(stateDir, "run")),

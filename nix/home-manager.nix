@@ -152,6 +152,7 @@ let
   typed = {
     inherit (cfg) logLevel;
     persistRuns = cfg.persistRuns;
+    persistSessions = cfg.persistSessions;
     providers.pi = lib.filterAttrs (_: v: v != null) {
       path = cfg.piPath;
       inherit (cfg) defaultModel;
@@ -325,6 +326,21 @@ in
         arguments (mode 0600, in a 0700 directory). Turn it off to keep nothing
         about runs on disk; unanswered approvals in the audit log are closed
         at startup either way. `WORKER_MCP_PERSIST_RUNS` overrides it.
+      '';
+    };
+
+    persistSessions = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Keep each worker's conversation under the state directory
+        (`persistSessions`): the agent's session file, with every message,
+        file content and command output the worker saw, in
+        `<stateDir>/workers/<id>/` (mode 0700, files 0600). Sessions are
+        removed after 3 days or when they pass 256 MiB in total, and by
+        `terminate_worker`. They are not resumable yet. Turn it off to run
+        the agent without a session file; `spawn_worker` can also turn it off
+        for one worker. `WORKER_MCP_PERSIST_SESSIONS` overrides it.
       '';
     };
 

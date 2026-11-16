@@ -32,12 +32,14 @@ export interface ChildSpec {
 	sandboxProfile?: SandboxProfile;
 	/** The worker's private directory, mounted into the sandbox; set by the core. */
 	privateDir?: string;
+	/** The worker's session directory, mounted read-write into the sandbox; set by the core. */
+	sessionDir?: string;
 }
 
 /** What a provider may say about a process: the core adds the sandbox. */
 export type ProviderChildSpec = Omit<
 	ChildSpec,
-	"sandbox" | "sandboxProfile" | "privateDir"
+	"sandbox" | "sandboxProfile" | "privateDir" | "sessionDir"
 >;
 
 export interface ChildExit {
@@ -113,6 +115,12 @@ export interface ChildRegistryOptions {
 	log?: Logger;
 	/** Wraps `workspace` children in bubblewrap. Without it only `none` works. */
 	sandbox?: SandboxService;
+	/**
+	 * The state directory. When it is outside `$HOME` the sandbox hides it
+	 * (the home directory is hidden anyway); the worker's own session
+	 * directory is mounted back.
+	 */
+	stateDir?: string;
 }
 
 /** Wait this long for the pipes to drain after the process exited. */
@@ -439,7 +447,11 @@ export class ChildRegistry {
 	 * `command` rewritten to run in the second sandbox of shell commands, for a
 	 * worker spawned with `spawn`'s environment.
 	 */
-	isolateCommand(command: string, profile: SandboxProfile): string {
+	isolateCommand(
+		command: string,
+		profile: SandboxProfile,
+		hide: readonly string[] = [],
+	): string {
 		const sandbox = this.opts.sandbox;
 		if (!sandbox) {
 			throw new Error("cannot isolate a command: the sandbox is not set up");
@@ -448,6 +460,7 @@ export class ChildRegistry {
 		return sandbox.isolateCommand(command, {
 			home: env.HOME || os.homedir(),
 			profile,
+			hide,
 		});
 	}
 
@@ -470,6 +483,8 @@ export class ChildRegistry {
 				argv: sandbox.wrap(spec.argv, {
 					cwd: spec.cwd,
 					privateDir: spec.privateDir,
+					sessionDir: spec.sessionDir,
+					stateDir: this.opts.stateDir,
 					env,
 					profile: spec.sandboxProfile,
 				}) as ChildSpec["argv"],

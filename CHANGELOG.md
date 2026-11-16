@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Saved conversations
+
+pi now keeps each worker's conversation in a session file, on by default. This
+is the first step towards continuing a worker after its server is gone; **nothing
+can resume a worker yet**, so for now the files are only kept and cleaned up.
+
+- **What is kept.** pi runs with `--session-dir` and `--session-id` instead of
+  `--no-session` (everything else, the gate and `--no-extensions` included, is
+  unchanged). The session holds the whole conversation: prompts, the contents
+  of files the worker read and the output of its commands, at worker-output
+  trust. Each worker also gets a `worker.json` with metadata only (provider and
+  its version, model, workspace, sandbox mode, the policy as it was set, session
+  id and directory, boot id and times; no prompts, tool arguments or
+  credentials) and an `owner` claim.
+- **Where.** `<stateDir>/workers/<worker id>/`, directories 0700, files 0600,
+  checked with `lstat` and written atomically like run records. pi creates its
+  file as 0644; the server sets 0600 when each run settles and when the worker
+  closes, and the 0700 directory keeps other users out in between.
+- **Settings.** `persistSessions` (config, `WORKER_MCP_PERSIST_SESSIONS`,
+  `--persist-sessions`, Nix option `persistSessions`; default on) and
+  `spawn_worker`'s `persistSession: false` for one worker, which can turn it off
+  but never on against the server's setting. Off means `--no-session` and
+  nothing written, exactly as before.
+- **Sandbox.** pi gets only its own session directory, writable. The state
+  directory is now hidden from the `workspace` sandbox when it is outside
+  `$HOME` (it was readable there before; this applies with or without
+  sessions), the commands a worker runs see an empty directory in place of its
+  session, and pi's own `read`, `write` and `edit` of the state directory
+  stay hard limits at the gate.
+- **Locking and lifetime.** A server writes an `owner` claim for each worker
+  and gives it up on close; a claim whose server is gone can be taken over, a
+  live one cannot. Sessions are deleted after 3 days without activity or, oldest
+  first, when they pass 256 MiB together, in the same sweep as run records, and
+  never while a running server holds them. `terminate_worker` deletes the
+  worker's session and record; an idle close or a crash keeps them.
+
 ### Run records
 
 A restart no longer hides what happened to a run. Each run is now saved to

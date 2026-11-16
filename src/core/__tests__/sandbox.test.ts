@@ -579,6 +579,33 @@ describe("hiding the home directory", () => {
 		assert.ok(at(a, "--bind", cwd) > tmpfs);
 	});
 
+	test("a state directory outside the home directory is hidden; the session directory is bound back, read-write", () => {
+		const state = mk("state");
+		const sessionDir = mk("state", "workers", "w_aaaa1111", "session");
+		const cwd = mk("ws");
+		const plan = planSandbox(input({ cwd, stateDir: state, sessionDir }));
+		assert.ok(plan.hidden.includes(state));
+		assert.strictEqual(plan.sessionDir, sessionDir);
+		const a = buildBwrapArgs(plan);
+		const hidden = at(a, "--tmpfs", state);
+		const bound = at(a, "--bind", sessionDir);
+		assert.ok(hidden > -1, "the state directory is under a tmpfs");
+		assert.ok(bound > hidden, "bound after it, so it shows through");
+		// and nothing else of the state directory is bound
+		assert.strictEqual(a.filter((x) => x === state).length, 1);
+	});
+
+	test("a state directory inside the home directory needs no extra mount; without a session nothing is bound", () => {
+		const home = mk("home");
+		const state = mk("home", ".local", "state", "worker-mcp");
+		const plan = planSandbox(input({ home, stateDir: state }));
+		assert.ok(plan.hidden.includes(home));
+		assert.ok(!plan.hidden.includes(state));
+		assert.strictEqual(plan.sessionDir ?? null, null);
+		const a = buildBwrapArgs(plan);
+		assert.ok(!a.some((x) => x.endsWith("/session")));
+	});
+
 	test("unreadable mounts fail closed: not available, and no plan", async () => {
 		assert.throws(
 			() => planSandbox(input({ mountinfo: "garbage" })),
@@ -657,6 +684,19 @@ describe("the second sandbox for shell commands", () => {
 			execFileSync("sh", ["-c", `printf %s ${quoted}`], { encoding: "utf8" }),
 			command,
 		);
+	});
+
+	test("the session directory is hidden from the command too", async () => {
+		const home = mk("home");
+		const session = mk("state", "workers", "w_aaaa1111", "session");
+		const { service } = await ready("auto", true);
+		const out = service.isolateCommand("cat x", {
+			home,
+			profile,
+			hide: [session, path.join(root, "not-there")],
+		});
+		assert.ok(out.includes(`'--tmpfs' '${session}'`), out);
+		assert.ok(!out.includes("not-there"));
 	});
 
 	test("a hidden directory that does not exist is left out", async () => {

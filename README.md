@@ -530,6 +530,7 @@ Lowest to highest:
 | `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`    | `--approval-timeout-ms`    | `600000` (10 min)                           |
 | `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`        | `--env-passthrough`        | none                                        |
 | `persistRuns`                          | `WORKER_MCP_PERSIST_RUNS`           | `--persist-runs`           | `true`                                      |
+| `persistSessions`                      | `WORKER_MCP_PERSIST_SESSIONS`       | `--persist-sessions`       | `true`                                      |
 | `limits.recordRetentionMs`             | `WORKER_MCP_RECORD_RETENTION_MS`    | `--record-retention-ms`    | `604800000` (7 days)                        |
 | `limits.maxRecordedRuns`               | `WORKER_MCP_MAX_RECORDED_RUNS`      | `--max-recorded-runs`      | `500`                                       |
 | `logLevel`                             | `WORKER_MCP_LOG_LEVEL`              | `--log-level`              | `info`                                      |
@@ -647,8 +648,51 @@ list the workers of earlier servers.
 - Records are worker output. Everything in them that a worker wrote is returned
   under `untrusted…` keys and wrapped like any other worker text.
 
-Workers are not persisted. A `sessions.json` left in `~/.config/worker-mcp/` by
-an earlier version is ignored and can be deleted.
+A `sessions.json` left in `~/.config/worker-mcp/` by an earlier version is
+ignored and can be deleted. Workers themselves are not restored after a
+restart; see the next section for what is kept of their conversation.
+
+### Saved conversations
+
+By default pi keeps each worker's conversation in a session file under the
+state directory, so that a later release can continue a worker after its server
+is gone. **Nothing can resume a worker yet**: today the files are only kept, and
+removed again as described below.
+
+- **What a session holds**: the whole conversation, including the prompts, the
+  files the worker read, the output of its commands, and the system prompt. It
+  is worker output and carries the same trust: it can hold secrets that were in
+  a file or a command's output, and text an attacker put there. Treat the
+  directory like the audit log. The worker's record (`worker.json`) holds
+  metadata only: ids, name, provider and its version, model, workspace,
+  sandbox mode, the policy as it was set, the session id and directory, the
+  server's boot id and times. Never credentials, prompts or tool arguments.
+- **Where**: `<stateDir>/workers/<worker id>/` holds `worker.json`, `owner` (the
+  server that holds the worker, so two servers on one state directory never run
+  one conversation twice) and `session/` with pi's file. Directories are 0700
+  and files 0600, checked with `lstat` and written atomically like run records.
+  pi creates its file with the process umask (0644); the server makes it 0600
+  when each run settles and when the worker closes, and the 0700 directory
+  around it already keeps other users out in the meantime.
+- **In the sandbox**: pi gets only its own `session/` directory, writable. The
+  state directory is hidden from the whole sandbox when it is outside `$HOME`
+  (inside `$HOME` the home directory is already hidden), and the commands a
+  worker runs see an empty directory in place of its session. pi's own `read`,
+  `write` and `edit` can reach it, so the gate treats the state directory as a
+  hard limit: those calls always wait for the coordinator.
+- **Retention**: a session is deleted after 3 days without activity, and the
+  oldest go first when all sessions together pass 256 MiB. The sweep runs at
+  startup and every 10 minutes and never touches a worker that a running server
+  holds. `terminate_worker` deletes the worker's session and record at once. A
+  worker closed for being idle, one whose pi crashed and one left by a stopped
+  server keep theirs until retention removes it.
+- **Turn it off** for the server with `persistSessions: false`,
+  `WORKER_MCP_PERSIST_SESSIONS=off` or `--persist-sessions off` (the Nix module
+  has `persistSessions`), or for one worker with `spawn_worker`'s
+  `persistSession: false`; a worker can turn it off but never on against the
+  server's setting. pi then runs with `--no-session` and writes nothing.
+  Sessions written earlier stay until retention removes them or you delete
+  `workers/`.
 
 See [docs/security.md](docs/security.md) for the trust model and what the gate does and does not protect.
 
