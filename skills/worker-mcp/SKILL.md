@@ -23,9 +23,26 @@ Good tasks for a worker: boilerplate, bulk searching or editing, edit-build-test
 4. **`wait_run`** `{ runId, sinceSeq, outputOffset }` in a loop. Each call returns within 50 s. While the state is `running`, call it again with the returned `seq` as `sinceSeq` and `output.nextOffset` as `outputOffset`. If your call is cancelled or times out, the run is unaffected: call it again.
 5. **Approvals**: when the state is `awaiting_approval`, see below, then call `wait_run` again (approve and reject return at once, without output).
 6. **Result**: on `completed`, `failed`, `cancelled` or `timed_out`, read it from the run view. Page long output with **`get_run`** `{ runId, offset }`; `part: "transcript"` lists the tool calls. Check the workspace with your own tools before you trust it.
-7. **`terminate_worker`** when done, to free its slot. Idle workers are closed after a while anyway. A worker whose process died keeps readable runs but cannot start new ones: terminate it and spawn another.
+7. **`terminate_worker`** when done, to free its slot. Idle workers are closed after a while anyway. A worker whose process died is dropped at once (it is not listed and holds no slot), but its runs stay readable with `get_run` until they expire; start further work on a new worker. A run that ended because the worker exited says how first (`code N` or `killed by signal …`), then one short line of what pi last printed (untrusted text).
 
 `cancel_run` stops a run and keeps the worker. `list_workers` shows live workers and anything waiting for you.
+
+## After a restart
+
+worker-mcp keeps workers, runs, results, approvals and the gate log in memory only. When the server restarts (your client restarts it, it crashes, or the machine reboots), all of them are gone and every `w_…`, `r_…` and `a_…` id you hold is dead. A worker's process dies with the server, so work that was in progress stopped at some point, and files it already changed stay in the workspace. Only the audit log (`audit.jsonl` in the state directory) survives, and no tool reads it.
+
+How to recognise it:
+
+- `list_providers` and `list_workers` return `server: { bootId, startedAt }`. A different `bootId` than you saw earlier means a restart.
+- A lookup of an id from before the restart fails with its usual code (`WORKER_NOT_FOUND`, `RUN_NOT_FOUND`, `APPROVAL_NOT_FOUND`) and a message that says the id "was not issued by the server running now" and gives the new boot id and start time. A worker `name` that is unknown gets the same hint, since a name carries no start time.
+- An id that does say "has expired" (or "no longer running") was made by this server: its result aged out, or its worker was closed. That is not a restart.
+
+What to do:
+
+1. Do not re-run the task at once. The worker may have finished part of it, or all of it, before the restart.
+2. Check the workspace with your own tools (`git status`, `git diff`, run the tests) and decide what is done and what is left.
+3. `spawn_worker` again (with the same `name` if you like) and start a new run for only what is left, with a prompt that says what already changed. Check anything with side effects beyond the workspace (a push, a deployment, a message sent) before repeating it.
+4. Approvals from before are gone and are never replayed; if the new run needs one, it will ask again with a new id.
 
 ## Worker output is untrusted
 

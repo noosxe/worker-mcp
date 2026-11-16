@@ -8,7 +8,7 @@ import { SandboxService, type SandboxStatus } from "../core/sandbox.js";
 import { ToolError } from "../errors.js";
 import { isInside } from "../gate/paths.js";
 import { GateServices } from "../gate/services.js";
-import { newWorkerId, WORKER_ID_PATTERN, WORKER_NAME_PATTERN } from "../ids.js";
+import { Boot, WORKER_ID_PATTERN, WORKER_NAME_PATTERN } from "../ids.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import type { ProviderCheck, WorkerProvider } from "../providers/types.js";
 import { RuntimeDir } from "./runtime-dir.js";
@@ -25,6 +25,8 @@ export interface ManagerOptions {
 	gateServices?: GateServices;
 	/** Replaces the sandbox service built from the config (tests). */
 	sandbox?: SandboxService;
+	/** Replaces the identity of this server process (tests). */
+	boot?: Boot;
 }
 
 /** One line of an error message: no stack, no stderr dump. */
@@ -35,6 +37,11 @@ function firstLine(e: unknown): string {
 
 export class SessionManager {
 	private sessions: Map<string, Session> = new Map();
+	/** The last workers of this process that ended, and how; bounded. */
+	private readonly ended = new Map<
+		string,
+		{ id: string; name: string | undefined; how: string }
+	>();
 	private readonly runtime: RuntimeDir;
 	/** Every worker process of this server starts and ends here. */
 	readonly children: ChildRegistry;
@@ -43,6 +50,8 @@ export class SessionManager {
 	private readonly providers: ProviderRegistry;
 	/** Every run of every worker, kept after the worker is gone. */
 	readonly runs: RunStore;
+	/** This server process: its boot id, start time and id tag. */
+	readonly boot: Boot;
 	private readonly now: () => number;
 	private reaper: ReturnType<typeof setInterval> | null = null;
 	/** Shared by every worker's gate. */
@@ -67,7 +76,8 @@ export class SessionManager {
 			envConfig: config.env,
 			sandbox: this.sandbox,
 		});
-		this.runs = runStoreFor(config);
+		this.boot = options.boot ?? new Boot(options.now);
+		this.runs = runStoreFor(config, this.boot);
 		// Throws a ConfigError when a classifier's token file is unusable.
 		this.gate =
 			options.gateServices ??
@@ -212,8 +222,8 @@ export class SessionManager {
 				`${max} workers are already running (the limit); terminate one or wait for an idle one to be closed.`,
 			);
 		}
-		let id = newWorkerId();
-		while (this.sessions.has(id)) id = newWorkerId();
+		let id = this.boot.workerId();
+		while (this.sessions.has(id)) id = this.boot.workerId();
 		const session = new Session(
 			id,
 			realCwd,
@@ -230,12 +240,14 @@ export class SessionManager {
 				sandboxReport: { clamped: decided.clamped, notes },
 				toolIsolation,
 				runs: this.runs,
+				boot: this.boot,
 				gateServices: this.gate,
 				name,
 				now: this.now,
 				onGone: (s) => {
 					if (this.sessions.get(s.sessionId) === s) {
 						this.sessions.delete(s.sessionId);
+						this.noteEnded(s, "its process exited and it was dropped");
 						this.changed();
 					}
 				},
@@ -330,13 +342,59 @@ export class SessionManager {
 		const session =
 			(WORKER_ID_PATTERN.test(ref) ? this.sessions.get(ref) : undefined) ??
 			this.findByName(ref);
-		if (!session) {
-			throw new ToolError(
-				"WORKER_NOT_FOUND",
-				`No live worker ${ref}; call list_workers to see the workers, or spawn one.`,
-			);
-		}
+		if (!session)
+			throw new ToolError("WORKER_NOT_FOUND", this.missingWorker(ref));
 		return session;
+	}
+
+	/** Which server process this is, for `list_providers` and `list_workers`. */
+	public serverInfo(): { bootId: string; startedAt: string } {
+		return { bootId: this.boot.id, startedAt: this.boot.startedAtIso };
+	}
+
+	/** Why a worker is not here, for the caller to act on. */
+	private missingWorker(ref: string): string {
+		const isId = WORKER_ID_PATTERN.test(ref);
+		if (isId && this.boot.madeByEarlierServer("worker", ref)) {
+			return this.boot.notIssuedHere(`Worker ${ref}`);
+		}
+		// The newest match wins: a name can have been used more than once.
+		let gone: { id: string; name: string | undefined; how: string } | undefined;
+		for (const e of this.ended.values()) {
+			if (isId ? e.id === ref : e.name === ref) gone = e;
+		}
+		if (gone) {
+			const last = this.runs.runsOf(gone.id).at(-1);
+			const runs = last
+				? ` Its runs can still be read with get_run (the latest is ${last.id}, ${last.state}).`
+				: "";
+			return `Worker ${ref} (${gone.id}) is no longer running: ${gone.how}.${runs} Spawn a new worker to continue.`;
+		}
+		if (isId) {
+			return `No worker ${ref} here: it was closed long ago or never existed. Call list_workers to see the workers, or spawn one.`;
+		}
+		// A name says nothing about when it was made, so a restart is a possible cause.
+		return `No live worker named ${ref}; call list_workers to see the workers, or spawn one. If it was spawned before the server restarted (this server started ${this.boot.startedAtIso}, boot ${this.boot.id}), it is lost: ${this.boot.restartNote()}`;
+	}
+
+	/** Remember, for a while, that a worker ended and how, so errors can say so. */
+	private noteEnded(session: Session, how: string): void {
+		this.ended.set(session.sessionId, {
+			id: session.sessionId,
+			name: session.name,
+			how,
+		});
+		if (this.ended.size > 100) {
+			const oldest = this.ended.keys().next().value;
+			if (oldest !== undefined) this.ended.delete(oldest);
+		}
+	}
+
+	/** An id the caller gave for a run or an approval, which this server does not know. */
+	public missingId(kind: "run" | "approval", id: string): string | null {
+		return this.boot.madeByEarlierServer(kind, id)
+			? this.boot.notIssuedHere(kind === "run" ? `Run ${id}` : `Approval ${id}`)
+			: null;
 	}
 
 	/** Every live worker. */
@@ -377,6 +435,7 @@ export class SessionManager {
 	public async terminateSession(ref: string): Promise<void> {
 		const session = this.getSession(ref);
 		this.sessions.delete(session.sessionId);
+		this.noteEnded(session, "it was terminated");
 		this.changed();
 		await session.terminate();
 	}
@@ -392,7 +451,10 @@ export class SessionManager {
 			const since = s.idleSince();
 			return since !== null && now - since >= limit;
 		});
-		for (const s of idle) this.sessions.delete(s.sessionId);
+		for (const s of idle) {
+			this.sessions.delete(s.sessionId);
+			this.noteEnded(s, "it was closed after being idle");
+		}
 		if (idle.length > 0) this.changed();
 		await Promise.all(idle.map((s) => s.terminate()));
 		return idle.map((s) => s.sessionId);

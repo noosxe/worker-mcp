@@ -152,7 +152,21 @@ export const WorkerOut = z.object({
 });
 export type WorkerData = z.infer<typeof WorkerOut>;
 
+export const ServerOut = z
+	.object({
+		bootId: z
+			.string()
+			.describe("Random id of this server process; it changes on every start."),
+		startedAt: z
+			.string()
+			.describe("When this server process started (ISO 8601)."),
+	})
+	.describe(
+		"Which server process answered. If it differs from what you saw earlier, the server restarted: every worker, run and approval id you hold is gone, and work that was in progress is lost. Check the workspace before redoing anything.",
+	);
+
 export const ListProvidersOut = z.object({
+	server: ServerOut,
 	sandbox: z
 		.object({
 			available: z
@@ -207,6 +221,7 @@ export const AnswerOut = z.object({
 });
 
 export const ListWorkersOut = z.object({
+	server: ServerOut,
 	workers: z.array(WorkerOut),
 	auditDegraded: z
 		.boolean()

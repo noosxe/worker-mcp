@@ -158,7 +158,8 @@ export function sessionForApproval(
 	if (!session) {
 		throw new ToolError(
 			"APPROVAL_NOT_FOUND",
-			`No pending approval ${id}: it was already answered, expired or never existed. Call get_pending_actions to see what is waiting.`,
+			ctx.manager.missingId("approval", id) ??
+				`No pending approval ${id}: it was already answered, expired or never existed. Call get_pending_actions to see what is waiting.`,
 		);
 	}
 	return session;
@@ -173,7 +174,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "List providers",
 			description:
-				"List the agent providers this server can run workers on, and whether each is usable now (its binary is found). Call it before spawn_worker to pick a `provider`. Each entry has its capabilities, such as whether every tool call can be gated.",
+				"List the agent providers this server can run workers on, and whether each is usable now (its binary is found). Call it before spawn_worker to pick a `provider`. Each entry has its capabilities, such as whether every tool call can be gated. `server.bootId` and `server.startedAt` identify this server process; workers, runs and approvals do not survive a restart.",
 			inputSchema: schemas.listProviders,
 			outputSchema: ListProvidersOut,
 			annotations: ANNOTATIONS.list_providers,
@@ -201,7 +202,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			};
 			return ok(
 				`${providers.length} provider(s): ${providers.map((p) => `${p.id} (${p.available ? "available" : "unavailable"})`).join(", ")}. Sandbox: ${status.available ? `available (default ${sandbox.default}, minimum ${sandbox.minimum})` : `unavailable (${status.reason})`}.`,
-				{ providers, sandbox },
+				{ providers, sandbox, server: manager.serverInfo() },
 			);
 		}),
 	);
@@ -424,7 +425,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "List workers",
 			description:
-				"List the live workers: id, name, provider, workspace, status, current run, the number of approvals waiting and the latest runs. Use it to find a worker or a run id you lost. Closed workers are not listed, but their runs can be read with get_run for a while.",
+				"List the live workers: id, name, provider, workspace, status, current run, the number of approvals waiting and the latest runs. Use it to find a worker or a run id you lost. Closed and crashed workers are not listed, but their runs can be read with get_run for a while. `server.bootId` and `server.startedAt` identify this server process: if they changed since you last looked, the server restarted and every id you hold (w_, r_, a_) is gone.",
 			inputSchema: schemas.listWorkers,
 			outputSchema: ListWorkersOut,
 			annotations: ANNOTATIONS.list_workers,
@@ -434,7 +435,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			const auditDegraded = manager.auditDegraded;
 			return ok(
 				`${workers.length} live worker(s).${auditDegraded ? " The audit log cannot be written (auditDegraded)." : ""}`,
-				{ workers, auditDegraded },
+				{ workers, auditDegraded, server: manager.serverInfo() },
 			);
 		}),
 	);

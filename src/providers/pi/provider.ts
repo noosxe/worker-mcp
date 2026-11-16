@@ -74,7 +74,44 @@ export const PI_CAPABILITIES: ProviderCapabilities = {
 };
 
 const PREVIEW_CHARS = 2048;
-const STDERR_TAIL = 5;
+const STDERR_TAIL = 40;
+const QUOTE_CHARS = 160;
+
+/** Lines pi's launcher and the runtime print that say nothing about why it died. */
+const NOISE = [
+	/^npm (warn|notice|info|http|verbose|timing)\b/i,
+	/deprecat/i,
+	/^\(node:\d+\)/,
+	/^\(Use `node --/,
+	/ExperimentalWarning/,
+	/^\s*at\s/,
+	/^\s*$/,
+];
+
+/**
+ * The last stderr line that is not launcher or runtime noise, shortened, as
+ * a quotation. It is the worker's own text and stays untrusted: the caller
+ * is told so and it is never longer than one short line.
+ */
+export function stderrQuote(lines: readonly string[]): string {
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i].replace(/\s+/g, " ").trim();
+		if (NOISE.some((re) => re.test(line))) continue;
+		const cut =
+			line.length > QUOTE_CHARS ? `${line.slice(0, QUOTE_CHARS)}…` : line;
+		return ` Last stderr line (untrusted text from the worker): "${cut}"`;
+	}
+	return "";
+}
+
+/** How a process ended, leading with the signal or the exit code. */
+export function describeExit(exit: {
+	code: number | null;
+	signal: string | null;
+}): string {
+	if (exit.signal) return `killed by signal ${exit.signal}`;
+	return `code ${exit.code}`;
+}
 
 export function createPiProvider(
 	config: Config,
@@ -588,13 +625,12 @@ class PiWorker implements WorkerHandle {
 	private onExit(exit: { code: number | null; signal: string | null }): void {
 		this.exited = true;
 		this.lifetime.abort();
-		const how = `code ${exit.code}${exit.signal ? `, signal ${exit.signal}` : ""}`;
-		const tail =
-			this.stderrTail.length > 0 ? `: ${this.stderrTail.join(" | ")}` : "";
+		const how = describeExit(exit);
+		const tail = stderrQuote(this.stderrTail);
 		if (!this.ready) {
 			this.failReady(
 				new Error(
-					`pi exited before the approval gate was ready (${how})${tail}`,
+					`pi exited before the approval gate was ready (${how}).${tail}`,
 				),
 			);
 		}
@@ -607,7 +643,7 @@ class PiWorker implements WorkerHandle {
 				this.finishRun(
 					run,
 					"error",
-					`worker exited unexpectedly (${how})${tail}`,
+					`worker exited unexpectedly (${how}).${tail}`,
 				);
 		}
 		this.host.emit({

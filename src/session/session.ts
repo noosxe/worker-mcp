@@ -16,7 +16,7 @@ import {
 } from "../gate/policy.js";
 import { RISK_LABELS, RiskLevel } from "../gate/risk.js";
 import type { GateServices } from "../gate/services.js";
-import { newApprovalId } from "../ids.js";
+import { Boot } from "../ids.js";
 import type {
 	ApprovalDecision,
 	RawToolCall,
@@ -102,6 +102,8 @@ export interface SessionDeps {
 	children?: ChildRegistry;
 	/** The agent this session runs; required to start it. */
 	provider?: WorkerProvider;
+	/** The server process, whose tag goes into approval ids. */
+	boot?: Boot;
 	/** Where this session's runs live; one per server. */
 	runs?: RunStore;
 	/** How long an aborted run may take to settle before it is forced. */
@@ -219,6 +221,7 @@ export class Session {
 	private readonly children: ChildRegistry;
 	private readonly provider: WorkerProvider | undefined;
 	readonly runs: RunStore;
+	private readonly boot: Boot;
 	private readonly abortGraceMs: number;
 	private readonly now: () => number;
 	private readonly onGone: ((session: Session) => void) | undefined;
@@ -242,7 +245,8 @@ export class Session {
 			deps.children ??
 			new ChildRegistry({ env: this.processEnv, envConfig: this.config.env });
 		this.provider = deps.provider;
-		this.runs = deps.runs ?? runStoreFor(this.config);
+		this.boot = deps.boot ?? new Boot();
+		this.runs = deps.runs ?? runStoreFor(this.config, this.boot);
 		this.abortGraceMs = deps.abortGraceMs ?? 3000;
 		this.now = deps.now ?? Date.now;
 		this.onGone = deps.onGone;
@@ -563,7 +567,7 @@ export class Session {
 	}
 
 	private describeExit(e: { code: number | null; signal: string | null }) {
-		return `code ${e.code}${e.signal ? `, signal ${e.signal}` : ""}`;
+		return e.signal ? `killed by signal ${e.signal}` : `code ${e.code}`;
 	}
 
 	// ---- ending a run ------------------------------------------------------------
@@ -630,7 +634,7 @@ export class Session {
 		signal: AbortSignal,
 	): Promise<ApprovalDecision> {
 		// Made now so the gate's records carry it if the call is escalated.
-		const approvalId = newApprovalId();
+		const approvalId = this.boot.approvalId();
 		const decided = this.approvalGate.decide(
 			{
 				provider: this.provider?.id ?? "unknown",
@@ -1184,8 +1188,9 @@ export class Session {
 }
 
 /** A store configured from the server's limits. */
-export function runStoreFor(config: Config): RunStore {
+export function runStoreFor(config: Config, boot?: Boot): RunStore {
 	return new RunStore({
+		newRunId: boot?.runId,
 		retentionMs: config.limits.resultRetentionMs,
 		maxRetained: config.limits.maxRetainedRuns,
 		maxWaitMs: config.limits.maxWaitMs,

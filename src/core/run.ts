@@ -184,6 +184,8 @@ export interface RunStoreOptions {
 	maxWaitMs: number;
 	outputBufferChars: number;
 	now?: () => number;
+	/** Makes run ids; default: random ones. The server passes its boot's. */
+	newRunId?: () => string;
 }
 
 export type RunListener = (message: string, run: Run) => void;
@@ -226,7 +228,7 @@ export class RunStore {
 	create(workerId: string, prompt: string, intent?: string): Run {
 		this.prune();
 		const run = new Run(
-			newRunId(),
+			(this.opts.newRunId ?? newRunId)(),
 			workerId,
 			prompt,
 			intent,

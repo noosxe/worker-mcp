@@ -697,21 +697,21 @@ The full reference (inputs, results, errors, aliases) is in [docs/mcp-api.md](do
 
 ### Tools
 
-| Tool                  | What it does                                                                             |
-| --------------------- | ---------------------------------------------------------------------------------------- |
-| `list_providers`      | The providers the server can run and whether each is usable.                             |
-| `spawn_worker`        | Starts a gated worker in an absolute `cwd`. Returns its id (`w_…`) and effective policy. |
-| `start_run`           | Gives a worker a task; returns a `runId` at once (or after `waitMs`).                    |
-| `wait_run`            | Waits up to 50 s for a run to end or need an approval; returns its state and output.     |
-| `get_run`             | Reads a run's state and result, paged; also its tool-call transcript.                    |
-| `cancel_run`          | Aborts a run; the worker stays alive.                                                    |
-| `get_pending_actions` | The tool calls waiting for approval.                                                     |
-| `approve_action`      | Allows one pending call. Returns at once.                                                |
-| `reject_action`       | Blocks one pending call and tells the worker why. Returns at once.                       |
-| `list_workers`        | The live workers with their current run and approvals.                                   |
-| `set_risk_policy`     | Replaces a worker's auto-approval policy, lowered to the server's ceiling.               |
-| `get_gate_log`        | Every decision of the approval gate for a worker.                                        |
-| `terminate_worker`    | Stops a worker and frees its name and slot.                                              |
+| Tool                  | What it does                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------------ |
+| `list_providers`      | The providers the server can run and whether each is usable, and the server's `bootId` and start time. |
+| `spawn_worker`        | Starts a gated worker in an absolute `cwd`. Returns its id (`w_…`) and effective policy.               |
+| `start_run`           | Gives a worker a task; returns a `runId` at once (or after `waitMs`).                                  |
+| `wait_run`            | Waits up to 50 s for a run to end or need an approval; returns its state and output.                   |
+| `get_run`             | Reads a run's state and result, paged; also its tool-call transcript.                                  |
+| `cancel_run`          | Aborts a run; the worker stays alive.                                                                  |
+| `get_pending_actions` | The tool calls waiting for approval.                                                                   |
+| `approve_action`      | Allows one pending call. Returns at once.                                                              |
+| `reject_action`       | Blocks one pending call and tells the worker why. Returns at once.                                     |
+| `list_workers`        | The live workers with their current run and approvals.                                                 |
+| `set_risk_policy`     | Replaces a worker's auto-approval policy, lowered to the server's ceiling.                             |
+| `get_gate_log`        | Every decision of the approval gate for a worker.                                                      |
+| `terminate_worker`    | Stops a worker and frees its name and slot.                                                            |
 
 `approve_action` takes `remember: "worker"` to also allow identical calls from that worker without asking, until it is terminated or its policy changes. It is ignored for hard limits, protected paths and CRITICAL calls, and the result says whether it applied (`remembered`).
 
