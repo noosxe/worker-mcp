@@ -16,7 +16,7 @@
       # Build a function over every system exposed by the `systems` input.
       eachSystem = f: nixpkgs.lib.genAttrs (import systems) (system: f system nixpkgs.legacyPackages.${system});
 
-      version = "0.6.0";
+      version = "0.7.0";
       pnpmHash = "sha256-CDaTLWmJiDUenuC3A8S3/IEGHEH/DnXZEQzhP/M9y/U=";
 
       worker-mcp-for =
