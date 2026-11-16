@@ -33,6 +33,8 @@ export class WorkerHost implements ProviderHost {
 		private readonly deps: {
 			children: ChildRegistry;
 			privateDir: string;
+			/** The worker's session directory, when its conversation is kept. */
+			sessionDir?: string;
 			/** Decided by the core for every process of this worker. */
 			sandbox?: "none" | "workspace";
 			sandboxProfile?: SandboxProfile;
@@ -43,6 +45,11 @@ export class WorkerHost implements ProviderHost {
 			log: Logger;
 		},
 	) {}
+
+	/** Pids of the processes this worker has running now. */
+	pids(): number[] {
+		return this.spawned.flatMap((c) => (c.pid === undefined ? [] : [c.pid]));
+	}
 
 	get privateDir(): string {
 		return this.deps.privateDir;
@@ -58,6 +65,7 @@ export class WorkerHost implements ProviderHost {
 			sandbox: this.deps.sandbox ?? "none",
 			sandboxProfile: this.deps.sandboxProfile,
 			privateDir: this.deps.privateDir,
+			sessionDir: this.deps.sessionDir,
 		});
 		this.spawned.push(child);
 		// A per-run provider starts many processes: forget the ones that ended.
@@ -178,6 +186,7 @@ export async function openWorker(
 	const host = new WorkerHost({
 		children: opts.children,
 		privateDir,
+		sessionDir: opts.spec.session?.dir,
 		sandbox: opts.policy.sandbox,
 		sandboxProfile: opts.provider.sandboxProfile,
 		isolateCommand:
@@ -188,6 +197,8 @@ export async function openWorker(
 						opts.children.isolateCommand(
 							command,
 							opts.provider.sandboxProfile as SandboxProfile,
+							// The commands a worker runs must not read its conversation.
+							opts.spec.session ? [opts.spec.session.dir] : [],
 						)
 				: undefined,
 		emit: opts.emit,

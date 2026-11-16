@@ -96,6 +96,7 @@ let
               logLevel = "debug";
               legacyTools = false;
               persistRuns = false;
+              persistSessions = false;
               recordRetentionMs = 86400000;
               maxRecordedRuns = 100;
               sandbox = {
@@ -203,6 +204,7 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .limits.allowedRoots == ["/home/user/src"]
           and .limits.maxWorkers == 2
           and .persistRuns == false
+          and .persistSessions == false
           and .limits.recordRetentionMs == 86400000
           and .limits.maxRecordedRuns == 100
           and .logLevel == "debug"

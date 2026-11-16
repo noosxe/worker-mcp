@@ -777,4 +777,150 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 			}
 		});
 	});
+
+	describe("a worker's saved conversation", () => {
+		/** The state directory sits outside $HOME and /tmp: only the sandbox can hide it. */
+		let stateDir: string;
+		before(() => {
+			stateDir = path.join(outside, "state");
+			fs.mkdirSync(stateDir, { mode: 0o700 });
+			fs.writeFileSync(path.join(stateDir, "canary.txt"), "STATE-CANARY");
+			iso.env.WORKER_MCP_STATE_DIR = stateDir;
+		});
+		after(() => {
+			delete iso.env.WORKER_MCP_STATE_DIR;
+		});
+
+		/** Run a command through the gate (and so the second sandbox); approves what is asked. */
+		// oxlint-disable-next-line unicorn/consistent-function-scoping -- a test helper next to its use
+		async function gated(
+			server: RawServer,
+			workerId: string,
+			scenario: string,
+		) {
+			let res = await server.callTool("start_run", {
+				workerId,
+				prompt: `scenario:${scenario}`,
+				intent: "session probe",
+				waitMs: 10_000,
+			});
+			let view = viewOf(res.result);
+			for (let i = 0; i < 5 && view.state === "awaiting_approval"; i++) {
+				await server.callTool("approve_action", {
+					approvalId: view.pendingApprovals[0].approvalId,
+				});
+				res = await server.callTool("wait_run", {
+					runId: view.runId,
+					waitMs: 10_000,
+				});
+				view = viewOf(res.result);
+			}
+			assert.strictEqual(view.state, "completed", view.error ?? "");
+			return view.output.text ?? "";
+		}
+
+		/** Spawn a worker and give it one prompt, so pi has written its session file. */
+		async function workerWithSession(server: RawServer) {
+			const { worker } = await spawnWorker(server, iso.cwd);
+			const id = worker.workerId;
+			await gated(server, id, "echo hello");
+			const sessionDir = path.join(stateDir, "workers", id, "session");
+			const files = fs.readdirSync(sessionDir);
+			assert.strictEqual(
+				files.length,
+				1,
+				"pi wrote its session file in the sandbox",
+			);
+			assert.strictEqual(
+				fs.lstatSync(path.join(sessionDir, files[0])).mode & 0o777,
+				0o600,
+				"private once the run settled",
+			);
+			return { id, sessionDir, file: path.join(sessionDir, files[0]) };
+		}
+
+		test("pi can write its session; the rest of the state directory is not there", async () => {
+			const server = await start();
+			const { id, sessionDir } = await workerWithSession(server);
+			// ungated: the first sandbox only, what pi itself can see
+			const canary = await exec(server, id, `cat ${stateDir}/canary.txt`);
+			assert.notStrictEqual(canary.code, 0);
+			assert.ok(!canary.out.includes("STATE-CANARY"));
+			const record = await exec(
+				server,
+				id,
+				`cat ${stateDir}/workers/${id}/worker.json ${stateDir}/workers/${id}/owner`,
+			);
+			assert.notStrictEqual(record.code, 0);
+			const listing = await exec(server, id, `ls -A ${stateDir}/workers/${id}`);
+			assert.strictEqual(listing.out.trim(), "session");
+			const own = await exec(server, id, `ls -A ${sessionDir} | wc -l`);
+			assert.strictEqual(own.out.trim(), "1");
+			// and it is writable, which pi needs
+			const write = await exec(
+				server,
+				id,
+				`echo x > ${sessionDir}/probe && echo wrote`,
+			);
+			assert.match(write.out, /wrote/);
+			fs.rmSync(path.join(sessionDir, "probe"), { force: true });
+			await server.callTool("terminate_worker", { workerId: id });
+		});
+
+		test(
+			"a shell command of the worker cannot see its session directory",
+			{ skip: toolSkip },
+			async () => {
+				const server = await start();
+				const { id, sessionDir, file } = await workerWithSession(server);
+				const out = await gated(
+					server,
+					id,
+					`bash:ls -A ${sessionDir} | wc -l; cat ${file} 2>&1 | head -c 100; cat ${stateDir}/canary.txt 2>&1 | head -c 100`,
+				);
+				assert.match(out, /^exit=0\n0\n/, out);
+				assert.ok(!out.includes("hello"), "the conversation is not readable");
+				assert.ok(!out.includes("STATE-CANARY"));
+				// a write there goes to the throwaway tmpfs, not to the session
+				await gated(server, id, `bash:echo planted > ${sessionDir}/planted`);
+				assert.ok(!fs.existsSync(path.join(sessionDir, "planted")));
+				await server.callTool("terminate_worker", { workerId: id });
+			},
+		);
+
+		test("pi's own read, write and edit of the session and state directories are hard limits", async () => {
+			const server = await start();
+			const { id, sessionDir, file } = await workerWithSession(server);
+			for (const target of [
+				file,
+				sessionDir,
+				path.join(stateDir, "workers", id, "worker.json"),
+				path.join(stateDir, "canary.txt"),
+			]) {
+				const res = await server.callTool("start_run", {
+					workerId: id,
+					prompt: `scenario:read:${target}`,
+					intent: "session probe",
+					waitMs: 10_000,
+				});
+				const view = viewOf(res.result);
+				assert.strictEqual(view.state, "awaiting_approval", target);
+				assert.strictEqual(view.pendingApprovals[0].hardLimit, true, target);
+				await server.callTool("reject_action", {
+					approvalId: view.pendingApprovals[0].approvalId,
+					reason: "test",
+				});
+				const done = viewOf(
+					(
+						await server.callTool("wait_run", {
+							runId: view.runId,
+							waitMs: 10_000,
+						})
+					).result,
+				);
+				assert.ok(!(done.output.text ?? "").includes("STATE-CANARY"), target);
+			}
+			await server.callTool("terminate_worker", { workerId: id });
+		});
+	});
 });

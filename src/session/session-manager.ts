@@ -8,6 +8,7 @@ import { stderrLogger } from "../core/log.js";
 import { type LoadedRecord, RunRecordStore } from "../core/run-records.js";
 import { type RunStore } from "../core/run.js";
 import { SandboxService, type SandboxStatus } from "../core/sandbox.js";
+import { type NewWorker, WorkerStore } from "../core/worker-store.js";
 import { ToolError } from "../errors.js";
 import { closeAbandonedApprovals } from "../gate/abandon.js";
 import { DEFAULT_AUDIT_KEEP } from "../gate/audit.js";
@@ -32,6 +33,10 @@ export interface ManagerOptions {
 	sandbox?: SandboxService;
 	/** Replaces the identity of this server process (tests). */
 	boot?: Boot;
+	/** Replaces the 3 days a kept session is retained (tests). */
+	sessionRetentionMs?: number;
+	/** Replaces the 256 MiB cap on all kept sessions together (tests). */
+	maxSessionBytes?: number;
 }
 
 /** One line of an error message: no stack, no stderr dump. */
@@ -63,6 +68,15 @@ export class SessionManager {
 	private readonly boots: BootRegistry;
 	/** Run records on disk; null when `persistRuns` is off. */
 	private readonly records: RunRecordStore | null;
+	/** Worker records and sessions on disk; null when `persistSessions` is off. */
+	readonly workers: WorkerStore | null;
+	/** Workers of this server whose conversation is kept (by worker id). */
+	private readonly kept = new Set<string>();
+	private readonly providerVersions = new Map<
+		string,
+		Promise<string | undefined>
+	>();
+	private sessionWarned = false;
 	private bootRegistered: boolean | null = null;
 	private started = false;
 	private maintenance: ReturnType<typeof setInterval> | null = null;
@@ -90,6 +104,7 @@ export class SessionManager {
 			env,
 			envConfig: config.env,
 			sandbox: this.sandbox,
+			stateDir: config.stateDir,
 		});
 		this.boot = options.boot ?? new Boot(options.now);
 		this.boots = new BootRegistry(
@@ -109,20 +124,31 @@ export class SessionManager {
 					now: options.now,
 				})
 			: null;
+		this.workers = config.persistSessions
+			? new WorkerStore({
+					dir: path.join(config.stateDir, "workers"),
+					bootId: this.boot.id,
+					boots: this.boots,
+					retentionMs: options.sessionRetentionMs,
+					maxBytes: options.maxSessionBytes,
+					log: stderrLogger,
+					now: options.now,
+				})
+			: null;
 		const records = this.records;
-		this.runs = runStoreFor(
-			config,
-			this.boot,
-			records
-				? {
-						// A record is only written once this boot is marked as live,
-						// or another server would take its runs for dead ones.
-						save: (run) => {
-							if (this.ensureBootRegistered()) records.save(run);
-						},
-					}
-				: undefined,
-		);
+		this.runs = runStoreFor(config, this.boot, {
+			save: (run) => {
+				// A record is only written once this boot is marked as live,
+				// or another server would take its runs for dead ones.
+				if (records && this.ensureBootRegistered()) records.save(run);
+				// The agent has written to its session by now: make it private,
+				// and note the activity for retention.
+				if (this.kept.has(run.workerId)) {
+					this.workers?.tighten(run.workerId);
+					this.workers?.touch(run.workerId);
+				}
+			},
+		});
 		// Throws a ConfigError when a classifier's token file is unusable.
 		this.gate =
 			options.gateServices ??
@@ -165,6 +191,7 @@ export class SessionManager {
 		try {
 			this.records?.recoverInterrupted();
 			this.records?.prune();
+			this.workers?.prune();
 		} catch (e) {
 			stderrLogger.warn(
 				`worker-mcp: run records not recovered: ${firstLine(e)}`,
@@ -191,6 +218,7 @@ export class SessionManager {
 				this.boots.sweep();
 				this.records?.recoverInterrupted();
 				this.records?.prune();
+				this.workers?.prune();
 			} catch (e) {
 				stderrLogger.warn(`worker-mcp: record upkeep failed: ${firstLine(e)}`);
 			}
@@ -268,6 +296,7 @@ export class SessionManager {
 		riskPolicy?: unknown,
 		providerId?: string,
 		sandbox?: "none" | "workspace",
+		persistSession?: boolean,
 	): Promise<Session> {
 		if (name !== undefined && !WORKER_NAME_PATTERN.test(name)) {
 			throw new ToolError(
@@ -319,6 +348,17 @@ export class SessionManager {
 			if (iso.note) notes.push(iso.note);
 		}
 
+		// A worker's conversation is kept when the server keeps them and the
+		// caller did not say no (it can turn it off, never on). The provider
+		// version is looked up first: nothing below this line awaits.
+		const wantsSession =
+			this.workers !== null &&
+			persistSession !== false &&
+			provider.sessionProfile?.needsDir === true;
+		const providerVersion = wantsSession
+			? await this.providerVersion(provider)
+			: undefined;
+
 		// Everything from here to `sessions.set` is synchronous: nothing can
 		// register a worker, or take its name or slot, in between.
 		let replaced: Session | undefined;
@@ -346,6 +386,19 @@ export class SessionManager {
 		}
 		let id = this.boot.workerId();
 		while (this.sessions.has(id)) id = this.boot.workerId();
+		const keep = wantsSession
+			? this.keepSession(id, {
+					name,
+					provider: provider.id,
+					providerVersion,
+					model: model ?? this.defaultModel(provider.id),
+					cwd: realCwd,
+					sandbox: { requested: sandbox, applied: decided.mode },
+					toolIsolation,
+					policy: riskPolicy,
+					systemPromptChars: systemPrompt?.length,
+				})
+			: null;
 		const session = new Session(
 			id,
 			realCwd,
@@ -361,12 +414,15 @@ export class SessionManager {
 				sandbox: decided.mode,
 				sandboxReport: { clamped: decided.clamped, notes },
 				toolIsolation,
+				session: keep ? { dir: keep.sessionDir, id } : undefined,
 				runs: this.runs,
 				boot: this.boot,
 				gateServices: this.gate,
 				name,
 				now: this.now,
 				onGone: (s) => {
+					// The process is gone: the session stays for a later resume.
+					this.releaseKept(s.sessionId);
 					if (this.sessions.get(s.sessionId) === s) {
 						this.sessions.delete(s.sessionId);
 						this.noteEnded(s, "its process exited and it was dropped");
@@ -376,14 +432,21 @@ export class SessionManager {
 			},
 		);
 		this.sessions.set(id, session);
-		void replaced?.terminate();
+		if (replaced) {
+			const old = replaced;
+			void old.terminate().then(() => this.releaseKept(old.sessionId));
+		}
 		this.startReaper();
 
 		try {
 			await session.start();
 		} catch (e) {
-			// A session that never started must not hold a slot or a name.
+			// A session that never started must not hold a slot or a name, and
+			// has nothing worth keeping.
 			this.sessions.delete(id);
+			// (its process may already have been reported gone, which released it)
+			this.kept.delete(id);
+			if (keep) this.workers?.remove(id);
 			const message = firstLine(e);
 			this.changed();
 			throw new ToolError(
@@ -394,8 +457,65 @@ export class SessionManager {
 			);
 		}
 
+		const pid = session.processIds()[0];
+		if (keep && pid !== undefined) this.workers?.setOwnerPid(id, pid);
 		this.changed();
 		return session;
+	}
+
+	/** The provider's version, looked up once. */
+	private providerVersion(
+		provider: WorkerProvider,
+	): Promise<string | undefined> {
+		let found = this.providerVersions.get(provider.id);
+		if (!found) {
+			found = provider
+				.check(this.config)
+				.then((c) => (c.available ? c.version : undefined))
+				.catch(() => undefined);
+			this.providerVersions.set(provider.id, found);
+		}
+		return found;
+	}
+
+	/**
+	 * Make the directories, the owner claim and the record of a worker whose
+	 * conversation is kept. A failure is reported once and the worker runs
+	 * without a session: keeping it is never a reason to refuse a spawn.
+	 */
+	private keepSession(
+		lineage: string,
+		info: Omit<NewWorker, "lineage">,
+	): { sessionDir: string } | null {
+		const store = this.workers;
+		if (!store) return null;
+		try {
+			// The owner claim is only honoured by other servers once this boot is live.
+			if (!this.ensureBootRegistered()) {
+				throw new Error("this server could not be recorded as running");
+			}
+			const layout = store.create({ ...info, lineage });
+			this.kept.add(lineage);
+			return { sessionDir: layout.sessionDir };
+		} catch (e) {
+			if (!this.sessionWarned) {
+				this.sessionWarned = true;
+				stderrLogger.warn(
+					`worker-mcp: cannot keep sessions under ${store.dir}: ${firstLine(e)}. Workers run without a session file (not resumable).`,
+				);
+			}
+			return null;
+		}
+	}
+
+	/** The process of a kept worker is gone: give up the claim, keep the session. */
+	private releaseKept(id: string): void {
+		if (this.kept.delete(id)) this.workers?.release(id);
+	}
+
+	/** Delete a kept worker's session and record. */
+	private dropKept(id: string): void {
+		if (this.kept.delete(id)) this.workers?.remove(id);
 	}
 
 	/** Called when a worker is added or removed (resource list changes). */
@@ -564,6 +684,8 @@ export class SessionManager {
 		this.noteEnded(session, "it was terminated");
 		this.changed();
 		await session.terminate();
+		// An explicit end means done: the conversation goes with it.
+		this.dropKept(session.sessionId);
 	}
 
 	/**
@@ -583,6 +705,8 @@ export class SessionManager {
 		}
 		if (idle.length > 0) this.changed();
 		await Promise.all(idle.map((s) => s.terminate()));
+		// Closed for being idle: the session is kept.
+		for (const s of idle) this.releaseKept(s.sessionId);
 		return idle.map((s) => s.sessionId);
 	}
 
@@ -606,8 +730,10 @@ export class SessionManager {
 		if (this.maintenance) clearInterval(this.maintenance);
 		this.maintenance = null;
 		const all = [...this.sessions.values()].map((s) => s.terminate("shutdown"));
+		const ids = [...this.sessions.keys()];
 		this.sessions.clear();
 		await Promise.all([...all, this.children.terminateAll()]);
+		for (const id of ids) this.releaseKept(id);
 		this.runtime.dispose();
 		this.boots.unregister();
 	}

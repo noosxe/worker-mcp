@@ -290,6 +290,25 @@ describe("gate wire helpers", () => {
 });
 
 describe("pi argv", () => {
+	test("with a session: its directory and id replace --no-session, nothing else changes", () => {
+		const plain = buildPiArgs({ gateFile: "/g/gate.ts", systemPrompt: "x" });
+		const kept = buildPiArgs({
+			gateFile: "/g/gate.ts",
+			systemPrompt: "x",
+			session: { dir: "/s/dir", id: "w_abcd1234" },
+		});
+		assert.ok(!kept.includes("--no-session"));
+		// the same arguments in the same order, with the one flag swapped
+		const swapped = plain.flatMap((a) =>
+			a === "--no-session"
+				? ["--session-dir", "/s/dir", "--session-id", "w_abcd1234"]
+				: [a],
+		);
+		assert.deepStrictEqual(kept, swapped);
+		for (const flag of PI_HARDENING_FLAGS) assert.ok(kept.includes(flag));
+		assert.ok(kept.includes("-e"));
+	});
+
 	test("always carries the hardening flags and the gate, and the system prompt", () => {
 		const args = buildPiArgs({
 			gateFile: "/g/gate.ts",

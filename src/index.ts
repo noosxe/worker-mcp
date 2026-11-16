@@ -72,6 +72,7 @@ Options:
       --http-allow-ceiling <level>  Highest level a classifier may allow (default HIGH)
       --on-classifier-failure <escalate|deny>  What an unanswered classifier means (default escalate)
       --persist-runs <on|off> Keep a record of each run on disk so it can be read after a restart (default on)
+      --persist-sessions <on|off> Keep each worker's conversation on disk (default on; not resumable yet)
       --record-retention-ms <n>  Delete run records older than this (default 604800000, 7 days)
       --max-recorded-runs <n> Most run records kept on disk (default 500)
       --audit <on|off>        Write the audit log file (default on)

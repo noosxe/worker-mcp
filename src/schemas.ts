@@ -145,6 +145,12 @@ export const schemas = {
 			.describe(
 				"How the worker is confined. \"workspace\" (Linux, bubblewrap): the worker can write only its workspace, and cannot see the home directory (such as ~/.ssh). Default: the server's default; it can never be lower than the server's minimum (list_providers shows both).",
 			),
+		persistSession: z
+			.boolean()
+			.optional()
+			.describe(
+				"Set false to keep nothing of this worker's conversation on disk. Cannot turn it on when the server has it off. Default: the server's setting.",
+			),
 	}),
 	getPendingActions: z.strictObject({
 		workerId: ref("Only this worker's approvals").optional(),

@@ -369,6 +369,29 @@ It does not change what is protected:
   `abandoned` when the server restarts, and an old approval id is never
   honoured.
 
+- Saved conversations (`<stateDir>/workers`, on by default,
+  `persistSessions: false` or `spawn_worker`'s `persistSession: false` turn them
+  off, and nothing can resume them yet). pi's session file holds the whole
+  conversation: prompts, the contents of every file the worker read and the
+  output of every command, at worker-output trust, so it can hold secrets and
+  injected text. Each worker has a 0700 directory with a 0600 `worker.json`
+  (metadata only: no prompt, tool argument, credential or approval) and its own
+  0700 `session/` directory. pi creates its file as 0644 (the process umask);
+  the server sets 0600 when each run settles and when the worker closes, and
+  the directory's 0700 keeps other users out between those moments. In the
+  `workspace` sandbox pi has only its own `session/` directory, writable; the
+  state directory is hidden from the sandbox when it lives outside `$HOME`
+  (inside it, the hidden home directory already covers it), and the second
+  sandbox around shell commands hides the session directory too. pi's own
+  file tools run outside that second sandbox, so for them the state directory
+  is a hard limit at the gate: reads are HIGH and writes CRITICAL, and neither
+  can be auto-approved. With `sandbox: none` only that gate rule stands between
+  a worker and the state directory. A server that holds a worker writes an
+  `owner` claim next to it; one whose server died is taken over, one held by a
+  live server never is, and the retention sweep (3 days, 256 MiB, oldest first)
+  never deletes it. `terminate_worker` deletes the worker's conversation; an
+  idle close or a crash keeps it.
+
 ## What it does not protect
 
 - **The risk classifier is a convenience, not a sandbox.** It is a rule-based

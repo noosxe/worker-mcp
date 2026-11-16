@@ -47,6 +47,8 @@ export interface WorkerProvider {
 	 * core mounts it; the provider only declares it. Default: nothing.
 	 */
 	readonly sandboxProfile?: SandboxProfile;
+	/** Can keep its conversation in a directory the core gives it (`WorkerSpec.session`). */
+	readonly sessionProfile?: { needsDir: boolean };
 	/** Cheap availability probe: binary found, version. No model calls. */
 	check(config: Config): Promise<ProviderCheck>;
 	/** Validates provider-specific spawn options; unknown keys are rejected. */
@@ -71,6 +73,12 @@ export interface WorkerSpec {
 	options: Record<string, unknown>;
 	/** For resume-capable providers. */
 	resumeToken?: string;
+	/**
+	 * Present when the conversation is kept. The core owns the directory: it
+	 * exists (0700), is bound read-write into the sandbox and hidden from the
+	 * agent's shell commands. Absent: the provider keeps nothing.
+	 */
+	session?: { dir: string; id: string };
 }
 
 export interface ProviderHost {
