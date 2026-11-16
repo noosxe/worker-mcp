@@ -215,6 +215,11 @@ describe("restart: ids from an earlier server", () => {
 		}
 		assert.strictEqual(a.madeByEarlierServer("worker", a.workerId()), false);
 		assert.strictEqual(a.madeByEarlierServer("worker", b.workerId()), true);
+		// An id from a server before tags existed: its first characters are not this server's tag.
+		assert.strictEqual(
+			a.madeByEarlierServer("worker", `w_${a.id[0] === "a" ? "b" : "a"}1b2c3d`),
+			true,
+		);
 		assert.strictEqual(a.madeByEarlierServer("run", b.runId()), true);
 		assert.strictEqual(a.madeByEarlierServer("approval", b.approvalId()), true);
 	});
