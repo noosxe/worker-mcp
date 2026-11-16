@@ -163,6 +163,9 @@ let
       // lib.optionalAttrs (cfg.maxRecordedRuns != null) { maxRecordedRuns = cfg.maxRecordedRuns; }
       // lib.optionalAttrs (cfg.sessionRetentionMs != null) { sessionRetentionMs = cfg.sessionRetentionMs; }
       // lib.optionalAttrs (cfg.maxSessionBytes != null) { maxSessionBytes = cfg.maxSessionBytes; };
+    resume = lib.optionalAttrs (cfg.maxResumeContextTokens != null) {
+      maxContextTokens = cfg.maxResumeContextTokens;
+    };
     sandbox =
       lib.filterAttrs (_: v: v != null) {
         inherit (cfg.sandbox) minimum default bwrapPath toolIsolation;
@@ -340,7 +343,7 @@ in
         file content and command output the worker saw, in
         `<stateDir>/workers/<id>/` (mode 0700, files 0600). Sessions are
         removed after `sessionRetentionMs` (3 days) or when they pass `maxSessionBytes` (256 MiB) in total, and by
-        `terminate_worker`. They are not resumable yet. Turn it off to run
+        `terminate_worker`. `spawn_worker` with `resumeFrom` continues one. Turn it off to run
         the agent without a session file; `spawn_worker` can also turn it off
         for one worker. `WORKER_MCP_PERSIST_SESSIONS` overrides it.
       '';
@@ -387,6 +390,18 @@ in
         256 MiB.
       '';
       example = 67108864;
+    };
+
+    maxResumeContextTokens = mkOption {
+      type = types.nullOr (types.ints.between 1 100000000);
+      default = null;
+      description = ''
+        Refuse to resume a saved conversation whose context is estimated above
+        this many tokens (`resume.maxContextTokens`); replaying it would cost
+        that much again on every request, so a new worker with a summary is
+        the better start. Default: 150000.
+      '';
+      example = 80000;
     };
 
     legacyTools = mkOption {

@@ -66,6 +66,7 @@
 // process at that point of a run (after-user: user message written;
 // after-tool-call: assistant tool call written, gate not asked; after-gate:
 // gate answered, tool not finished).
+// FAKE_PI_USAGE=<n> makes assistant messages carry usage with n input tokens.
 // After loading the extensions fake-pi fires `session_start` the way pi does,
 // so a gate that reports readiness from that hook is seen on the wire.
 import { spawn, spawnSync } from "node:child_process";
@@ -239,6 +240,21 @@ function writeMessage(message) {
 				}),
 			),
 		);
+	}
+	// FAKE_PI_USAGE=<tokens>: assistant messages report that many input tokens,
+	// like real pi's `usage`. Without it they carry none (a session with no usage).
+	if (message.role === "assistant" && process.env.FAKE_PI_USAGE) {
+		const tokens = Number(process.env.FAKE_PI_USAGE);
+		message = {
+			...message,
+			usage: {
+				input: tokens,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: tokens,
+			},
+		};
 	}
 	lines.push(appendEntry("message", sessionMessage(message)));
 	const data = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";

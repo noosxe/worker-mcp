@@ -84,6 +84,9 @@ export interface DecideContext {
 
 const MAX_REMEMBERED = 1000;
 
+/** The rule id of the repeat guard of a resumed worker (see `armRepeatGuard`). */
+export const REPEAT_GUARD_RULE_ID = "resume.repeat_cut_off";
+
 export const DEFAULT_MAX_AUTO_APPROVE = RiskLevel.MEDIUM;
 
 /**
@@ -104,6 +107,8 @@ export class Gate {
 	private readonly workspace: string;
 	/** Allows the coordinator asked to keep for this worker, by call key. */
 	private readonly remembered = new Set<string>();
+	/** Digests of the calls a stopped server cut off, while the guard is armed. */
+	private readonly cutOff = new Set<string>();
 
 	constructor(options: GateOptions) {
 		this.options = options;
@@ -180,6 +185,46 @@ export class Gate {
 		this.options.cache?.clearWorker(this.options.workerId ?? "");
 	}
 
+	/**
+	 * The repeat guard of a resumed worker: while armed, a call whose arguments
+	 * have one of these digests (a call that was cut off by a restart, so its
+	 * result is unknown) is sent to the coordinator whatever the rules, a
+	 * classifier, an override or a remembered approval say, unless it is rated
+	 * LOW. A denial stays a denial and hard limits stay hard limits. The
+	 * coordinator's approval lifts the guard for that call.
+	 */
+	armRepeatGuard(digests: Iterable<string>): void {
+		for (const d of digests) this.cutOff.add(d);
+	}
+
+	/** Drop the repeat guard (the first resumed run has ended). */
+	disarmRepeatGuard(): void {
+		this.cutOff.clear();
+	}
+
+	private guarded(o: GateOutcome): GateOutcome {
+		if (
+			this.cutOff.size === 0 ||
+			o.decision !== "allow" ||
+			o.level <= RiskLevel.LOW ||
+			!this.cutOff.has(digest(o.call.input))
+		) {
+			return o;
+		}
+		return {
+			...o,
+			decision: "escalate",
+			decidedBy: "rules",
+			ruleId: REPEAT_GUARD_RULE_ID,
+			// Not for a classifier or a remembered approval to settle, and not
+			// to be remembered: a repeat of a cut-off call is a new decision.
+			autoAllowable: false,
+			escalatedBecause: "repeat_cut_off",
+			reason:
+				"This call repeats a tool call that was cut off before the restart; its result is unknown, so it may already have run, partly or fully. Check the workspace before approving it (an approval is not remembered).",
+		};
+	}
+
 	private recent(): RecentAction[] {
 		const n = this.options.recentActions ?? 10;
 		if (n <= 0) return [];
@@ -247,12 +292,14 @@ export class Gate {
 			return decided
 				.catch((e) => this.failed(raw, requestId, e, call))
 				.then((o) => {
-					this.record(o, actionId, ctx);
-					return o;
+					const final = this.guarded(o);
+					this.record(final, actionId, ctx);
+					return final;
 				});
 		}
-		this.record(decided, actionId, ctx);
-		return decided;
+		const final = this.guarded(decided);
+		this.record(final, actionId, ctx);
+		return final;
 	}
 
 	/** Record what happened after an escalation: the coordinator's answer. */
@@ -264,6 +311,14 @@ export class Gate {
 	): void {
 		const original = this.log.findByAction(actionId);
 		if (!original) return;
+		// The coordinator looked at the repeat and said yes: it is decided.
+		if (
+			decision === "allow" &&
+			decidedBy === "coordinator" &&
+			original.rule.ruleId === REPEAT_GUARD_RULE_ID
+		) {
+			this.cutOff.delete(original.argsDigest);
+		}
 		this.push({
 			...original,
 			ts: new Date().toISOString(),

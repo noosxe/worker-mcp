@@ -166,7 +166,21 @@ export const schemas = {
 		workerId: ref("Only this worker's approvals").optional(),
 		runId: RunId.optional().describe("Only this run's approvals."),
 	}),
-	listWorkers: z.strictObject({}),
+	listWorkers: z.strictObject({
+		resumable: z
+			.boolean()
+			.optional()
+			.describe(
+				"List saved conversations that spawn_worker({ resumeFrom }) could continue (from earlier server processes too), newest first, instead of the live workers.",
+			),
+		limit: z
+			.number()
+			.int()
+			.min(1)
+			.max(50)
+			.optional()
+			.describe("With resumable: at most this many (default 10, max 50)."),
+	}),
 	setRiskPolicy: z.strictObject({
 		workerId: ref("The worker"),
 		policy: RiskPolicy,

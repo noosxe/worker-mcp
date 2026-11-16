@@ -518,17 +518,36 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "List workers",
 			description:
-				"List the live workers: id, name, provider, workspace, status, current run, the number of approvals waiting and the latest runs. Use it to find a worker or a run id you lost. Closed and crashed workers are not listed, but their runs can be read with get_run for a while. `server.bootId` and `server.startedAt` identify this server process: if they changed since you last looked, the server restarted and every id you hold (w_, r_, a_) is gone.",
+				"List the live workers: id, name, provider, workspace, status, current run, the number of approvals waiting and the latest runs. Use it to find a worker or a run id you lost. Closed and crashed workers are not listed, but their runs can be read with get_run for a while. With `resumable: true` it also lists saved conversations that spawn_worker({ resumeFrom }) could continue, newest first, bounded by `limit` (default 10): id to pass, name, workspace, last activity, last run, cut-off call count, context size in tokens, and why one cannot be resumed (live elsewhere, damaged, over the context limit). What comes from the saved conversation sits under `untrustedSession`. `server.bootId` and `server.startedAt` identify this server process: if they changed since you last looked, the server restarted and every id you hold (w_, r_, a_) is gone.",
 			inputSchema: schemas.listWorkers,
 			outputSchema: ListWorkersOut,
 			annotations: ANNOTATIONS.list_workers,
 		},
-		guarded(async () => {
+		guarded(async ({ resumable, limit }) => {
 			const workers = manager.allSessions().map((s) => ctx.workerData(s));
 			const auditDegraded = manager.auditDegraded;
+			const found = resumable
+				? await manager.listResumable(limit ?? 10)
+				: undefined;
+			const usable = found?.items.filter((i) => i.resumable).length ?? 0;
 			return ok(
-				`${workers.length} live worker(s).${auditDegraded ? " The audit log cannot be written (auditDegraded)." : ""}`,
-				{ workers, auditDegraded, server: manager.serverInfo() },
+				`${workers.length} live worker(s).${found ? ` ${found.items.length} of ${found.total} saved conversation(s) shown, ${usable} resumable.` : ""}${auditDegraded ? " The audit log cannot be written (auditDegraded)." : ""}`,
+				{
+					workers,
+					auditDegraded,
+					server: manager.serverInfo(),
+					...(found
+						? {
+								resumable: {
+									total: found.total,
+									shown: found.items.length,
+									items: found.items,
+								},
+							}
+						: {}),
+				},
+				"resumable",
+				"worker",
 			);
 		}),
 	);

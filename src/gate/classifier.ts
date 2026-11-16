@@ -97,7 +97,8 @@ export type EscalatedBecause =
 	| "manual_mode"
 	| "low_confidence"
 	| "classifier_error"
-	| "ceiling";
+	| "ceiling"
+	| "repeat_cut_off";
 
 export interface GateOutcome {
 	requestId: string;

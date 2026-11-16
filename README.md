@@ -513,45 +513,46 @@ Lowest to highest:
 
 ### Settings
 
-| Config key                             | Environment variable                | Flag                       | Default                                     |
-| -------------------------------------- | ----------------------------------- | -------------------------- | ------------------------------------------- |
-| (file location)                        | `WORKER_MCP_CONFIG`                 | `--config <path>`          | `$XDG_CONFIG_HOME/worker-mcp/config.json`   |
-| `providers.pi.path`                    | `WORKER_MCP_PI_PATH`                | `--pi-path`                | `pi` (found on `PATH`)                      |
-| `providers.pi.defaultModel`            | `WORKER_MCP_PI_DEFAULT_MODEL`       | `--pi-default-model`       | none (pi's own default)                     |
-| `providers.pi.startupTimeoutMs`        | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS`  | `--pi-startup-timeout-ms`  | `60000`                                     |
-| `limits.commandTimeoutMs`              | `WORKER_MCP_COMMAND_TIMEOUT`        | `--command-timeout-ms`     | no longer used                              |
-| `limits.maxOutputChars`                | `WORKER_MCP_MAX_OUTPUT_CHARS`       | `--max-output-chars`       | `64000`                                     |
-| `limits.maxRunMs`                      | `WORKER_MCP_RUN_TIMEOUT_MS`         | `--run-timeout-ms`         | `1800000` (30 min)                          |
-| `limits.maxWaitMs`                     | `WORKER_MCP_MAX_WAIT_MS`            | `--max-wait-ms`            | `50000`                                     |
-| `limits.runStartTimeoutMs`             | `WORKER_MCP_RUN_START_TIMEOUT_MS`   | `--run-start-timeout-ms`   | `15000`                                     |
-| `limits.maxWorkers`                    | `WORKER_MCP_MAX_WORKERS`            | `--max-workers`            | `4`                                         |
-| `limits.idleTimeoutMs`                 | `WORKER_MCP_IDLE_TIMEOUT_MS`        | `--idle-timeout-ms`        | `1800000` (30 min)                          |
-| `limits.allowedRoots`                  | `WORKER_MCP_ALLOWED_ROOTS`          | `--allowed-roots`          | none: any directory                         |
-| `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`    | `--approval-timeout-ms`    | `600000` (10 min)                           |
-| `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`        | `--env-passthrough`        | none                                        |
-| `persistRuns`                          | `WORKER_MCP_PERSIST_RUNS`           | `--persist-runs`           | `true`                                      |
-| `persistSessions`                      | `WORKER_MCP_PERSIST_SESSIONS`       | `--persist-sessions`       | `true`                                      |
-| `limits.sessionRetentionMs`            | `WORKER_MCP_SESSION_RETENTION_MS`   | `--session-retention-ms`   | `259200000` (3 days; at most a year)        |
-| `limits.maxSessionBytes`               | `WORKER_MCP_MAX_SESSION_BYTES`      | `--max-session-bytes`      | `268435456` (256 MiB; at most 1 TiB)        |
-| `limits.recordRetentionMs`             | `WORKER_MCP_RECORD_RETENTION_MS`    | `--record-retention-ms`    | `604800000` (7 days)                        |
-| `limits.maxRecordedRuns`               | `WORKER_MCP_MAX_RECORDED_RUNS`      | `--max-recorded-runs`      | `500`                                       |
-| `logLevel`                             | `WORKER_MCP_LOG_LEVEL`              | `--log-level`              | `info`                                      |
-| `stateDir`                             | `WORKER_MCP_STATE_DIR`              | `--state-dir`              | `$XDG_STATE_HOME/worker-mcp`                |
-| `runtimeDir`                           | `WORKER_MCP_RUNTIME_DIR`            | `--runtime-dir`            | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`   |
-| `gate.maxAutoApprove`                  | `WORKER_MCP_MAX_AUTO_APPROVE`       | `--max-auto-approve`       | `MEDIUM`                                    |
-| `gate.protectedPaths`                  | (file only)                         |                            | none                                        |
-| `gate.mode`                            | `WORKER_MCP_GATE_MODE`              | `--gate-mode`              | `manual` (`auto` needs a classifier)        |
-| `gate.httpAllowCeiling`                | `WORKER_MCP_HTTP_ALLOW_CEILING`     | `--http-allow-ceiling`     | `HIGH`                                      |
-| `gate.onClassifierFailure`             | `WORKER_MCP_ON_CLASSIFIER_FAILURE`  | `--on-classifier-failure`  | `escalate` (or `deny`; never allow)         |
-| `gate.classifiers`                     | (file only)                         |                            | none                                        |
-| `gate.cache`, `gate.recentActions`     | (file only)                         |                            | 1000 entries, 10 min; 10 actions            |
-| `audit.enabled`                        | `WORKER_MCP_AUDIT`                  | `--audit`                  | `true`                                      |
-| `audit.file`                           | `WORKER_MCP_AUDIT_FILE`             | `--audit-file`             | `<stateDir>/audit.jsonl`                    |
-| `sandbox.minimum`                      | `WORKER_MCP_SANDBOX_MINIMUM`        | `--sandbox-minimum`        | `none` (`workspace`: Linux only)            |
-| `sandbox.default`                      | `WORKER_MCP_SANDBOX_DEFAULT`        | `--sandbox-default`        | `workspace` when it works, else `none`      |
-| `sandbox.toolIsolation`                | `WORKER_MCP_SANDBOX_TOOL_ISOLATION` | `--sandbox-tool-isolation` | `auto` (`require`, `off`)                   |
-| `sandbox.extraRo`, `.extraRw`, `.hide` | (file only)                         |                            | none                                        |
-| `sandbox.bwrapPath`                    | `WORKER_MCP_BWRAP`                  |                            | `bwrap` on `PATH` (the Nix package sets it) |
+| Config key                             | Environment variable                   | Flag                          | Default                                     |
+| -------------------------------------- | -------------------------------------- | ----------------------------- | ------------------------------------------- |
+| (file location)                        | `WORKER_MCP_CONFIG`                    | `--config <path>`             | `$XDG_CONFIG_HOME/worker-mcp/config.json`   |
+| `providers.pi.path`                    | `WORKER_MCP_PI_PATH`                   | `--pi-path`                   | `pi` (found on `PATH`)                      |
+| `providers.pi.defaultModel`            | `WORKER_MCP_PI_DEFAULT_MODEL`          | `--pi-default-model`          | none (pi's own default)                     |
+| `providers.pi.startupTimeoutMs`        | `WORKER_MCP_PI_STARTUP_TIMEOUT_MS`     | `--pi-startup-timeout-ms`     | `60000`                                     |
+| `limits.commandTimeoutMs`              | `WORKER_MCP_COMMAND_TIMEOUT`           | `--command-timeout-ms`        | no longer used                              |
+| `limits.maxOutputChars`                | `WORKER_MCP_MAX_OUTPUT_CHARS`          | `--max-output-chars`          | `64000`                                     |
+| `limits.maxRunMs`                      | `WORKER_MCP_RUN_TIMEOUT_MS`            | `--run-timeout-ms`            | `1800000` (30 min)                          |
+| `limits.maxWaitMs`                     | `WORKER_MCP_MAX_WAIT_MS`               | `--max-wait-ms`               | `50000`                                     |
+| `limits.runStartTimeoutMs`             | `WORKER_MCP_RUN_START_TIMEOUT_MS`      | `--run-start-timeout-ms`      | `15000`                                     |
+| `limits.maxWorkers`                    | `WORKER_MCP_MAX_WORKERS`               | `--max-workers`               | `4`                                         |
+| `limits.idleTimeoutMs`                 | `WORKER_MCP_IDLE_TIMEOUT_MS`           | `--idle-timeout-ms`           | `1800000` (30 min)                          |
+| `limits.allowedRoots`                  | `WORKER_MCP_ALLOWED_ROOTS`             | `--allowed-roots`             | none: any directory                         |
+| `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`       | `--approval-timeout-ms`       | `600000` (10 min)                           |
+| `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`           | `--env-passthrough`           | none                                        |
+| `persistRuns`                          | `WORKER_MCP_PERSIST_RUNS`              | `--persist-runs`              | `true`                                      |
+| `persistSessions`                      | `WORKER_MCP_PERSIST_SESSIONS`          | `--persist-sessions`          | `true`                                      |
+| `limits.sessionRetentionMs`            | `WORKER_MCP_SESSION_RETENTION_MS`      | `--session-retention-ms`      | `259200000` (3 days; at most a year)        |
+| `limits.maxSessionBytes`               | `WORKER_MCP_MAX_SESSION_BYTES`         | `--max-session-bytes`         | `268435456` (256 MiB; at most 1 TiB)        |
+| `resume.maxContextTokens`              | `WORKER_MCP_RESUME_MAX_CONTEXT_TOKENS` | `--resume-max-context-tokens` | `150000` (a resume above it is refused)     |
+| `limits.recordRetentionMs`             | `WORKER_MCP_RECORD_RETENTION_MS`       | `--record-retention-ms`       | `604800000` (7 days)                        |
+| `limits.maxRecordedRuns`               | `WORKER_MCP_MAX_RECORDED_RUNS`         | `--max-recorded-runs`         | `500`                                       |
+| `logLevel`                             | `WORKER_MCP_LOG_LEVEL`                 | `--log-level`                 | `info`                                      |
+| `stateDir`                             | `WORKER_MCP_STATE_DIR`                 | `--state-dir`                 | `$XDG_STATE_HOME/worker-mcp`                |
+| `runtimeDir`                           | `WORKER_MCP_RUNTIME_DIR`               | `--runtime-dir`               | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`   |
+| `gate.maxAutoApprove`                  | `WORKER_MCP_MAX_AUTO_APPROVE`          | `--max-auto-approve`          | `MEDIUM`                                    |
+| `gate.protectedPaths`                  | (file only)                            |                               | none                                        |
+| `gate.mode`                            | `WORKER_MCP_GATE_MODE`                 | `--gate-mode`                 | `manual` (`auto` needs a classifier)        |
+| `gate.httpAllowCeiling`                | `WORKER_MCP_HTTP_ALLOW_CEILING`        | `--http-allow-ceiling`        | `HIGH`                                      |
+| `gate.onClassifierFailure`             | `WORKER_MCP_ON_CLASSIFIER_FAILURE`     | `--on-classifier-failure`     | `escalate` (or `deny`; never allow)         |
+| `gate.classifiers`                     | (file only)                            |                               | none                                        |
+| `gate.cache`, `gate.recentActions`     | (file only)                            |                               | 1000 entries, 10 min; 10 actions            |
+| `audit.enabled`                        | `WORKER_MCP_AUDIT`                     | `--audit`                     | `true`                                      |
+| `audit.file`                           | `WORKER_MCP_AUDIT_FILE`                | `--audit-file`                | `<stateDir>/audit.jsonl`                    |
+| `sandbox.minimum`                      | `WORKER_MCP_SANDBOX_MINIMUM`           | `--sandbox-minimum`           | `none` (`workspace`: Linux only)            |
+| `sandbox.default`                      | `WORKER_MCP_SANDBOX_DEFAULT`           | `--sandbox-default`           | `workspace` when it works, else `none`      |
+| `sandbox.toolIsolation`                | `WORKER_MCP_SANDBOX_TOOL_ISOLATION`    | `--sandbox-tool-isolation`    | `auto` (`require`, `off`)                   |
+| `sandbox.extraRo`, `.extraRw`, `.hide` | (file only)                            |                               | none                                        |
+| `sandbox.bwrapPath`                    | `WORKER_MCP_BWRAP`                     |                               | `bwrap` on `PATH` (the Nix package sets it) |
 
 - Numbers are positive integers; directories are absolute paths.
 - **Sandbox (Linux).** `spawn_worker` takes an optional `sandbox` (`none` or
@@ -661,6 +662,16 @@ state directory, so that a worker can be continued after its server is gone:
 `spawn_worker` with `resumeFrom` (see "Resuming a worker" in
 [docs/mcp-api.md](docs/mcp-api.md)) starts a new worker on the saved
 conversation. The files are removed again as described below.
+
+- **Resuming**: `list_workers` with `resumable: true` lists what can be
+  continued, with each conversation's context size in tokens and why one cannot
+  be. A resume costs the whole saved context again on every request, so it is
+  refused above `resume.maxContextTokens` (default 150000); start a fresh worker
+  with a summary instead. During the first run after a resume, a call identical
+  to one that was cut off by the restart (and may have run) is sent to the
+  coordinator for approval whatever the policy says, unless it is LOW. The
+  first prompt also starts with a note from the server that names the cut-off
+  calls. See "Resuming a worker" in [docs/mcp-api.md](docs/mcp-api.md).
 
 - **What a session holds**: the whole conversation, including the prompts, the
   files the worker read, the output of its commands, and the system prompt. It
@@ -808,7 +819,7 @@ The full reference (inputs, results, errors, aliases) is in [docs/mcp-api.md](do
 | `get_pending_actions` | The tool calls waiting for approval.                                                                   |
 | `approve_action`      | Allows one pending call. Returns at once.                                                              |
 | `reject_action`       | Blocks one pending call and tells the worker why. Returns at once.                                     |
-| `list_workers`        | The live workers with their current run and approvals.                                                 |
+| `list_workers`        | The live workers with their current run and approvals; `resumable: true` lists saved conversations.    |
 | `set_risk_policy`     | Replaces a worker's auto-approval policy, lowered to the server's ceiling.                             |
 | `get_gate_log`        | Every decision of the approval gate for a worker.                                                      |
 | `terminate_worker`    | Stops a worker and frees its name and slot.                                                            |

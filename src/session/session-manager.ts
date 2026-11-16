@@ -28,7 +28,9 @@ import {
 	type ResumedInfo,
 	classifyInterrupted,
 	readAuditFor,
+	estimateContext,
 	resumeNote,
+	safeToolName,
 } from "./resume.js";
 import { RuntimeDir } from "./runtime-dir.js";
 import { type PolicyReport, Session, runStoreFor } from "./session.js";
@@ -50,6 +52,33 @@ export interface ManagerOptions {
 	sessionRetentionMs?: number;
 	/** Replaces `limits.maxSessionBytes` (tests). */
 	maxSessionBytes?: number;
+}
+
+/** Session files above this size are not read to list them (only their size is used). */
+const LIST_PARSE_MAX_BYTES = 4 * 1024 * 1024;
+
+/** One saved conversation in `list_workers({ resumable: true })`. */
+export interface ResumableItem {
+	/** The newest worker id of the conversation: pass it as `resumeFrom`. */
+	workerId: string;
+	lineage: string;
+	name?: string;
+	provider: string;
+	model?: string;
+	cwd: string;
+	lastActiveAt: string;
+	lastRun?: { runId: string; state: string };
+	resumable: boolean;
+	/** Why not, when it is not resumable. Written by the server. */
+	notResumable?: string;
+	/** Taken from the saved conversation, so the worker's own words. */
+	untrustedSession?: {
+		sessionBytes: number;
+		contextTokens: number;
+		contextEstimate: "usage" | "bytes";
+		cutOffCalls?: number;
+		cutOffTools?: string[];
+	};
 }
 
 /** What `resumeSession` worked out and `createSession` acts on. */
@@ -91,6 +120,20 @@ export class SessionManager {
 	readonly workers: WorkerStore | null;
 	/** Workers of this server whose conversation is kept: worker id to lineage. */
 	private readonly kept = new Map<string, string>();
+	/** What `listResumable` learned from each session file, by lineage. */
+	private readonly listCache = new Map<
+		string,
+		{
+			bytes: number;
+			mtimeMs: number;
+			since: number | undefined;
+			contextTokens: number;
+			contextEstimate: "usage" | "bytes";
+			cutOffCalls?: number;
+			cutOffTools?: string[];
+			damaged?: string;
+		}
+	>();
 	private readonly providerVersions = new Map<
 		string,
 		Promise<string | undefined>
@@ -736,6 +779,14 @@ export class SessionManager {
 				"The saved conversation was started in another directory than this workspace (it was moved or changed), so it is not resumed. Spawn a new worker here instead.",
 			);
 		}
+		const context = estimateContext(found);
+		const cap = this.config.resume.maxContextTokens;
+		if (context.tokens > cap) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				`The saved conversation is too large to resume: about ${context.tokens} tokens of context (${context.method === "usage" ? "from the last reply's usage" : "estimated from the file size"}), above the limit of ${cap} (resume.maxContextTokens). Resuming would pay for all of it again on every request. Spawn a new worker with a short summary of what it learned and what is left, or raise the limit.`,
+			);
+		}
 		const checked = store.checkpointMatches(rec.lineage, rec);
 		if (checked && !checked.ok) {
 			throw new ToolError(
@@ -780,6 +831,8 @@ export class SessionManager {
 				? { runId: lastRun.record.runId, state: lastRun.record.state }
 				: undefined,
 			sessionBytes: found.bytes,
+			contextTokens: context.tokens,
+			contextEstimate: context.method,
 			messageCount: found.messageCount,
 			providerVersion: { recorded, now, changed },
 			interrupted,
@@ -857,6 +910,180 @@ export class SessionManager {
 			workerId,
 			code: "WORKER_NOT_FOUND",
 			reason: `Nothing to resume for ${ref}: its conversation was not kept${gone ? ` (${gone.how}; terminating a worker deletes it)` : " (it was spawned without a kept session, was terminated, or was removed after the retention time)"}. Spawn a new worker with a summary of what you need.`,
+		};
+	}
+
+	/**
+	 * Saved conversations that could be continued, newest activity first, at
+	 * most `limit`. Cheap: it reads worker records (small files) and, for the
+	 * newest `limit` only, takes size and time of the session file; the file
+	 * itself is read only when it changed since last time (cached by size and
+	 * modification time) and is under `LIST_PARSE_MAX_BYTES`, above which the
+	 * size alone gives an estimate. Everything taken from a session is the
+	 * worker's own output.
+	 */
+	public async listResumable(limit: number): Promise<{
+		items: ResumableItem[];
+		total: number;
+	}> {
+		const store = this.workers;
+		if (!store) return { items: [], total: 0 };
+		const records = store.records();
+		records.sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
+		const items: ResumableItem[] = [];
+		for (const rec of records.slice(0, limit)) {
+			items.push(await this.describeResumable(store, rec));
+		}
+		// Forget cache entries of conversations that are gone.
+		if (this.listCache.size > 200) {
+			const keep = new Set(records.map((r) => r.lineage));
+			for (const k of this.listCache.keys()) {
+				if (!keep.has(k)) this.listCache.delete(k);
+			}
+		}
+		return { items, total: records.length };
+	}
+
+	private async describeResumable(
+		store: WorkerStore,
+		rec: WorkerRecord,
+	): Promise<ResumableItem> {
+		const lastRun = rec.lastRunId ? this.readRecord(rec.lastRunId) : null;
+		const item: ResumableItem = {
+			workerId: rec.ids.at(-1) ?? rec.lineage,
+			lineage: rec.lineage,
+			name: rec.name,
+			provider: rec.provider,
+			model: rec.model,
+			cwd: rec.cwd,
+			lastActiveAt: rec.lastActiveAt,
+			lastRun: lastRun
+				? { runId: lastRun.record.runId, state: lastRun.record.state }
+				: undefined,
+			resumable: false,
+		};
+		const refuse = (reason: string): ResumableItem => ({
+			...item,
+			resumable: false,
+			notResumable: reason,
+		});
+		for (const s of this.sessions.values()) {
+			if (s.lineage === rec.lineage) {
+				return refuse(`live here as ${s.sessionId}: use start_run`);
+			}
+		}
+		if (store.heldByLiveServer(rec.lineage)) {
+			return refuse("live in another worker-mcp server");
+		}
+		const stat = store.sessionStat(rec.lineage);
+		if (!stat || stat.bytes === 0) {
+			return refuse(
+				"no saved conversation (the worker never received a prompt, or it was removed)",
+			);
+		}
+		let provider: WorkerProvider | undefined;
+		if (this.providers.ids().includes(rec.provider)) {
+			try {
+				provider = await this.providers.get(rec.provider);
+			} catch {
+				provider = undefined;
+			}
+		}
+		if (!provider?.inspectSession) {
+			return refuse(`provider ${rec.provider} is not available`);
+		}
+		let seen = this.listCache.get(rec.lineage);
+		const since = rec.checkpoint?.bytes;
+		if (
+			!seen ||
+			seen.bytes !== stat.bytes ||
+			seen.mtimeMs !== stat.mtimeMs ||
+			seen.since !== since
+		) {
+			seen = {
+				bytes: stat.bytes,
+				mtimeMs: stat.mtimeMs,
+				since,
+				...(await this.skim(provider, rec, stat.bytes)),
+			};
+			this.listCache.set(rec.lineage, seen);
+		}
+		const untrustedSession = {
+			sessionBytes: stat.bytes,
+			contextTokens: seen.contextTokens,
+			contextEstimate: seen.contextEstimate,
+			...(seen.cutOffCalls !== undefined
+				? { cutOffCalls: seen.cutOffCalls, cutOffTools: seen.cutOffTools }
+				: {}),
+		};
+		const withSession = { ...item, untrustedSession };
+		if (seen.damaged) {
+			return { ...withSession, notResumable: `damaged: ${seen.damaged}` };
+		}
+		const cap = this.config.resume.maxContextTokens;
+		if (seen.contextTokens > cap) {
+			return {
+				...withSession,
+				notResumable: `context too large: about ${seen.contextTokens} tokens, above resume.maxContextTokens (${cap})`,
+			};
+		}
+		try {
+			if (this.resolveCwd(rec.cwd) !== rec.cwd) {
+				return {
+					...withSession,
+					notResumable: "the workspace now resolves elsewhere",
+				};
+			}
+		} catch (e) {
+			return {
+				...withSession,
+				notResumable: `workspace: ${firstLine(e)}`,
+			};
+		}
+		return { ...withSession, resumable: true };
+	}
+
+	/** What the list needs from a session file, without reading a huge one. */
+	private async skim(
+		provider: WorkerProvider,
+		rec: WorkerRecord,
+		bytes: number,
+	): Promise<{
+		contextTokens: number;
+		contextEstimate: "usage" | "bytes";
+		cutOffCalls?: number;
+		cutOffTools?: string[];
+		damaged?: string;
+	}> {
+		if (bytes > LIST_PARSE_MAX_BYTES) {
+			const e = estimateContext({ bytes });
+			return { contextTokens: e.tokens, contextEstimate: e.method };
+		}
+		const found = await (
+			provider.inspectSession as NonNullable<WorkerProvider["inspectSession"]>
+		)(rec.session.dir, rec.session.id, { sinceBytes: rec.checkpoint?.bytes });
+		if (!found.exists) {
+			const e = estimateContext({ bytes });
+			return {
+				contextTokens: e.tokens,
+				contextEstimate: e.method,
+				damaged: "the session file is missing",
+			};
+		}
+		const e = estimateContext(found);
+		const damaged =
+			found.fatal[0] ??
+			(found.cwd !== rec.cwd
+				? "it was started in another directory than recorded"
+				: undefined);
+		return {
+			contextTokens: e.tokens,
+			contextEstimate: e.method,
+			cutOffCalls: found.danglingCalls.length,
+			cutOffTools: [
+				...new Set(found.danglingCalls.map((c) => safeToolName(c.name))),
+			].slice(0, 5),
+			damaged,
 		};
 	}
 

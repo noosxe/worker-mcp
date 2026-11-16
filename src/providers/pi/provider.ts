@@ -219,6 +219,9 @@ export async function inspectPiSession(
 		formatSupported: found.header?.version === PI_SESSION_FORMAT,
 		cwd: found.header?.cwd,
 		messageCount: found.messageCount,
+		...(found.lastUsageTokens !== undefined
+			? { lastUsageTokens: found.lastUsageTokens }
+			: {}),
 		fatal,
 		warnings,
 		danglingCalls: found.danglingCalls

@@ -105,6 +105,12 @@ export interface SessionInspection {
 	cwd?: string;
 	/** Messages on the active branch. */
 	messageCount: number;
+	/**
+	 * Tokens the last reply was sent, from its reported usage (what the next
+	 * request starts from). Absent when the session has no usage numbers.
+	 * Worker trust.
+	 */
+	lastUsageTokens?: number;
 	/** Reasons the session must not be resumed (damage that would silently lose history). */
 	fatal: string[];
 	/** Damage that can be accepted, for the caller to report. */

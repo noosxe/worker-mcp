@@ -361,6 +361,26 @@ export class WorkerStore {
 		}
 	}
 
+	/** Every readable worker record, in no particular order. Never throws. */
+	records(): WorkerRecord[] {
+		const out: WorkerRecord[] = [];
+		for (const lineage of this.lineages()) {
+			const rec = this.read(lineage);
+			if (rec) out.push(rec);
+		}
+		return out;
+	}
+
+	/** Size and modification time of a lineage's one session file, or null. */
+	sessionStat(lineage: string): { bytes: number; mtimeMs: number } | null {
+		const files = this.sessionFiles(lineage);
+		if (files.length !== 1) return null;
+		const st = lstatOrNull(files[0]);
+		return st?.isFile()
+			? { bytes: st.size, mtimeMs: Math.floor(st.mtimeMs) }
+			: null;
+	}
+
 	/** Total size of a lineage's session files. */
 	sessionBytes(lineage: string): number {
 		let n = 0;

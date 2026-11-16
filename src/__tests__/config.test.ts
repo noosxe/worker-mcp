@@ -1157,3 +1157,43 @@ describe("run records", () => {
 		);
 	});
 });
+
+describe("resume context cap", () => {
+	test("defaults to 150000 and comes from the file, the environment and flags", () => {
+		assert.strictEqual(load().resume.maxContextTokens, 150_000);
+		const file = writeFile({ resume: { maxContextTokens: 1000 } });
+		assert.strictEqual(
+			load([`--config=${file}`]).resume.maxContextTokens,
+			1000,
+		);
+		const fromEnv = load([`--config=${file}`], {
+			...env,
+			WORKER_MCP_RESUME_MAX_CONTEXT_TOKENS: "2000",
+		});
+		assert.strictEqual(fromEnv.resume.maxContextTokens, 2000);
+		const fromFlag = load(["--resume-max-context-tokens=3000"], {
+			...env,
+			WORKER_MCP_RESUME_MAX_CONTEXT_TOKENS: "2000",
+		});
+		assert.strictEqual(fromFlag.resume.maxContextTokens, 3000);
+		assert.strictEqual(
+			JSON.parse(formatConfig(fromFlag)).resume.maxContextTokens,
+			3000,
+		);
+	});
+
+	test("bad values fail and name their source", () => {
+		for (const bad of ["0", "-1", "many", String(100_000_001)]) {
+			assert.match(
+				failure(() =>
+					load([], { ...env, WORKER_MCP_RESUME_MAX_CONTEXT_TOKENS: bad }),
+				),
+				/WORKER_MCP_RESUME_MAX_CONTEXT_TOKENS/,
+				bad,
+			);
+		}
+		assert.throws(() => load(["--resume-max-context-tokens", "0"]));
+		const file = writeFile({ resume: { maxContextTokens: 0 } });
+		assert.throws(() => load([`--config=${file}`]));
+	});
+});
