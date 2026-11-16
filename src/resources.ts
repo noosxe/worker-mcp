@@ -113,7 +113,7 @@ export function registerResources(
 				throw new ToolError(
 					"RUN_NOT_FOUND",
 					manager.missingId("run", id) ??
-						`No run ${id}; its result has expired.`,
+						`No run ${id}; its result has expired or the id never existed.`,
 				);
 			}
 			return {

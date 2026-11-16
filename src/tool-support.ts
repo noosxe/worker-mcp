@@ -263,7 +263,7 @@ export function createContext(
 				throw new ToolError(
 					"RUN_NOT_FOUND",
 					manager.missingId("run", runId) ??
-						`No run ${runId}; its result has expired (results are kept for a limited time), so start a new run if you still need the result.`,
+						`No run ${runId}; its result has expired or the id never existed (results are kept for a limited time), so start a new run if you still need the result.`,
 				);
 			}
 			return run;

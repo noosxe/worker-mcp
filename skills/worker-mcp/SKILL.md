@@ -35,7 +35,7 @@ How to recognise it:
 
 - `list_providers` and `list_workers` return `server: { bootId, startedAt }`. A different `bootId` than you saw earlier means a restart.
 - A lookup of an id from before the restart fails with its usual code (`WORKER_NOT_FOUND`, `RUN_NOT_FOUND`, `APPROVAL_NOT_FOUND`) and a message that says the id "was not issued by the server running now" and gives the new boot id and start time. A worker `name` that is unknown gets the same hint, since a name carries no start time.
-- An id that does say "has expired" (or "no longer running") was made by this server: its result aged out, or its worker was closed. That is not a restart.
+- An id that says "has expired or never existed" (or "no longer running") carries this server's tag: its result aged out, its worker was closed, or the id was mistyped. That is not a restart.
 
 What to do:
 

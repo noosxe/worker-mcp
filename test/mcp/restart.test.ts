@@ -190,7 +190,10 @@ describe("restart: ids from an earlier server", () => {
 			const own = done.runId.slice(0, 6) + "zzzzzzzzzzzz";
 			const result = await call(conn.client, TOOLS.getRun, { runId: own });
 			assert.strictEqual(result.isError, true);
-			assert.match(textOf(result), /^RUN_NOT_FOUND: .*expired/);
+			assert.match(
+				textOf(result),
+				/^RUN_NOT_FOUND: .*expired or the id never existed/,
+			);
 			assert.doesNotMatch(textOf(result), /not issued/);
 			const approval = await call(conn.client, TOOLS.approve, {
 				approvalId: "a_" + done.runId.slice(2, 6) + "zzzzzz",
