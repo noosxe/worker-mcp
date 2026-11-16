@@ -15,8 +15,10 @@ import { classifierUrlProblem } from "./gate/http-classifier.js";
 export interface Config {
 	/** Verbosity of stderr; payloads (tool inputs, worker output) only at `debug`. */
 	logLevel: "debug" | "info" | "warn" | "error";
-	/** Where the server keeps state (reserved; nothing is written there yet). */
+	/** Where the server keeps its audit log, run records and boot markers. */
 	stateDir: string;
+	/** Write each run's record under `<stateDir>/runs` so it can be read after a restart. */
+	persistRuns: boolean;
 	/** Directory holding the per-instance private runtime directory. */
 	runtimeDir: string;
 	limits: {
@@ -34,6 +36,10 @@ export interface Config {
 		resultRetentionMs: number;
 		/** Most finished runs kept at once, oldest dropped first. */
 		maxRetainedRuns: number;
+		/** Run records on disk older than this are deleted. */
+		recordRetentionMs: number;
+		/** Most run records kept on disk, oldest deleted first. */
+		maxRecordedRuns: number;
 		/** Output kept per run, in characters; the oldest is dropped past it. */
 		outputBufferChars: number;
 		/** Default size of one page of output returned by `get_run`. */
@@ -185,6 +191,8 @@ export const DEFAULT_MAX_WAIT_MS = 50_000;
 export const DEFAULT_WAIT_MS = 25_000;
 export const DEFAULT_RESULT_RETENTION_MS = 60 * 60_000;
 export const DEFAULT_MAX_RETAINED_RUNS = 100;
+export const DEFAULT_RECORD_RETENTION_MS = 7 * 24 * 60 * 60_000;
+export const DEFAULT_MAX_RECORDED_RUNS = 500;
 export const DEFAULT_OUTPUT_BUFFER_CHARS = 1_048_576;
 export const DEFAULT_PAGE_CHARS = 16_000;
 export const DEFAULT_RUN_START_TIMEOUT_MS = 15_000;
@@ -326,6 +334,7 @@ export const configFileSchema = z.strictObject({
 	logLevel: z.enum(["debug", "info", "warn", "error"]).optional(),
 	stateDir: absolutePath.optional(),
 	runtimeDir: absolutePath.optional(),
+	persistRuns: z.boolean().optional(),
 	/** No longer used: accepted so existing config files keep loading. */
 	legacyTools: z.boolean().optional(),
 	limits: z
@@ -337,6 +346,8 @@ export const configFileSchema = z.strictObject({
 			defaultWaitMs: positiveInt.optional(),
 			resultRetentionMs: positiveInt.optional(),
 			maxRetainedRuns: positiveInt.optional(),
+			recordRetentionMs: positiveInt.optional(),
+			maxRecordedRuns: positiveInt.optional(),
 			outputBufferChars: positiveInt.optional(),
 			pageChars: positiveInt.optional(),
 			runStartTimeoutMs: positiveInt.optional(),
@@ -447,6 +458,14 @@ export const ENV_VARS = {
 		name: "WORKER_MCP_IDLE_TIMEOUT_MS",
 		key: "limits.idleTimeoutMs",
 	},
+	recordRetention: {
+		name: "WORKER_MCP_RECORD_RETENTION_MS",
+		key: "limits.recordRetentionMs",
+	},
+	maxRecordedRuns: {
+		name: "WORKER_MCP_MAX_RECORDED_RUNS",
+		key: "limits.maxRecordedRuns",
+	},
 	allowedRoots: {
 		name: "WORKER_MCP_ALLOWED_ROOTS",
 		key: "limits.allowedRoots",
@@ -512,6 +531,16 @@ const VALUE_FLAGS = {
 		key: "limits.idleTimeoutMs",
 		kind: "int",
 	},
+	recordRetention: {
+		flag: "--record-retention-ms",
+		key: "limits.recordRetentionMs",
+		kind: "int",
+	},
+	maxRecordedRuns: {
+		flag: "--max-recorded-runs",
+		key: "limits.maxRecordedRuns",
+		kind: "int",
+	},
 	allowedRoots: {
 		flag: "--allowed-roots",
 		key: "limits.allowedRoots",
@@ -560,6 +589,11 @@ const CHOICE_SETTINGS = {
 		env: "WORKER_MCP_ON_CLASSIFIER_FAILURE",
 		flag: "--on-classifier-failure",
 		key: "gate.onClassifierFailure",
+	},
+	persistRuns: {
+		env: "WORKER_MCP_PERSIST_RUNS",
+		flag: "--persist-runs",
+		key: "persistRuns",
 	},
 	auditEnabled: {
 		env: "WORKER_MCP_AUDIT",
@@ -630,6 +664,14 @@ function choiceLayer(source: string, name: ChoiceName, raw: string): FileLayer {
 					),
 				},
 			};
+		case "persistRuns":
+			if (["1", "true", "on", "yes"].includes(word)) {
+				return { persistRuns: true };
+			}
+			if (["0", "false", "off", "no"].includes(word)) {
+				return { persistRuns: false };
+			}
+			return fail(`${JSON.stringify(raw)} is not on or off`);
 		case "auditEnabled":
 			if (["1", "true", "on", "yes"].includes(word)) {
 				return { audit: { enabled: true } };
@@ -736,6 +778,8 @@ function stringLayer(
 		approvalTimeout?: { key: string; raw: string };
 		maxWorkers?: { key: string; raw: string };
 		idleTimeout?: { key: string; raw: string };
+		recordRetention?: { key: string; raw: string };
+		maxRecordedRuns?: { key: string; raw: string };
 		allowedRoots?: { key: string; raw: string };
 		passthrough?: { key: string; raw: string };
 		stateDir?: string;
@@ -817,6 +861,8 @@ function stringLayer(
 		["runStartTimeout", "runStartTimeoutMs"],
 		["maxWorkers", "maxWorkers"],
 		["idleTimeout", "idleTimeoutMs"],
+		["recordRetention", "recordRetentionMs"],
+		["maxRecordedRuns", "maxRecordedRuns"],
 	] as const) {
 		const entry = values[name];
 		if (!entry) continue;
@@ -932,6 +978,16 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 			keysOf(),
 		),
 		stringLayer(
+			label(ENV_VARS.recordRetention),
+			{ recordRetention: num(ENV_VARS.recordRetention) },
+			keysOf(),
+		),
+		stringLayer(
+			label(ENV_VARS.maxRecordedRuns),
+			{ maxRecordedRuns: num(ENV_VARS.maxRecordedRuns) },
+			keysOf(),
+		),
+		stringLayer(
 			label(ENV_VARS.allowedRoots),
 			{ allowedRoots: num(ENV_VARS.allowedRoots) },
 			keysOf(),
@@ -1015,6 +1071,8 @@ function flagLayer(flags: CliFlags): FileLayer {
 			case "approvalTimeout":
 			case "maxWorkers":
 			case "idleTimeout":
+			case "recordRetention":
+			case "maxRecordedRuns":
 			case "allowedRoots":
 				parts.push(stringLayer(source, { [name]: entry }, keys));
 				break;
@@ -1048,6 +1106,7 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		logLevel: over.logLevel ?? base.logLevel,
 		stateDir: over.stateDir ?? base.stateDir,
 		runtimeDir: over.runtimeDir ?? base.runtimeDir,
+		persistRuns: over.persistRuns ?? base.persistRuns,
 		legacyTools: over.legacyTools ?? base.legacyTools,
 		limits: { ...base.limits, ...over.limits },
 		env: { allow },
@@ -1296,6 +1355,7 @@ function applyDefaults(
 	return {
 		logLevel: layer.logLevel ?? "info",
 		stateDir,
+		persistRuns: layer.persistRuns ?? true,
 		runtimeDir:
 			layer.runtimeDir ??
 			(env.XDG_RUNTIME_DIR ? env.XDG_RUNTIME_DIR : path.join(stateDir, "run")),
@@ -1319,6 +1379,10 @@ function applyDefaults(
 				layer.limits?.runStartTimeoutMs ?? DEFAULT_RUN_START_TIMEOUT_MS,
 			maxWorkers: layer.limits?.maxWorkers ?? DEFAULT_MAX_WORKERS,
 			idleTimeoutMs: layer.limits?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+			recordRetentionMs:
+				layer.limits?.recordRetentionMs ?? DEFAULT_RECORD_RETENTION_MS,
+			maxRecordedRuns:
+				layer.limits?.maxRecordedRuns ?? DEFAULT_MAX_RECORDED_RUNS,
 			allowedRoots: [...new Set(layer.limits?.allowedRoots ?? [])],
 		},
 		env: {

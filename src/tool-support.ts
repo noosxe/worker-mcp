@@ -7,12 +7,18 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
 
+import { runFromRecord } from "./core/run-records.js";
 import { type Run, runView } from "./core/run.js";
 import { ToolError } from "./errors.js";
 import { PolicyError } from "./gate/policy.js";
 import { RiskLevel } from "./gate/risk.js";
-import type { PolicyData, RunData, WorkerData } from "./outputs.js";
-import { runData, wrapTree, wrapUntrusted } from "./render.js";
+import type {
+	PersistedData,
+	PolicyData,
+	RunData,
+	WorkerData,
+} from "./outputs.js";
+import { escapeUntrusted, runData, wrapTree, wrapUntrusted } from "./render.js";
 import { MAX_PAGE_CHARS } from "./schemas.js";
 import type { SessionManager } from "./session/session-manager.js";
 import {
@@ -180,6 +186,11 @@ export interface ToolContext {
 	reportProgress(extra: Extra, run: Run): () => void;
 	clampWait(ms: number | undefined, fallback: number): number;
 	findRun(runId: string): Run;
+	/**
+	 * A run of this server, or else the run rebuilt from its saved record
+	 * (marked in `persisted`). For reading only: a rebuilt run is never live.
+	 */
+	findRunOrRecord(runId: string): { run: Run; persisted?: PersistedData };
 	workerData(session: Session): WorkerData;
 }
 
@@ -267,6 +278,43 @@ export function createContext(
 				);
 			}
 			return run;
+		},
+		findRunOrRecord(runId) {
+			const live = store.get(runId);
+			if (live) return { run: live };
+			const loaded = manager.readRecord(runId);
+			if (!loaded) return { run: this.findRun(runId) };
+			const { record, fromEarlierServer, serverRunning } = loaded;
+			const run = runFromRecord(record);
+			if (run.error !== undefined) run.error = escapeUntrusted(run.error);
+			const note = fromEarlierServer
+				? serverRunning
+					? `This record was written by another server process that is still running (boot ${record.bootId}); it is as of its last write and cannot be waited on, approved or cancelled from here.`
+					: `This record comes from an earlier server process (boot ${record.bootId}); this server (boot ${manager.boot.id}) cannot wait on, approve or cancel the run. Check the workspace (git status, git diff) before redoing any of its work.`
+				: "This run is no longer held in memory; this is its saved record.";
+			return {
+				run,
+				persisted: {
+					fromEarlierServer,
+					bootId: record.bootId,
+					serverRunning,
+					note,
+					untrustedWorker: {
+						name: record.workerName,
+						provider: record.provider,
+						model: record.model,
+						cwd: record.cwd,
+						intent: record.intent,
+					},
+					untrustedApprovals: record.approvals.map((a) => ({
+						approvalId: a.approvalId,
+						tool: a.tool,
+						riskLabel: a.riskLabel,
+						decision: a.decision,
+						decidedBy: a.decidedBy,
+					})),
+				},
+			};
 		},
 		workerData(session) {
 			const runs = store.runsOf(session.sessionId);

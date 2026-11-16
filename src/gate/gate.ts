@@ -62,6 +62,8 @@ export interface GateOptions {
 	/** How many recent decisions a classifier is told about. Default 10. */
 	recentActions?: number;
 	model?: string;
+	/** The server process these decisions are made in; written to every audit entry. */
+	bootId?: string;
 	/** Files of secrets (such as a token file): protected like credentials. */
 	secretFiles?: string[];
 	/** The audit file; every decision and resolution is appended to it. */
@@ -312,6 +314,7 @@ export class Gate {
 		const entry: GateLogEntry = {
 			ts: new Date().toISOString(),
 			requestId: o.requestId,
+			bootId: this.options.bootId,
 			workerId: this.options.workerId,
 			runId: ctx.runId,
 			providerCallId: actionId,

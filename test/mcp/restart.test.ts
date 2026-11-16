@@ -139,13 +139,6 @@ describe("restart: ids from an earlier server", () => {
 					{ workerId: old.worker },
 					"WORKER_NOT_FOUND",
 				],
-				[
-					"wait_run",
-					TOOLS.waitRun,
-					{ runId: old.run, waitMs: 0 },
-					"RUN_NOT_FOUND",
-				],
-				["get_run", TOOLS.getRun, { runId: old.run }, "RUN_NOT_FOUND"],
 				["cancel_run", TOOLS.cancelRun, { runId: old.run }, "RUN_NOT_FOUND"],
 				["pending by run", TOOLS.pending, { runId: old.run }, "RUN_NOT_FOUND"],
 				[

@@ -3,7 +3,12 @@ import { ChildRegistry } from "../core/child.js";
 import { type OpenedWorker, openWorker } from "../core/host.js";
 import { debugEnabled, describeError, shortDigest } from "../core/log.js";
 import { RepeatCheck } from "../core/repeat-check.js";
-import { type Run, RunStore, type TerminalState } from "../core/run.js";
+import {
+	type Run,
+	RunStore,
+	type RunSink,
+	type TerminalState,
+} from "../core/run.js";
 import type { GateOutcome } from "../gate/classifier.js";
 import {
 	DEFAULT_MAX_AUTO_APPROVE,
@@ -264,6 +269,7 @@ export class Session {
 		this.approvalGate = new ApprovalGate({
 			cwd,
 			workerId: sessionId,
+			bootId: this.boot.id,
 			model,
 			mode: gateConfig.mode,
 			classifiers: services?.classifiers,
@@ -848,7 +854,10 @@ export class Session {
 		if (entry.timer) clearTimeout(entry.timer);
 		this.pending.delete(actionId);
 		this.approvalGate.recordResolution(entry.call.callId, "deny", by, reason);
-		this.runs.removeApproval(entry.run, actionId, by === "timeout");
+		this.runs.removeApproval(entry.run, actionId, by === "timeout", {
+			decision: by === "timeout" ? "expired" : "cancelled",
+			by,
+		});
 		entry.resolve({ kind: "deny", reason });
 		this.afterPendingChanged();
 	}
@@ -966,7 +975,12 @@ export class Session {
 			);
 		}
 		const worker = this.worker;
-		const run = this.runs.create(this.sessionId, prompt, intent);
+		const run = this.runs.create(this.sessionId, prompt, intent, {
+			workerName: this.name,
+			provider: this.providerId,
+			model: this.model,
+			cwd: this.cwd,
+		});
 		const active: ActiveRun = {
 			run,
 			abort: new AbortController(),
@@ -1065,7 +1079,10 @@ export class Session {
 		);
 		if (entry.timer) clearTimeout(entry.timer);
 		this.pending.delete(actionId);
-		this.runs.removeApproval(entry.run, actionId);
+		this.runs.removeApproval(entry.run, actionId, false, {
+			decision: resolution === "allow" ? "approved" : "rejected",
+			by: "coordinator",
+		});
 		this.afterPendingChanged();
 		entry.resolve(decision);
 		return entry.run;
@@ -1200,8 +1217,13 @@ export class Session {
 }
 
 /** A store configured from the server's limits. */
-export function runStoreFor(config: Config, boot?: Boot): RunStore {
+export function runStoreFor(
+	config: Config,
+	boot?: Boot,
+	sink?: RunSink,
+): RunStore {
 	return new RunStore({
+		sink,
 		newRunId: boot?.runId,
 		retentionMs: config.limits.resultRetentionMs,
 		maxRetained: config.limits.maxRetainedRuns,

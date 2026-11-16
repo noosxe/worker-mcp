@@ -355,6 +355,19 @@ It does not change what is protected:
   one worker. It is refused for hard limits, protected paths and CRITICAL calls.
 - Every decision is appended to an audit file (mode 0600, in the protected
   state directory, rotated): digests and short previews, no full arguments.
+- Run records (`<stateDir>/runs`, on by default, `persistRuns: false` turns
+  them off) hold each run's metadata, the worker's text so far, usage and how
+  each approval ended. They never hold the prompt (only its length and a
+  digest), tool arguments, commands or paths. The directory is 0700 and the
+  files 0600, checked with `lstat` (a symbolic link or a directory owned by
+  someone else is refused), written by temporary file and rename, and inside the
+  protected state directory. The text is worker output: a reader gets it back
+  under `untrusted…` keys, wrapped, and a record that does not parse is skipped.
+  Records are deleted after 7 days or past 500. Anyone who can read your state
+  directory can read what the workers wrote, so the same trust as for the
+  audit log applies. Unanswered escalations in the audit log are closed as
+  `abandoned` when the server restarts, and an old approval id is never
+  honoured.
 
 ## What it does not protect
 

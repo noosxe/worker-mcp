@@ -9,6 +9,8 @@ import type { RiskLevel } from "./risk.js";
 export interface GateLogEntry {
 	ts: string;
 	requestId: string;
+	/** The server process that made the decision. */
+	bootId?: string;
 	workerId?: string;
 	runId?: string;
 	/** The provider's id for the call, when it has one (pi's request id). */
@@ -26,11 +28,14 @@ export interface GateLogEntry {
 	rule: { level: RiskLevel; ruleId: string; autoAllowable: boolean };
 	consulted: Consulted[];
 	decision: Verdict;
+	/** rules, cache, http:<name>, coordinator, timeout, cancel or abandoned. */
 	decidedBy: string;
 	reason: string;
 	matchedOverride?: string;
 	/** Why the call went to the coordinator, when it did. */
 	escalatedBecause?: string;
+	/** For `abandoned`: the server that closed the entry. */
+	closedByBootId?: string;
 }
 
 /** A bounded in-memory log: the oldest entry goes when it is full. */

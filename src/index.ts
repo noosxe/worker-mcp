@@ -71,6 +71,9 @@ Options:
       --gate-mode <mode>      manual (default) or auto (classifiers decide what the rules escalate)
       --http-allow-ceiling <level>  Highest level a classifier may allow (default HIGH)
       --on-classifier-failure <escalate|deny>  What an unanswered classifier means (default escalate)
+      --persist-runs <on|off> Keep a record of each run on disk so it can be read after a restart (default on)
+      --record-retention-ms <n>  Delete run records older than this (default 604800000, 7 days)
+      --max-recorded-runs <n> Most run records kept on disk (default 500)
       --audit <on|off>        Write the audit log file (default on)
       --audit-file <path>     Audit log file (default <state dir>/audit.jsonl)
       --log-level <level>     debug, info (default), warn or error; tool inputs and worker output only at debug
@@ -97,6 +100,7 @@ try {
 	console.error(error instanceof Error ? error.message : String(error));
 	process.exit(1);
 }
+sessionManager.start();
 const server = createServer(sessionManager, version);
 
 // Terminate every worker (and what each started) and exit. Safe to call more

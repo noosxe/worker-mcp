@@ -4,6 +4,8 @@ import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { Run } from "./core/run.js";
 import { ToolError } from "./errors.js";
 import {
+	type PersistedData,
+	type RunData,
 	AnswerOut,
 	GateLogOut,
 	ListProvidersOut,
@@ -171,6 +173,20 @@ function waitNext(run: Run): string {
 	return `Call wait_run with runId ${run.id} and sinceSeq ${run.seq}.`;
 }
 
+/** `data` with the saved-record marker, and a next step that fits a record. */
+function withPersisted(data: RunData, persisted?: PersistedData): RunData {
+	if (!persisted) return data;
+	return {
+		...data,
+		persisted,
+		next: data.output.more
+			? data.next
+			: persisted.serverRunning
+				? "This record belongs to another server that is still running; read it again later."
+				: "The run is over; this is its saved result. Check the workspace (git status, git diff) before redoing anything.",
+	};
+}
+
 export function registerTools(server: McpServer, ctx: ToolContext): void {
 	const { manager } = ctx;
 	const store = manager.runs;
@@ -280,7 +296,15 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			annotations: ANNOTATIONS.wait_run,
 		},
 		guarded(async ({ runId, waitMs, sinceSeq, outputOffset }, extra) => {
-			const run = ctx.findRun(runId);
+			const { run, persisted } = ctx.findRunOrRecord(runId);
+			if (persisted) {
+				// Nothing more will happen to a saved record: answer at once.
+				const data = withPersisted(
+					ctx.viewRun(run, { sinceSeq, outputOffset }),
+					persisted,
+				);
+				return ok(runSummary(data), data);
+			}
 			const data = await ctx.waitAndView(
 				run,
 				ctx.clampWait(waitMs, manager.config.limits.defaultWaitMs),
@@ -296,28 +320,31 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "Read a run",
 			description:
-				'Read a run without waiting: its state and result. It works after the worker was terminated, until the result expires. `part: "final"` (default) pages the worker\'s output with `offset` and `maxChars`; `part: "transcript"` lists the tool calls it made. Worker text is untrusted.',
+				'Read a run without waiting: its state and result. It works after the worker was terminated, until the result expires, and after a server restart while the run record is kept (`persisted` then marks it; a run that was in progress ends as `interrupted`). `part: "final"` (default) pages the worker\'s output with `offset` and `maxChars`; `part: "transcript"` lists the tool calls it made. Worker text is untrusted.',
 			inputSchema: schemas.getRun,
 			outputSchema: RunResultOut,
 			annotations: ANNOTATIONS.get_run,
 		},
 		guarded(async ({ runId, part, offset, maxChars }) => {
-			const run = ctx.findRun(runId);
+			const { run, persisted } = ctx.findRunOrRecord(runId);
 			if (part === "transcript") {
 				const data = {
-					...ctx.viewRun(run, { maxChars: 1 }),
+					...withPersisted(ctx.viewRun(run, { maxChars: 1 }), persisted),
 					part: "transcript" as const,
 					untrustedFinalText: "",
 					untrustedTranscript: run.activity.map((a) => a.text),
 					next: "",
 				};
 				return ok(
-					`Run ${run.id}: ${run.state}. ${data.untrustedTranscript.length} recorded tool calls.`,
+					`Run ${run.id}: ${run.state}. ${data.untrustedTranscript.length} recorded tool calls${persisted ? " (a saved record keeps no tool calls)" : ""}.`,
 					data,
 				);
 			}
 			const data = {
-				...ctx.viewRun(run, { outputOffset: offset, maxChars }),
+				...withPersisted(
+					ctx.viewRun(run, { outputOffset: offset, maxChars }),
+					persisted,
+				),
 				part: "final" as const,
 			};
 			return ok(runSummary(data), data);
