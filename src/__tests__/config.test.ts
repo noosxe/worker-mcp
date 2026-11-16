@@ -1197,3 +1197,14 @@ describe("resume context cap", () => {
 		assert.throws(() => load([`--config=${file}`]));
 	});
 });
+
+describe("usage.reportCost", () => {
+	test("is on by default and can be turned off in the file", () => {
+		assert.strictEqual(load([]).usage.reportCost, true);
+		const file = path.join(root, "usage.json");
+		fs.writeFileSync(file, JSON.stringify({ usage: { reportCost: false } }), {
+			mode: 0o600,
+		});
+		assert.strictEqual(load([`--config=${file}`]).usage.reportCost, false);
+	});
+});

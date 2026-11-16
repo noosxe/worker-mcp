@@ -136,7 +136,9 @@ export class FakeHandle implements WorkerHandle {
 			outcome,
 			finalText: outcome === "completed" ? finalText : undefined,
 			error,
-			usage: this.caps.usage ? { inputTokens: 1, outputTokens: 1 } : undefined,
+			usage: this.caps.usage
+				? { inputTokens: 1, outputTokens: 1, costUsd: 0.25 }
+				: undefined,
 		});
 	}
 

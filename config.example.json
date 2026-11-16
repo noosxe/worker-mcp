@@ -4,6 +4,9 @@
 			"path": "pi"
 		}
 	},
+	"usage": {
+		"reportCost": true
+	},
 	"limits": {
 		"commandTimeoutMs": 600000,
 		"maxOutputChars": 64000,

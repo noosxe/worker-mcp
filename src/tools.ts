@@ -311,7 +311,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "Start a run",
 			description:
-				"Give a worker a task. The prompt must be self-contained, because the worker doesn't see this conversation; put a one-line summary in `intent`. Returns at once with a runId (or after up to `waitMs`); then call wait_run until `state` is completed, failed, cancelled or timed_out. Fails with WORKER_BUSY if the worker already has a run. The worker can change files and run commands in its workspace, within the risk policy.",
+				"Give a worker a task. A run is stopped after the server's run limit (30 min by default); time spent waiting for your approval does not count toward it. The prompt must be self-contained, because the worker doesn't see this conversation; put a one-line summary in `intent`. Returns at once with a runId (or after up to `waitMs`); then call wait_run until `state` is completed, failed, cancelled or timed_out. Fails with WORKER_BUSY if the worker already has a run. The worker can change files and run commands in its workspace, within the risk policy.",
 			inputSchema: schemas.startRun,
 			outputSchema: RunOut,
 			annotations: ANNOTATIONS.start_run,

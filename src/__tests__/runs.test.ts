@@ -73,6 +73,15 @@ describe("Runs on a Session over the fake provider", () => {
 		return session;
 	}
 
+	test("usage.reportCost off leaves costUsd out of the run's usage", async () => {
+		const base = config();
+		const s = await start({ ...base, usage: { reportCost: false } });
+		const run = await s.startRun("hello");
+		await wait(s, run);
+		assert.deepStrictEqual(run.usage, { inputTokens: 1, outputTokens: 1 });
+		await s.terminate();
+	});
+
 	test("a run goes starting, running, completed and keeps its result", async () => {
 		const s = await start();
 		const run = await s.startRun("hello", "say hello");
@@ -84,7 +93,11 @@ describe("Runs on a Session over the fake provider", () => {
 		);
 		assert.strictEqual(run.state, "completed");
 		assert.strictEqual(run.output.all, "fake reply: hello");
-		assert.deepStrictEqual(run.usage, { inputTokens: 1, outputTokens: 1 });
+		assert.deepStrictEqual(run.usage, {
+			inputTokens: 1,
+			outputTokens: 1,
+			costUsd: 0.25,
+		});
 		assert.strictEqual(s.runs.get(run.id), run);
 		assert.strictEqual(s.activeRun, null);
 		await s.terminate();
@@ -242,6 +255,20 @@ describe("Runs on a Session over the fake provider", () => {
 			const next = await s.startRun("again");
 			await s.runs.waitForChange(next, { maxWaitMs: 5000 });
 			assert.strictEqual(next.state, "completed");
+			await s.terminate();
+		});
+
+		test("time spent waiting for an approval does not count toward maxRunMs", async () => {
+			const s = await start(config({ maxRunMs: 150 }));
+			const run = await s.startRun(bash("rm f"));
+			await s.runs.waitForChange(run, { maxWaitMs: 5000 });
+			assert.strictEqual(run.approvals.size, 1);
+			// Wait well past the limit, then answer.
+			await new Promise((r) => setTimeout(r, 400));
+			assert.strictEqual(run.state, "awaiting_approval");
+			s.approveAction([...run.approvals.keys()][0]);
+			await s.runs.waitForChange(run, { sinceSeq: run.seq, maxWaitMs: 5000 });
+			assert.strictEqual(run.state, "completed");
 			await s.terminate();
 		});
 

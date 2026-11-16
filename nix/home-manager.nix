@@ -163,6 +163,7 @@ let
       // lib.optionalAttrs (cfg.maxRecordedRuns != null) { maxRecordedRuns = cfg.maxRecordedRuns; }
       // lib.optionalAttrs (cfg.sessionRetentionMs != null) { sessionRetentionMs = cfg.sessionRetentionMs; }
       // lib.optionalAttrs (cfg.maxSessionBytes != null) { maxSessionBytes = cfg.maxSessionBytes; };
+    usage = lib.optionalAttrs (!cfg.reportCost) { reportCost = false; };
     resume = lib.optionalAttrs (cfg.maxResumeContextTokens != null) {
       maxContextTokens = cfg.maxResumeContextTokens;
     };
@@ -402,6 +403,16 @@ in
         the better start. Default: 150000.
       '';
       example = 80000;
+    };
+
+    reportCost = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Show pi's dollar figure (`usage.costUsd`) in run views and saved run
+        records (`usage.reportCost`). Turn it off on a subscription plan,
+        where the figure is meaningless; token counts are still shown.
+      '';
     };
 
     legacyTools = mkOption {

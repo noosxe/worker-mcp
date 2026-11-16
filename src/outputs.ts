@@ -110,7 +110,11 @@ export const RunOut = z.object({
 	workerId: z.string(),
 	state: z.enum(RUN_STATES),
 	seq: z.number().describe("Pass as sinceSeq to wait_run."),
-	elapsedMs: z.number(),
+	elapsedMs: z
+		.number()
+		.describe(
+			"Wall-clock time since the run started, including time waiting for approval (which does not count toward the run limit).",
+		),
 	pendingApprovals: z.array(ApprovalOut),
 	untrustedActivity: z
 		.array(z.string())
