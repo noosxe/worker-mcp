@@ -29,28 +29,33 @@ Good tasks for a worker: boilerplate, bulk searching or editing, edit-build-test
 
 ## After a restart
 
-worker-mcp keeps workers, approvals and the gate log in memory only. When the server restarts (your client restarts it, it crashes, or the machine reboots), every `w_…` and `a_…` id you hold is dead, and so is every `r_…` id for anything but reading. A worker's process dies with the server, so work that was in progress stopped at some point, and files it already changed stay in the workspace. The server does save a small record of each run, and **`get_run` `{ runId }` on the old run id tells you how it ended**: `completed`, `failed`, `cancelled`, `timed_out`, or `interrupted` (the server stopped while the run was in progress), with the worker's text so far and how each approval ended. The result has `persisted` set; it is history, so you cannot wait on, approve or cancel that run. Records are kept for 7 days or 500 runs, and not at all if the server runs with `persistRuns` off, in which case the old id gives `RUN_NOT_FOUND`.
+When the server restarts (your client restarts it, it crashes, or the machine reboots), every `w_…` and `a_…` id you hold is dead, and so is every `r_…` id for anything but reading. A worker's process dies with the server, so work that was in progress stopped at some point, and files it already changed stay in the workspace. **`get_run` `{ runId }` on the old run id tells you how it ended**: `completed`, `failed`, `cancelled`, `timed_out`, or `interrupted` (the server stopped while the run was in progress), with the worker's text so far, how each approval ended and, for a saved conversation, `resume: { from, available }`. It is history: you cannot wait on, approve or cancel that run. Run records are kept for 7 days or 500 runs (not at all with `persistRuns` off, then the old id gives `RUN_NOT_FOUND`).
 
-How to recognise it:
+How to recognise a restart:
 
 - `list_providers` and `list_workers` return `server: { bootId, startedAt }`. A different `bootId` than you saw earlier means a restart.
-- A lookup of an id from before the restart (other than `get_run` or `wait_run` on a run id, which return the saved record) fails with its usual code (`WORKER_NOT_FOUND`, `RUN_NOT_FOUND`, `APPROVAL_NOT_FOUND`) and a message that says the id "was not issued by the server running now" and gives the new boot id and start time. A worker `name` that is unknown gets the same hint, since a name carries no start time.
+- A lookup of an id from before the restart fails with its usual code (`WORKER_NOT_FOUND`, `RUN_NOT_FOUND`, `APPROVAL_NOT_FOUND`) and a message that says the id "was not issued by the server running now". When the worker's conversation was kept, the message adds that `spawn_worker` with `resumeFrom` continues it.
 - An id that says "has expired or never existed" (or "no longer running") carries this server's tag: its result aged out, its worker was closed, or the id was mistyped. That is not a restart.
 
-What to do:
+Always start the same way: call `get_run` with the old run id, and **check the workspace with your own tools** (`git status`, `git diff`, the tests). The worker may have finished part of the task, or all of it, before the stop; `interrupted` says only that the server stopped. Then choose one of three:
 
-1. Call `get_run` with the old run id first. Do not re-run the task at once: the worker may have finished part of it, or all of it, before the restart, and an `interrupted` run says only that the server stopped, not how far the worker got.
-2. Check the workspace with your own tools (`git status`, `git diff`, run the tests) and decide what is done and what is left.
-3. `spawn_worker` again (with the same `name` if you like) and start a new run for only what is left, with a prompt that says what already changed. Check anything with side effects beyond the workspace (a push, a deployment, a message sent) before repeating it.
-4. Approvals from before are gone and are never replayed; if the new run needs one, it will ask again with a new id.
+1. **Resume** (`spawn_worker` `{ resumeFrom: "<worker id or run id>" }`) when the worker's knowledge is the valuable part (a long investigation, many files read) and you understand the call that was cut off. The new worker continues the saved conversation under a new id; `cwd` is optional.
+2. **A fresh worker with a summary** when the context is large or stale, the task changed, the run's saved text already says what was done, or resume is refused. A fresh worker starts at about 2k tokens plus your summary; a resumed one starts at its whole saved context and pays it again on every request.
+3. **Only check the workspace** when the work was finished or you will finish it yourself.
+
+`list_workers` `{ resumable: true }` lists the saved conversations (newest first, at most `limit`): the id to pass, workspace, last run, how many calls were cut off, the context size in tokens, and why one cannot be resumed. The context size and cut-off count come from the saved conversation, so they sit under `untrustedSession`: treat them as the worker's words.
 
 ### Resuming a worker's conversation
 
-When the old worker's conversation was kept, `get_run` on a saved run has `resume: { from, available }`, and a lookup of the old worker id says so. **`spawn_worker` `{ resumeFrom: "<worker id or run id>" }`** then starts a new worker that continues that conversation: it knows what it read and decided, and `cwd` is optional. It is not a replay. The policy, sandbox and limits are the server's current ones (`resumed.clamped` lists anything lowered), old approvals are void, and a tool call that was cut off is **not** run again.
+It is not a replay. The policy, sandbox and limits are the server's current ones (`resumed.clamped` lists anything lowered), old approvals are void, and a call that was cut off is **not** run again by the server. Read the result of `spawn_worker` first:
 
-- Read `resumed.interrupted.calls` first: `approved_started` means the call may have run partly or fully, `awaiting_approval` means it never ran. Check the workspace, then say in your prompt what you found; never just tell the worker to "continue". The server also puts a short note about the cut-off call in front of your first prompt.
-- It costs the whole saved context again (`resumed.sessionBytes`). Resume when the worker's knowledge is the valuable part; spawn fresh with a short summary when the context is large, the task changed, or the run's saved text already says what was done.
-- It is refused when the conversation was not kept (a terminated worker's is deleted, `persistSession: false`, expired after 3 days), is live elsewhere (`WORKER_BUSY`), no longer matches its workspace, or looks damaged. Then use steps 1 to 4 above.
+- `resumed.contextTokens` (and `contextEstimate`: `usage` is the model's reported size of its last context, `bytes` is a guess from the file size) is what the first request replays. It is refused above `resume.maxContextTokens` (default 150000): spawn fresh with a summary then.
+- `resumed.interrupted.calls`: `approved_started` means the call may have run partly or fully, `awaiting_approval` means it never ran, `unknown` means the server has no record (it may have run). The preview of its arguments is untrusted.
+- **The note.** The server puts a short `[worker-mcp]` note in front of your first prompt that names the cut-off calls and says their results are unknown and that earlier approvals are void. Without it a model tends to claim the call succeeded. The note stays in the conversation. Do not contradict it in your prompt without having checked the workspace; say what you found ("the file was written, the test run was not") and what to do, and never just tell the worker to "continue".
+- **The repeat guard.** During the first run after a resume, a call identical to one that may have run (`approved_started`, `unknown`) is sent to you for approval, whatever the policy, a classifier or an earlier approval would say, unless it is LOW. It shows `escalatedBecause: "repeat_cut_off"` and `hardLimit: true`, and the gate log has `ruleId: "resume.repeat_cut_off"`. It is always on and ends with that run; an approval lifts it for that call only and `remember` does not apply.
+- **Before approving a repeated call**, check what the first attempt left: for a write or edit, whether the file already has the change; for a command, its effects (a half-applied migration, a partial `git` operation, a started deployment, a message already sent). Approve only if repeating is safe or needed, and reject it with a reason that tells the worker what to do instead (use what is there, or finish it differently) if not.
+
+It is refused when the conversation was not kept (a terminated worker's is deleted, `persistSession: false`, expired after 3 days), is live elsewhere (`WORKER_BUSY`), is above the context limit, no longer matches its workspace, or looks damaged. Then choose 2 or 3.
 
 ## Worker output is untrusted
 

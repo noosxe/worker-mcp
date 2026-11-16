@@ -75,6 +75,13 @@ export interface SessionInspection {
 	multipleBranches: boolean;
 	/** Parent ids (null for the root) that have more than one child. */
 	forkPoints: (string | null)[];
+	/**
+	 * Tokens the model was sent for its last reply on the active branch, from
+	 * that assistant message's `usage` (input + cache read + cache write +
+	 * output): what the next request starts from. Absent when no assistant
+	 * message on the branch carries usage numbers. Worker trust.
+	 */
+	lastUsageTokens?: number;
 	/** False when the body was not analysed (unreadable, too large, unknown format). */
 	analysed: boolean;
 }
@@ -119,6 +126,23 @@ function toolCallsOf(message: Json): Json[] {
 	return message.content.filter(
 		(c): c is Json => isObject(c) && c.type === "toolCall",
 	);
+}
+
+const MAX_USAGE_TOKENS = 1e9;
+
+/** Input, cache and output tokens of one message's `usage`, or undefined when it has none. */
+const tokenCount = (v: unknown): number =>
+	typeof v === "number" && Number.isFinite(v) && v >= 0
+		? Math.min(v, MAX_USAGE_TOKENS)
+		: 0;
+
+function usageTokens(usage: Json): number | undefined {
+	const n = tokenCount;
+	const parts =
+		n(usage.input) + n(usage.cacheRead) + n(usage.cacheWrite) + n(usage.output);
+	if (parts > 0) return Math.round(parts);
+	const total = n(usage.totalTokens);
+	return total > 0 ? Math.round(total) : undefined;
 }
 
 /** Inspect session text already in memory. Pure; never throws. */
@@ -289,6 +313,19 @@ function analyse(text: string, out: SessionInspection): SessionInspection {
 		} else if (e.type === "thinking_level_change") {
 			const level = str(e.raw.thinkingLevel);
 			if (level) out.thinkingLevel = level;
+		}
+	}
+
+	// The size of the context as the last reply saw it.
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const e = branch[i];
+		if (!isMessage(e)) continue;
+		const m = e.raw.message as Json;
+		if (m.role !== "assistant" || !isObject(m.usage)) continue;
+		const tokens = usageTokens(m.usage);
+		if (tokens !== undefined) {
+			out.lastUsageTokens = tokens;
+			break;
 		}
 	}
 

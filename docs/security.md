@@ -407,6 +407,23 @@ It does not change what is protected:
   Strings read from the file (tool names, arguments) are untrusted; the note
   put in front of the first prompt uses only tool names that look like
   identifiers.
+  Two further guards come from the fact that the conversation is replayed:
+  - **The repeat guard.** A call the old worker may have started before it
+    was cut off has an unknown result. During the first run after a resume, an
+    identical call (same canonical arguments digest) that is not LOW goes to
+    the coordinator whatever the policy, an `allow` override, a classifier or a
+    remembered approval say (`escalatedBecause: repeat_cut_off`, rule id
+    `resume.repeat_cut_off` in the gate log and the audit), and an approval of
+    it is not remembered. It is always on. The digests come from the session
+    file; a forged one can only add an escalation.
+  - **The context limit.** `resume.maxContextTokens` (default 150000) refuses
+    a resume whose context is estimated above it, so a runaway or tampered
+    session cannot make every later request huge. The estimate uses the last
+    reply's reported usage, never lower than 1/16 of the file's bytes, else a
+    quarter of the bytes; the reader itself refuses files over 32 MiB.
+    `list_workers({ resumable: true })` shows what is kept (workspace, sizes,
+    cut-off call counts, names of cut-off tools); what comes from the session is
+    marked untrusted and a session over 4 MiB is not even read for it.
 
 ## What it does not protect
 

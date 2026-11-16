@@ -121,6 +121,14 @@ export interface Config {
 		/** The JSONL file; `<stateDir>/audit.jsonl` unless set. */
 		file: string;
 	};
+	resume: {
+		/**
+		 * A saved conversation whose context is estimated above this many tokens
+		 * is not resumed: replaying it would cost that much again on every
+		 * request. Spawn a new worker with a summary instead.
+		 */
+		maxContextTokens: number;
+	};
 	/** Linux only: bubblewrap. macOS has no sandbox, so `minimum` must stay `none`. */
 	sandbox: {
 		/** The least a worker may run with; a spawn cannot ask for less. */
@@ -204,6 +212,8 @@ export const DEFAULT_RECORD_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const DEFAULT_MAX_RECORDED_RUNS = 500;
 export const DEFAULT_SESSION_RETENTION_MS = 3 * 24 * 60 * 60_000;
 export const DEFAULT_MAX_SESSION_BYTES = 256 * 1024 * 1024;
+export const DEFAULT_MAX_CONTEXT_TOKENS = 150_000;
+const MAX_CONTEXT_TOKENS = 100_000_000;
 /** Upper bounds: a year, and a TiB. */
 const MAX_SESSION_RETENTION_MS = 365 * 24 * 60 * 60_000;
 const MAX_SESSION_BYTES = 1024 ** 4;
@@ -352,6 +362,11 @@ export const configFileSchema = z.strictObject({
 	persistSessions: z.boolean().optional(),
 	/** No longer used: accepted so existing config files keep loading. */
 	legacyTools: z.boolean().optional(),
+	resume: z
+		.strictObject({
+			maxContextTokens: positiveInt.max(MAX_CONTEXT_TOKENS).optional(),
+		})
+		.optional(),
 	limits: z
 		.strictObject({
 			commandTimeoutMs: positiveInt.optional(),
@@ -491,6 +506,10 @@ export const ENV_VARS = {
 		name: "WORKER_MCP_MAX_SESSION_BYTES",
 		key: "limits.maxSessionBytes",
 	},
+	maxContextTokens: {
+		name: "WORKER_MCP_RESUME_MAX_CONTEXT_TOKENS",
+		key: "resume.maxContextTokens",
+	},
 	allowedRoots: {
 		name: "WORKER_MCP_ALLOWED_ROOTS",
 		key: "limits.allowedRoots",
@@ -574,6 +593,11 @@ const VALUE_FLAGS = {
 	maxSessionBytes: {
 		flag: "--max-session-bytes",
 		key: "limits.maxSessionBytes",
+		kind: "int",
+	},
+	maxContextTokens: {
+		flag: "--resume-max-context-tokens",
+		key: "resume.maxContextTokens",
 		kind: "int",
 	},
 	allowedRoots: {
@@ -830,6 +854,7 @@ function stringLayer(
 		maxRecordedRuns?: { key: string; raw: string };
 		sessionRetention?: { key: string; raw: string };
 		maxSessionBytes?: { key: string; raw: string };
+		maxContextTokens?: { key: string; raw: string };
 		allowedRoots?: { key: string; raw: string };
 		passthrough?: { key: string; raw: string };
 		stateDir?: string;
@@ -931,6 +956,19 @@ function stringLayer(
 				bound === undefined
 					? value
 					: check(entry.key, z.number().max(bound), value),
+		};
+	}
+	if (values.maxContextTokens) {
+		layer.resume = {
+			maxContextTokens: check(
+				values.maxContextTokens.key,
+				z.number().max(MAX_CONTEXT_TOKENS),
+				parseInteger(
+					source,
+					values.maxContextTokens.key,
+					values.maxContextTokens.raw,
+				),
+			),
 		};
 	}
 	if (values.commandTimeout || values.maxOutputChars) {
@@ -1060,6 +1098,11 @@ function envLayer(env: NodeJS.ProcessEnv): FileLayer {
 			keysOf(),
 		),
 		stringLayer(
+			label(ENV_VARS.maxContextTokens),
+			{ maxContextTokens: num(ENV_VARS.maxContextTokens) },
+			keysOf(),
+		),
+		stringLayer(
 			label(ENV_VARS.allowedRoots),
 			{ allowedRoots: num(ENV_VARS.allowedRoots) },
 			keysOf(),
@@ -1147,6 +1190,7 @@ function flagLayer(flags: CliFlags): FileLayer {
 			case "maxRecordedRuns":
 			case "sessionRetention":
 			case "maxSessionBytes":
+			case "maxContextTokens":
 			case "allowedRoots":
 				parts.push(stringLayer(source, { [name]: entry }, keys));
 				break;
@@ -1184,6 +1228,7 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		persistSessions: over.persistSessions ?? base.persistSessions,
 		legacyTools: over.legacyTools ?? base.legacyTools,
 		limits: { ...base.limits, ...over.limits },
+		resume: { ...base.resume, ...over.resume },
 		env: { allow },
 		audit: {
 			enabled: over.audit?.enabled ?? base.audit?.enabled,
@@ -1465,6 +1510,10 @@ function applyDefaults(
 				layer.limits?.maxSessionBytes ?? DEFAULT_MAX_SESSION_BYTES,
 			allowedRoots: [...new Set(layer.limits?.allowedRoots ?? [])],
 		},
+		resume: {
+			maxContextTokens:
+				layer.resume?.maxContextTokens ?? DEFAULT_MAX_CONTEXT_TOKENS,
+		},
 		env: {
 			allow: [...new Set(layer.env?.allow ?? [])],
 			forceDropExempt: exempt,
@@ -1581,6 +1630,8 @@ export function defaultConfig(env: NodeJS.ProcessEnv = {}): Config {
 const SECRET_KEY = /token|secret|password|passwd|credential|api[_-]?key/i;
 /** Names a file that holds a secret, not the secret: safe and useful to show. */
 const PATH_KEY = /File$/;
+/** A count of tokens (of context), not a credential. */
+const COUNT_KEY = /^max\w*Tokens$/;
 
 /** Deep copy with the value of every secret-looking key replaced. */
 export function redactConfig<T>(value: T): T {
@@ -1589,7 +1640,10 @@ export function redactConfig<T>(value: T): T {
 		const out: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(value)) {
 			out[k] =
-				SECRET_KEY.test(k) && !PATH_KEY.test(k) && v != null
+				SECRET_KEY.test(k) &&
+				!PATH_KEY.test(k) &&
+				!COUNT_KEY.test(k) &&
+				v != null
 					? "[redacted]"
 					: redactConfig(v);
 		}

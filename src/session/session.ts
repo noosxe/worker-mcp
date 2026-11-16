@@ -220,6 +220,8 @@ export class Session {
 	public readonly resumed: ResumedInfo | null;
 	/** The server's note for the first prompt of a resumed worker, until it is sent. */
 	private pendingNote: string | undefined;
+	/** The run the repeat guard ends with: the first run that carried the note. */
+	private guardRunId: string | undefined;
 	/** What the server changed or warned about when it chose the sandbox. */
 	public readonly sandboxReport: { clamped: string[]; notes: string[] };
 
@@ -612,6 +614,12 @@ export class Session {
 		if (active.maxTimer) clearTimeout(active.maxTimer);
 		if (active.graceTimer) clearTimeout(active.graceTimer);
 		if (this.currentRun === active) this.currentRun = null;
+		// The repeat guard ends with the first resumed run: by then the
+		// coordinator has seen the note and the cut-off calls.
+		if (this.guardRunId === active.run.id) {
+			this.guardRunId = undefined;
+			this.approvalGate.disarmRepeatGuard();
+		}
 		this.dropPending("the run ended before the call was answered");
 		if (this.alive && !this.terminating) this.status = "IDLE";
 		this.lastActiveAt = this.now();
@@ -1036,6 +1044,15 @@ export class Session {
 		active.maxTimer.unref?.();
 
 		const note = this.pendingNote;
+		if (note !== undefined && this.resumed) {
+			// Calls that may have run before the restart need a new decision to
+			// run again; calls that never ran (awaiting approval) do not.
+			this.approvalGate.armRepeatGuard(
+				this.resumed.interrupted
+					.filter((c) => c.status !== "awaiting_approval")
+					.map((c) => c.digest),
+			);
+		}
 		const startMs = this.config.limits.runStartTimeoutMs;
 		let startTimer: ReturnType<typeof setTimeout> | undefined;
 		try {
@@ -1069,6 +1086,7 @@ export class Session {
 		}
 		// The worker has the note now (and its session holds it): not again.
 		this.pendingNote = undefined;
+		if (note !== undefined) this.guardRunId = run.id;
 		// An approval or a quick finish may already have moved the run on.
 		if (run.state === "starting") this.runs.setState(run, "running");
 		return run;

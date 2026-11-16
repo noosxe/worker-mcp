@@ -53,7 +53,7 @@ export const ApprovalOut = z.object({
 		.string()
 		.optional()
 		.describe(
-			"Why the gate asked you: hard_limit, manual_mode, low_confidence, classifier_error or ceiling.",
+			"Why the gate asked you: hard_limit, manual_mode, low_confidence, classifier_error, ceiling or repeat_cut_off (a resumed worker repeats a call that was cut off).",
 		),
 	consulted: z
 		.array(ConsultedOut)
@@ -275,6 +275,21 @@ export const ResumedOut = z
 			.string()
 			.describe("The conversation's id: the first worker id of the chain."),
 		sessionBytes: z.number().describe("Size of the saved conversation."),
+		contextTokens: z
+			.number()
+			.describe(
+				"About how many tokens the first request replays (the context the model starts with, paid again on every request). An estimate.",
+			),
+		contextEstimate: z
+			.enum(["usage", "bytes"])
+			.describe(
+				"usage: from the last reply's reported token usage. bytes: the file size divided by 4 (no usage in the session, or numbers that do not fit its size).",
+			),
+		repeatGuardCalls: z
+			.number()
+			.describe(
+				"How many cut-off calls the repeat guard watches: during the first run a call identical to one of them (that is not LOW) goes to you for approval, whatever the policy says, with ruleId resume.repeat_cut_off.",
+			),
 		messageCount: z.number(),
 		providerVersion: z.object({
 			recorded: z.string().optional(),
@@ -345,9 +360,57 @@ export const AnswerOut = z.object({
 	next: z.string().describe("What to call next."),
 });
 
+export const ResumableOut = z.object({
+	workerId: z.string().describe("Pass as resumeFrom."),
+	lineage: z.string().describe("The conversation's id (its first worker id)."),
+	name: z.string().optional(),
+	provider: z.string(),
+	model: z.string().optional(),
+	cwd: z.string(),
+	lastActiveAt: z.string(),
+	lastRun: z
+		.object({ runId: z.string(), state: z.string() })
+		.optional()
+		.describe("The conversation's newest run, from its record."),
+	resumable: z.boolean(),
+	notResumable: z
+		.string()
+		.optional()
+		.describe(
+			"Why it cannot be resumed: live here or in another server, damaged, over the context limit, workspace gone.",
+		),
+	untrustedSession: z
+		.object({
+			sessionBytes: z.number(),
+			contextTokens: z
+				.number()
+				.describe("Estimated tokens a resume would replay."),
+			contextEstimate: z.enum(["usage", "bytes"]),
+			cutOffCalls: z
+				.number()
+				.optional()
+				.describe(
+					"Tool calls without a result since the last finished run. Absent when the file was too large to read for the list.",
+				),
+			cutOffTools: z.array(z.string()).optional(),
+		})
+		.optional()
+		.describe(
+			"Read from the saved conversation: the worker's own output, so untrusted.",
+		),
+});
+
 export const ListWorkersOut = z.object({
 	server: ServerOut,
 	workers: z.array(WorkerOut),
+	resumable: z
+		.object({
+			total: z.number().describe("How many conversations are saved."),
+			shown: z.number(),
+			items: z.array(ResumableOut),
+		})
+		.optional()
+		.describe("With resumable: true: saved conversations, newest first."),
 	auditDegraded: z
 		.boolean()
 		.describe(

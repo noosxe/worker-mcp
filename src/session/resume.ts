@@ -203,6 +203,33 @@ export function resumeNote(opts: {
 	return `${head} Your last turn was cut off. Tool calls left without a result: ${shown.join("; ")}. Do not repeat a call that may have run unless the task below needs it; check the workspace state first. Earlier approvals are void. The task below follows.`;
 }
 
+/** How `contextTokens` was worked out. */
+export type ContextEstimate = "usage" | "bytes";
+
+/**
+ * The context a resume would replay, in tokens, without a model or a
+ * tokenizer. When the last assistant message on the active branch reports its
+ * usage (input, cache and output tokens: what the next request starts from),
+ * that is used. Otherwise the size of the session file divided by 4. The
+ * usage numbers are the worker's own words, so they are not allowed to fall
+ * below one sixteenth of the file's bytes, far under any real ratio: a forged
+ * small number cannot slip a huge session past the cap.
+ */
+export function estimateContext(found: {
+	bytes: number;
+	lastUsageTokens?: number;
+}): { tokens: number; method: ContextEstimate } {
+	const floor = Math.ceil(found.bytes / 16);
+	const usage = found.lastUsageTokens;
+	if (usage !== undefined && usage >= floor) {
+		return { tokens: usage, method: "usage" };
+	}
+	return {
+		tokens: Math.max(floor, Math.ceil(found.bytes / 4)),
+		method: "bytes",
+	};
+}
+
 /** What a resume found and decided; the spawn result and the first prompt come from it. */
 export interface ResumedInfo {
 	/** The worker id that was resumed. */
@@ -212,6 +239,10 @@ export interface ResumedInfo {
 	/** The run the old worker was last in, from its record. */
 	lastRun?: { runId: string; state: string };
 	sessionBytes: number;
+	/** Tokens the conversation replays on the first request (an estimate). */
+	contextTokens: number;
+	/** `usage`: from the last reply's reported usage; `bytes`: the file size divided by 4. */
+	contextEstimate: ContextEstimate;
 	messageCount: number;
 	providerVersion: { recorded?: string; now?: string; changed: boolean };
 	/** Calls the old worker left without a result. */

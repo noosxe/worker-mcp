@@ -353,6 +353,11 @@ export function createContext(
 				from: info.from,
 				lineage: info.lineage,
 				sessionBytes: info.sessionBytes,
+				contextTokens: info.contextTokens,
+				contextEstimate: info.contextEstimate,
+				repeatGuardCalls: info.interrupted.filter(
+					(c) => c.status !== "awaiting_approval",
+				).length,
 				messageCount: info.messageCount,
 				providerVersion: info.providerVersion,
 				clamped: [

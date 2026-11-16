@@ -41,8 +41,31 @@ still fails (now with a hint).
   resumed when its conversation was kept. Run records carry the conversation's
   `lineage`; `worker.json` gains `lastRunId`, `runIds` and a `checkpoint`
   (size and SHA-256 of the session file when a run last completed).
-- Not yet: the repeat guard for the cut-off call, a limit on the context size,
-  and `list_workers` for resumable workers.
+- **The repeat guard.** During the first run of a resumed worker, a call
+  identical to one that may have run before the cut-off (approved and started,
+  or unknown) is sent to the coordinator whatever the policy, an `allow`
+  override, a classifier or a remembered approval say, unless it is LOW. The
+  approval says it repeats a call cut off before the restart whose result is
+  unknown (`escalatedBecause: repeat_cut_off`, rule id `resume.repeat_cut_off`
+  in the gate log and the audit). Always on; it ends with that run, and an
+  approval lifts it for that call only.
+- **The context limit.** `resume.maxContextTokens` (default 150000; config
+  file, `WORKER_MCP_RESUME_MAX_CONTEXT_TOKENS`, `--resume-max-context-tokens`
+  and the Nix option `maxResumeContextTokens`) refuses a resume whose context is
+  estimated above it, with advice to spawn a fresh worker with a summary.
+  `resumed` gains `contextTokens`, `contextEstimate` (`usage`: the last reply's
+  reported tokens; `bytes`: the file size divided by 4, also used when the
+  reported number is implausibly small) and `repeatGuardCalls`.
+- **`list_workers({ resumable: true, limit? })`** lists saved conversations,
+  newest first and bounded (default 10, max 50): the id to pass, workspace, last
+  run, cut-off call count, context size, and why one is not resumable (live here
+  or elsewhere, damaged, over the limit, workspace gone). It reads only worker
+  records and the sizes of the newest files, caches what it parses by file size
+  and time, and does not read a session above 4 MiB. What comes from the session
+  is under `untrustedSession`.
+- The skill's "After a restart" section now compares resuming, a fresh worker
+  with a summary and just checking the workspace, and says what to check before
+  approving a repeated call.
 
 ### Saved conversations
 
