@@ -285,6 +285,31 @@ describe("planSandbox", () => {
 	});
 });
 
+describe("overlayOmitHome", () => {
+	test("leaves the omitted entry out of the overlay", () => {
+		const home = mk("home");
+		const agent = mk("home", ".pi", "agent");
+		fs.writeFileSync(path.join(agent, "auth.json"), "{}");
+		fs.mkdirSync(path.join(agent, "skills"));
+		const plan = (omit?: string[]) =>
+			planSandbox({
+				cwd: mk("ws"),
+				privateDir: mk("priv"),
+				home,
+				profile: {
+					roHome: [".pi"],
+					rwHome: [],
+					overlayHome: [".pi/agent"],
+					overlayOmitHome: omit,
+				},
+				extraRo: [],
+				extraRw: [],
+			}).overlays[0].entries.map((e) => path.basename(e));
+		assert.deepStrictEqual(new Set(plan()), new Set(["auth.json", "skills"]));
+		assert.deepStrictEqual(plan([".pi/agent/skills"]), ["auth.json"]);
+	});
+});
+
 describe("git worktrees", () => {
 	test("binds the common and the worktree git dir, as git reports them", () => {
 		const { main, wt } = makeWorktree();

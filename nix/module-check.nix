@@ -92,6 +92,7 @@ let
               ];
               piPath = "/opt/pi/bin/pi";
               defaultModel = "zai/test-model";
+              piSkills = false;
               allowedRoots = [ "/home/user/src" ];
               logLevel = "debug";
               legacyTools = false;
@@ -218,6 +219,7 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .logLevel == "debug"
           and .providers.pi.path == "/opt/pi/bin/pi"
           and .providers.pi.defaultModel == "zai/test-model"
+          and .providers.pi.skills == false
           and (has("legacyTools") | not)
           and .sandbox == { default: "workspace", toolIsolation: "require", extraRo: ["/opt/toolchain"], extraRw: ["/var/cache/build"], hide: ["/data/home-backup"] }
           and .env.allow == ["TEST_API_KEY"]
@@ -235,6 +237,7 @@ pkgs.runCommand "worker-mcp-module-eval"
                and .gate.classifiers[1].jev.userRequestedProbability == 0.9
                and .gate.classifiers[1].cacheTtlMs == 30000
                and .providers.pi.defaultModel == "zai/test-model"
+               and .providers.pi.skills == false
                and .logLevel == "debug"
                and .sandbox.minimum == "none"
                and .sandbox.default == "workspace"

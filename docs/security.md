@@ -135,6 +135,16 @@ for the coordinator.
   still loads. `--no-session` keeps pi from saving the worker's conversation
   under its own session directory.
 - The server does not read or write anything under `~/.pi`.
+- **Skills.** By default pi loads the host user's skills (`~/.pi/agent/skills`
+  and its other global skill directories) and lists them in the worker's system
+  prompt. They are instructions that did not come from the coordinator and they
+  describe the host's setup. `providers.pi.skills: false` (Nix `piSkills`) adds
+  `--no-skills`, which stops all discovery. Skills in the workspace itself (a
+  repository's `.pi/skills` and `.agents/skills`, up to the git root) belong to
+  the project, so they are passed back with `--skill`. In the `workspace`
+  sandbox the same option also leaves `~/.pi/agent/skills` out of the
+  throwaway layer over `~/.pi/agent`, so the worker cannot read it either; the
+  commands it runs never saw it (they get `~/.pi/agent` empty).
 
 ## The workspace sandbox
 

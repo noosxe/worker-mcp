@@ -70,10 +70,12 @@ describe("pi provider against fake-pi", () => {
 			abortGraceMs?: number;
 			piPath?: string;
 			model?: string;
+			skills?: boolean;
 		} = {},
 	) {
 		const config = defaultConfig();
 		config.providers.pi.path = opts.piPath ?? FAKE_PI;
+		if (opts.skills !== undefined) config.providers.pi.skills = opts.skills;
 		if (opts.startupTimeoutMs !== undefined) {
 			config.providers.pi.startupTimeoutMs = opts.startupTimeoutMs;
 		}
@@ -138,6 +140,15 @@ describe("pi provider against fake-pi", () => {
 			assert.strictEqual(gate, path.join(w.worker.host.privateDir, "gate.ts"));
 			assert.strictEqual(fs.statSync(gate).mode & 0o777, 0o600);
 			assert.match(start.env.WORKER_MCP_GATE_NONCE, /^[0-9a-f]{32}$/);
+		});
+
+		test("passes --no-skills only when providers.pi.skills is off", async () => {
+			let known = iso.starts().length;
+			await open();
+			assert.ok(!(await iso.workerAfter(known)).argv.includes("--no-skills"));
+			known = iso.starts().length;
+			await open({ skills: false });
+			assert.ok((await iso.workerAfter(known)).argv.includes("--no-skills"));
 		});
 
 		test("each worker gets its own gate file and nonce", async () => {

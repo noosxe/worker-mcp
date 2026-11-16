@@ -19,7 +19,7 @@ import type {
 	WorkerProvider,
 	WorkerSpec,
 } from "../types.js";
-import { buildPiArgs } from "./argv.js";
+import { buildPiArgs, workspaceSkillDirs } from "./argv.js";
 import {
 	GATE_DIALOG_TITLE,
 	GATE_NONCE_ENV,
@@ -68,6 +68,17 @@ export const PI_SANDBOX_PROFILE: SandboxProfile = {
 	toolHideHome: [".pi/agent"],
 	shellTool: { name: "bash", command: "command" },
 };
+
+/**
+ * With `providers.pi.skills` off the host user's skills directory is not in
+ * the overlay at all, so the worker cannot read it. (The commands it runs
+ * already get an empty directory in place of the whole agent directory.)
+ */
+export function piSandboxProfile(skills: boolean): SandboxProfile {
+	return skills
+		? PI_SANDBOX_PROFILE
+		: { ...PI_SANDBOX_PROFILE, overlayOmitHome: [".pi/agent/skills"] };
+}
 
 export const PI_CAPABILITIES: ProviderCapabilities = {
 	approvals: "per-tool-call",
@@ -247,7 +258,7 @@ export function createPiProvider(
 		id: "pi",
 		displayName: "pi",
 		capabilities: PI_CAPABILITIES,
-		sandboxProfile: PI_SANDBOX_PROFILE,
+		sandboxProfile: piSandboxProfile(config.providers.pi.skills),
 		sessionProfile: { needsDir: true },
 		inspectSession: (dir, id, o) => inspectPiSession(dir, id, o),
 		toolMap: piToolMap,
@@ -297,6 +308,10 @@ export function createPiProvider(
 						gateFile,
 						systemPrompt: spec.systemPrompt,
 						session: spec.session,
+						skills: config.providers.pi.skills,
+						workspaceSkillDirs: config.providers.pi.skills
+							? []
+							: workspaceSkillDirs(spec.cwd),
 					}),
 				],
 				cwd: spec.cwd,

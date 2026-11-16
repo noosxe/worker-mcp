@@ -32,6 +32,12 @@ export interface SandboxProfile {
 	 */
 	overlayHome?: readonly string[];
 	/**
+	 * Entries of an `overlayHome` directory left out of the overlay, so the
+	 * agent cannot see them at all (the path inside the directory, relative to
+	 * `$HOME`).
+	 */
+	overlayOmitHome?: readonly string[];
+	/**
 	 * Home paths the agent itself needs but the commands it runs must not see
 	 * (its credentials). With `toolIsolation` on, each shell command gets a
 	 * second sandbox with an empty tmpfs over these and a process table of its
@@ -701,11 +707,17 @@ export function planSandbox(input: PlanInput): SandboxPlan {
 		rwHome: input.profile.rwHome.map(underHome),
 		overlays: (input.profile.overlayHome ?? []).flatMap((rel) => {
 			const dir = underHome(rel);
+			const omit = new Set(
+				(input.profile.overlayOmitHome ?? []).map(underHome),
+			);
 			try {
 				return [
 					{
 						dir,
-						entries: fs.readdirSync(dir).map((name) => path.join(dir, name)),
+						entries: fs
+							.readdirSync(dir)
+							.map((name) => path.join(dir, name))
+							.filter((p) => !omit.has(p)),
 					},
 				];
 			} catch {
