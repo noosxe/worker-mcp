@@ -37,8 +37,6 @@ describe("responses of a scripted run: shape and size", () => {
 		const timed = async (name: string, args: object) => {
 			const res = await server.callTool(name, args);
 			assert.notStrictEqual(res.result.isError, true, JSON.stringify(res));
-			if (process.env.DUMP && name === TOOLS.waitRun)
-				console.log("DUMP", JSON.stringify(res.result));
 			(sizes[name] ??= []).push(
 				Buffer.byteLength(JSON.stringify(res.result), "utf8"),
 			);
@@ -60,11 +58,12 @@ describe("responses of a scripted run: shape and size", () => {
 					],
 				},
 			});
-			let view = await timed(TOOLS.startRun, {
+			const first = await timed(TOOLS.startRun, {
 				workerId: "w",
 				prompt: `scenario:sequence:${JSON.stringify(CALLS)}`,
 				waitMs: 10_000,
 			});
+			let view = first;
 			let rejectNext = 0;
 			const deadline = Date.now() + 30_000;
 			while (!TERMINAL.has(view.state)) {
@@ -93,7 +92,6 @@ describe("responses of a scripted run: shape and size", () => {
 				total += sum;
 				console.log(`SIZE ${name}: ${list.join(" ")} (sum ${sum})`);
 			}
-			if (process.env.DUMP) console.log(JSON.stringify(view, null, 1));
 			console.log(`SIZE total: ${total}`);
 
 			// Approve and reject carry the outcome only; the next wait the view.
@@ -117,18 +115,20 @@ describe("responses of a scripted run: shape and size", () => {
 			);
 			assert.strictEqual("remembered" in answers[TOOLS.reject][0], false);
 
-			// The denied call is reported once, in the wait that follows it,
-			// and no wait repeats a call an earlier one reported.
-			const seen = waits.flatMap((w) => w.gate.untrustedNotable);
+			// Each flagged call is reported once, in the response that follows it:
+			// no response repeats a call an earlier one reported. The echo calls
+			// were allowed by an override, so they are listed with who decided.
+			const seen = [first, ...waits].flatMap((w) => w.gate.untrustedNotable);
 			assert.strictEqual(new Set(seen).size, seen.length, seen.join("\n"));
 			assert.ok(
 				seen.some((l) => /curl/.test(l)),
 				"the denied call",
 			);
 			assert.ok(waits.every((w) => w.gate.notableOmitted === 0));
-			// Allowed calls are counted, not listed.
-			assert.ok(
-				seen.every((l) => !/echo/.test(l)),
+			assert.strictEqual(
+				seen.filter((l) => /echo \w+/.test(l) && /allowed by rules/.test(l))
+					.length,
+				4,
 				seen.join("\n"),
 			);
 			assert.strictEqual(view.gate.autoAllowed, 4);

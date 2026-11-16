@@ -500,6 +500,15 @@ export function behaviourTests(name: string, layer: Layer) {
 				assert.strictEqual(view.state, "completed");
 				assert.match(view.output.text, /^tool bash ran with /);
 				assert.ok(view.activity.some((l) => /bash: mkdir build/.test(l)));
+				// MEDIUM and allowed unasked: listed once, with its label and who decided.
+				const flagged = view.gate.untrustedNotable.filter((l) =>
+					/bash \[MEDIUM\] allowed by rules: mkdir build/.test(l),
+				);
+				assert.strictEqual(
+					flagged.length,
+					1,
+					view.gate.untrustedNotable.join("\n"),
+				);
 			});
 		});
 

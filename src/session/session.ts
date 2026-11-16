@@ -675,7 +675,18 @@ export class Session {
 			this.debug(
 				`[AUTO-APPROVED] call ${call.callId}: ${message} (${outcome.reason})`,
 			);
-			run?.noteGate("allowed", line);
+			// A LOW call the rules allowed is only counted; anything else the
+			// gate let through unasked is listed with who allowed it.
+			const flagged =
+				outcome.level > RiskLevel.LOW ||
+				outcome.decidedBy !== "rules" ||
+				outcome.matchedOverride !== undefined;
+			run?.noteGate(
+				"allowed",
+				`${outcome.call.rawName} [${label}] allowed by ${outcome.decidedBy}${outcome.matchedOverride ? ` (${outcome.matchedOverride})` : ""}: ${summariseInput(outcome.call.input)}`,
+				undefined,
+				flagged,
+			);
 			this.autoApprovedTotal++;
 			this.autoApprovedActions.push({
 				actionId: call.callId,

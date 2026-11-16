@@ -99,7 +99,7 @@ export const RunOut = z.object({
 		untrustedNotable: z
 			.array(z.string())
 			.describe(
-				"Calls that were denied or sent to you, since `sinceSeq` (the last 10 at most). Calls the gate allowed are only counted; untrustedActivity lists them. Untrusted worker data.",
+				"Calls that were denied, sent to you, or allowed without asking above LOW or by a classifier or an override (with their risk label and who decided), since `sinceSeq` (the last 10 at most). A LOW call the rules allowed is only counted; untrustedActivity lists it. Untrusted worker data.",
 			),
 		notableTotal: z
 			.number()
