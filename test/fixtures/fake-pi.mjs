@@ -21,6 +21,7 @@
 //   slow:<ms>[ <text>]          stream deltas for <ms>, then reply; abort ends it
 //   tool:<name>:<json>          propose a tool call through the gate, report result
 //   late-settled:<ms>[ <text>]  reply like echo, then send agent_settled <ms> later
+//   recall                      reply with the user messages of the restored session
 //   crash-mid-run               exit 1 after the first delta
 //   crash-noisy                 print npm and runtime warnings and one real error to
 //                               stderr (plus noise after it), then exit 1 mid-run
@@ -53,12 +54,30 @@
 //   no-gate-handshake           never send the gate's ready status
 //   gate-error                  report an extension_error for the gate file
 //   exit-at-start               exit 1 at once, as pi does for a bad -e path
+// Sessions: `--session-dir <dir>` (and `--session-id <id>`) make fake-pi keep a
+// pi-shaped session file (format version 3), with pi's timing: nothing is
+// written before the first user message, then everything so far at once; one
+// append per entry at message end; an assistant message holding a tool call is
+// on disk before the gate is asked; the tool result only when the tool ends.
+// The file is `<timestamp>_<id>.jsonl`; an existing one is found by id and cwd
+// and its context restored (scenario `recall` replies with the user messages
+// of the active branch). Without these flags nothing is written, as today.
+// FAKE_PI_SESSION_KILL=after-user|after-tool-call|after-gate SIGKILLs the
+// process at that point of a run (after-user: user message written;
+// after-tool-call: assistant tool call written, gate not asked; after-gate:
+// gate answered, tool not finished).
 // After loading the extensions fake-pi fires `session_start` the way pi does,
 // so a gate that reports readiness from that hook is seen on the wire.
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import {
+	appendFileSync,
+	readdirSync,
+	readFileSync,
+	writeFileSync,
+} from "node:fs";
 import { register } from "node:module";
+import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -104,6 +123,165 @@ record({
 // Like pi after it has read its credentials: they stay in this process's
 // environment (visible in /proc/<pid>/environ) but not in its children's.
 delete process.env.FAKE_PI_CRED;
+
+// ---- session file ----------------------------------------------------------
+const argValue = (flag) => {
+	const i = argv.indexOf(flag);
+	return i >= 0 ? argv[i + 1] : undefined;
+};
+const sessionDir = argValue("--session-dir");
+const session = sessionDir
+	? {
+			dir: path.resolve(sessionDir),
+			id: argValue("--session-id") ?? randomUUID(),
+			file: null, // set when the file exists
+			leaf: null,
+			entries: new Map(),
+		}
+	: null;
+const entryId = () => randomUUID().slice(0, 8);
+const kill = (point) => {
+	if (process.env.FAKE_PI_SESSION_KILL === point) {
+		process.kill(process.pid, "SIGKILL");
+	}
+};
+
+/** Like pi: look the file up by id and cwd; skip lines that do not parse. */
+function loadSession() {
+	let names = [];
+	try {
+		names = readdirSync(session.dir).filter((n) => n.endsWith(".jsonl"));
+	} catch {}
+	for (const name of names.toSorted()) {
+		const file = path.join(session.dir, name);
+		let lines;
+		try {
+			lines = readFileSync(file, "utf8").split("\n");
+		} catch {
+			continue;
+		}
+		let header;
+		try {
+			header = JSON.parse(lines[0]);
+		} catch {
+			continue;
+		}
+		if (header?.type !== "session" || header.id !== session.id) continue;
+		if (header.cwd !== process.cwd()) continue;
+		for (const line of lines.slice(1)) {
+			try {
+				const e = JSON.parse(line);
+				if (typeof e?.id !== "string") continue;
+				session.entries.set(e.id, e);
+				session.leaf = e.id;
+			} catch {}
+		}
+		session.file = file;
+		return;
+	}
+}
+
+/** The active branch, oldest first: the leaf's parent chain. */
+function sessionBranch() {
+	const chain = [];
+	let e = session.entries.get(session.leaf);
+	while (e && !chain.includes(e)) {
+		chain.push(e);
+		e = session.entries.get(e.parentId);
+	}
+	return chain.toReversed();
+}
+
+function appendEntry(type, fields) {
+	const entry = {
+		type,
+		id: entryId(),
+		parentId: session.leaf,
+		timestamp: new Date().toISOString(),
+		...fields,
+	};
+	session.entries.set(entry.id, entry);
+	session.leaf = entry.id;
+	return entry;
+}
+
+const sessionMessage = (message) => ({
+	message: { ...message, timestamp: Date.now() },
+});
+
+/** Append one entry; the first one creates the file with the setup entries. */
+function writeMessage(message) {
+	if (!session) return;
+	const fresh = !session.file;
+	const lines = [];
+	if (fresh) {
+		const now = new Date();
+		const header = {
+			type: "session",
+			version: 3,
+			id: session.id,
+			timestamp: now.toISOString(),
+			cwd: process.cwd(),
+		};
+		session.file = path.join(
+			session.dir,
+			`${now.toISOString().replace(/[:.]/g, "-")}_${session.id}.jsonl`,
+		);
+		lines.push(header);
+		lines.push(
+			appendEntry("model_change", { provider: "fake", modelId: "fake-model" }),
+			appendEntry("thinking_level_change", { thinkingLevel: "high" }),
+			appendEntry(
+				"message",
+				sessionMessage({
+					role: "system",
+					content: [{ type: "text", text: "" }],
+				}),
+			),
+		);
+	}
+	lines.push(appendEntry("message", sessionMessage(message)));
+	const data = lines.map((l) => JSON.stringify(l)).join("\n") + "\n";
+	if (fresh) writeFileSync(session.file, data, { flag: "wx" });
+	else appendFileSync(session.file, data);
+}
+
+if (session) {
+	loadSession();
+	record({
+		kind: "session",
+		id: session.id,
+		resumed: session.file !== null,
+		messages: session.file ? sessionBranch().length : 0,
+	});
+}
+
+const textOf = (content) =>
+	(Array.isArray(content) ? content : [])
+		.map((c) => (c?.type === "text" ? c.text : ""))
+		.join("");
+
+/** The assistant message with a tool call; on disk before the gate is asked. */
+function sessionToolCall(name, input) {
+	const callId = `call_${entryId()}`;
+	writeMessage({
+		role: "assistant",
+		stopReason: "toolUse",
+		content: [{ type: "toolCall", id: callId, name, arguments: input }],
+	});
+	kill("after-tool-call");
+	return callId;
+}
+
+function sessionToolResult(callId, name, text, isError = false) {
+	writeMessage({
+		role: "toolResult",
+		toolCallId: callId,
+		toolName: name,
+		content: [{ type: "text", text }],
+		isError,
+	});
+}
 
 // ---- gate extensions -------------------------------------------------------
 const extensionPaths = [];
@@ -209,7 +387,14 @@ function finishRun(text, { settled = true } = {}) {
 	if (!run) return;
 	clearInterval(run.timer);
 	run = null;
-	if (text !== undefined) send(messageEnd(text));
+	if (text !== undefined) {
+		writeMessage({
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text }],
+		});
+		send(messageEnd(text));
+	}
 	send(turnEnd());
 	send(agentEnd());
 	// Real pi follows agent_end with agent_settled; a run is over at that event.
@@ -242,6 +427,8 @@ async function startPrompt(message) {
 	if (spec === "ignore-sigterm") process.on("SIGTERM", () => {});
 	if (spec === "ignore-abort") ignoreAbort = true;
 	record({ kind: "run", spec });
+	writeMessage({ role: "user", content: [{ type: "text", text: message }] });
+	kill("after-user");
 	send(agentStart());
 	send(turnStart());
 
@@ -250,41 +437,60 @@ async function startPrompt(message) {
 		const [, toolName, json] = m;
 		const input = JSON.parse(json);
 		run = { timer: null };
+		const callId = sessionToolCall(toolName, input);
 		const result = await gate(toolName, input);
 		if (!run) return; // aborted while waiting for the gate
 		if (result.blocked) {
+			if (session) sessionToolResult(callId, toolName, result.reason, true);
 			finishRun(`tool ${toolName} blocked: ${result.reason}`);
 			return;
 		}
+		kill("after-gate");
 		const toolCallId = randomUUID();
 		send(toolExecutionStart(toolCallId, toolName, input));
 		send(toolExecutionEnd(toolCallId, toolName));
+		if (session) sessionToolResult(callId, toolName, "");
 		finishRun(`tool ${toolName} ran with ${json}`);
 	} else if ((m = spec.match(/^mutate:([^:]+):([\s\S]*)$/))) {
 		const [, toolName, json] = m;
 		run = { timer: null };
+		const callId = sessionToolCall(toolName, JSON.parse(json));
 		const result = await gate(toolName, JSON.parse(json));
 		if (!run) return;
 		if (result.blocked) {
+			if (session) sessionToolResult(callId, toolName, result.reason, true);
 			finishRun(`tool ${toolName} blocked: ${result.reason}`);
 			return;
 		}
+		kill("after-gate");
 		const toolCallId = randomUUID();
 		send(toolExecutionStart(toolCallId, toolName, result.input));
 		send(toolExecutionEnd(toolCallId, toolName));
+		if (session) sessionToolResult(callId, toolName, "");
 		finishRun(`tool ${toolName} ran with ${JSON.stringify(result.input)}`);
 	} else if ((m = spec.match(/^bash:([\s\S]+)$/))) {
 		run = { timer: null };
+		const callId = sessionToolCall("bash", { command: m[1] });
 		const result = await gate("bash", { command: m[1] });
 		if (!run) return;
 		if (result.blocked) {
+			if (session) sessionToolResult(callId, "bash", result.reason, true);
 			finishRun(`blocked: ${result.reason}`);
 			return;
 		}
+		kill("after-gate");
 		const r = spawnSync("bash", ["-c", result.input.command], {
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		if (session) {
+			sessionToolResult(
+				callId,
+				"bash",
+				`${r.stdout}${r.stderr}`,
+				r.status !== 0,
+			);
+		}
 		finishRun(`exit=${r.status}\n${r.stdout}${r.stderr}`);
 	} else if ((m = spec.match(/^race:([\s\S]+)$/))) {
 		run = { timer: null };
@@ -409,6 +615,16 @@ async function startPrompt(message) {
 		run = { timer: null };
 		finishRun(reply(m[2] ?? "late"), { settled: false });
 		setTimeout(() => send(agentSettled()), Number(m[1]));
+	} else if (spec === "recall") {
+		// The user messages the restored context holds (needs a session).
+		run = { timer: null };
+		const said = session
+			? sessionBranch()
+					.filter((e) => e.type === "message" && e.message?.role === "user")
+					.slice(0, -1)
+					.map((e) => textOf(e.message.content))
+			: [];
+		finishRun(`recalled: ${JSON.stringify(said)}`);
 	} else if (spec === "crash-mid-run") {
 		run = { timer: null };
 		streamFor(60_000, "unreachable", { crashAfterFirst: true });
