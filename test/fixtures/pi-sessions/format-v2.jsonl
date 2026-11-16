@@ -1,0 +1,7 @@
+{"type":"session","version":2,"id":"s_example01","timestamp":"2026-01-01T10:00:00.000Z","cwd":"/work/example"}
+{"type":"model_change","id":"e0000001","parentId":null,"timestamp":"2026-01-01T10:00:10.000Z","provider":"example","modelId":"example-model"}
+{"type":"thinking_level_change","id":"e0000002","parentId":"e0000001","timestamp":"2026-01-01T10:00:11.000Z","thinkingLevel":"high"}
+{"type":"message","id":"e0000003","parentId":"e0000002","timestamp":"2026-01-01T10:00:12.000Z","message":{"role":"system","content":[{"type":"text","text":""}],"timestamp":1767261600000}}
+{"type":"message","id":"e0000004","parentId":"e0000003","timestamp":"2026-01-01T10:00:13.000Z","message":{"role":"user","content":[{"type":"text","text":"Remember the code word EXAMPLE-WORD. Reply with just OK."}],"timestamp":1767261600000}}
+{"type":"message","id":"e0000005","parentId":"e0000004","timestamp":"2026-01-01T10:00:14.000Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"thinking","thinking":"…"},{"type":"text","text":"OK"}],"timestamp":1767261600000}}
+{"type":"message","id":"e0000006","parentId":"e0000005","timestamp":"2026-01-01T10:00:15.000Z","message":{"role":"user","content":[{"type":"text","text":"Run a loop that writes three lines."}],"timestamp":1767261600000}}
