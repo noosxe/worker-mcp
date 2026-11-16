@@ -22,6 +22,8 @@
 //   tool:<name>:<json>          propose a tool call through the gate, report result
 //   late-settled:<ms>[ <text>]  reply like echo, then send agent_settled <ms> later
 //   crash-mid-run               exit 1 after the first delta
+//   crash-noisy                 print npm and runtime warnings and one real error to
+//                               stderr (plus noise after it), then exit 1 mid-run
 //   ignore-sigterm              ignore SIGTERM and stay running until aborted
 //   ignore-abort                keep streaming and ignore the abort command
 //   grandchild                  start a detached `sleep` in its own group
@@ -390,6 +392,17 @@ async function startPrompt(message) {
 		setTimeout(() => send(agentSettled()), Number(m[1]));
 	} else if (spec === "crash-mid-run") {
 		run = { timer: null };
+		streamFor(60_000, "unreachable", { crashAfterFirst: true });
+	} else if (spec === "crash-noisy") {
+		run = { timer: null };
+		process.stderr.write("fatal: could not open the session file\n");
+		process.stderr.write("npm warn exec The following package was not found\n");
+		process.stderr.write(
+			"(node:123) [DEP0040] DeprecationWarning: The `punycode` module is deprecated.\n",
+		);
+		process.stderr.write(
+			"(Use `node --trace-deprecation ...` to show where)\n",
+		);
 		streamFor(60_000, "unreachable", { crashAfterFirst: true });
 	} else if (spec === "ignore-sigterm" || spec === "ignore-abort") {
 		run = { timer: null };

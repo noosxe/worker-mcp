@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Restarts and dead workers
+
+- **The server says when an id comes from an earlier server.** Workers, runs
+  and approvals live in memory, so a restart (the client restarts the server,
+  a crash, a reboot) loses them, and the ids a caller holds fail with
+  `WORKER_NOT_FOUND`, `RUN_NOT_FOUND` or `APPROVAL_NOT_FOUND`. Before, those
+  read like an expiry. Now each server process has a random boot id and a start
+  time, shown as `server: { bootId, startedAt }` by `list_providers` and
+  `list_workers`, and the first four characters of every new id are a tag of
+  the process that made it (the id patterns are unchanged). An id with another
+  tag, or an unknown worker name, gets a message that it was not issued by the
+  server running now, that nothing survives a restart, and to check the
+  workspace (`git status`) before redoing anything. An id with this server's
+  tag still says the result expired. No new error codes.
+- **Dead workers: the skill now matches the server.** A worker whose pi process
+  died was always dropped at once; the skill said it stayed listed. The skill
+  is fixed, and `WORKER_NOT_FOUND` for such a worker says it is no longer
+  running and names its latest run, which `get_run` still reads.
+- **Cleaner exit errors.** A run whose worker exited now leads with
+  `code N` or `killed by signal …` and quotes at most one short stderr line,
+  skipping `npm warn …`, deprecation and runtime warning lines. The quote is
+  marked as untrusted worker text.
+- The bundled skill has an "After a restart" section.
+
 ### Security
 
 - **A sandboxed worker's shell commands can no longer read pi's credentials.**

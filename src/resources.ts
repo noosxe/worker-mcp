@@ -109,7 +109,12 @@ export function registerResources(
 		async (uri, vars) => {
 			const run = store.get(one(vars.runId));
 			if (!run) {
-				throw new ToolError("RUN_NOT_FOUND", `No run ${one(vars.runId)}.`);
+				const id = one(vars.runId);
+				throw new ToolError(
+					"RUN_NOT_FOUND",
+					manager.missingId("run", id) ??
+						`No run ${id}; its result has expired.`,
+				);
 			}
 			return {
 				contents: [
