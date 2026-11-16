@@ -70,7 +70,7 @@ export class Boot {
 
 	/** What to tell a caller whose id (or name) this server does not know. */
 	restartNote(): string {
-		return `worker-mcp keeps no workers, runs or approvals across a restart, so work that was in progress is lost. Check the workspace (git status, git diff) before redoing anything, then spawn a new worker.`;
+		return `worker-mcp keeps no workers or approvals across a restart (a run is kept only as a saved record, when run records are on), so work that was in progress is lost. Check the workspace (git status, git diff) before redoing anything, then spawn a new worker.`;
 	}
 
 	/** The sentence for an id made by another server process. */

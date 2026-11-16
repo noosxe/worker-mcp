@@ -2,11 +2,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { type Config } from "../config.js";
+import { BootRegistry } from "../core/boots.js";
 import { ChildRegistry } from "../core/child.js";
 import { stderrLogger } from "../core/log.js";
+import { type LoadedRecord, RunRecordStore } from "../core/run-records.js";
 import { type RunStore } from "../core/run.js";
 import { SandboxService, type SandboxStatus } from "../core/sandbox.js";
 import { ToolError } from "../errors.js";
+import { closeAbandonedApprovals } from "../gate/abandon.js";
+import { DEFAULT_AUDIT_KEEP } from "../gate/audit.js";
 import { isInside } from "../gate/paths.js";
 import { GateServices } from "../gate/services.js";
 import { Boot, WORKER_ID_PATTERN, WORKER_NAME_PATTERN } from "../ids.js";
@@ -36,6 +40,8 @@ function firstLine(e: unknown): string {
 	return text.split("\n")[0].slice(0, 300);
 }
 
+const MAINTENANCE_MS = 10 * 60_000;
+
 export class SessionManager {
 	private sessions: Map<string, Session> = new Map();
 	/** The last workers of this process that ended, and how; bounded. */
@@ -53,6 +59,13 @@ export class SessionManager {
 	readonly runs: RunStore;
 	/** This server process: its boot id, start time and id tag. */
 	readonly boot: Boot;
+	/** Which server processes sharing the state directory are alive. */
+	private readonly boots: BootRegistry;
+	/** Run records on disk; null when `persistRuns` is off. */
+	private readonly records: RunRecordStore | null;
+	private bootRegistered: boolean | null = null;
+	private started = false;
+	private maintenance: ReturnType<typeof setInterval> | null = null;
 	private readonly now: () => number;
 	private reaper: ReturnType<typeof setInterval> | null = null;
 	/** Shared by every worker's gate. */
@@ -79,7 +92,37 @@ export class SessionManager {
 			sandbox: this.sandbox,
 		});
 		this.boot = options.boot ?? new Boot(options.now);
-		this.runs = runStoreFor(config, this.boot);
+		this.boots = new BootRegistry(
+			path.join(config.stateDir, "boots"),
+			this.boot.id,
+			process.pid,
+			stderrLogger,
+		);
+		this.records = config.persistRuns
+			? new RunRecordStore({
+					dir: path.join(config.stateDir, "runs"),
+					bootId: this.boot.id,
+					boots: this.boots,
+					retentionMs: config.limits.recordRetentionMs,
+					maxRecords: config.limits.maxRecordedRuns,
+					log: stderrLogger,
+					now: options.now,
+				})
+			: null;
+		const records = this.records;
+		this.runs = runStoreFor(
+			config,
+			this.boot,
+			records
+				? {
+						// A record is only written once this boot is marked as live,
+						// or another server would take its runs for dead ones.
+						save: (run) => {
+							if (this.ensureBootRegistered()) records.save(run);
+						},
+					}
+				: undefined,
+		);
 		// Throws a ConfigError when a classifier's token file is unusable.
 		this.gate =
 			options.gateServices ??
@@ -92,6 +135,83 @@ export class SessionManager {
 			enabled: ["pi"],
 			context: { config },
 		});
+	}
+
+	/** Mark this server as live in the state directory; false (once warned) when that fails. */
+	private ensureBootRegistered(): boolean {
+		if (this.bootRegistered !== null) return this.bootRegistered;
+		try {
+			this.boots.register();
+			this.bootRegistered = true;
+		} catch (e) {
+			this.bootRegistered = false;
+			stderrLogger.warn(
+				`worker-mcp: cannot record this server in ${this.boots.dir}: ${firstLine(e)}. Run records and the close-out of abandoned approvals are off for this process.`,
+			);
+		}
+		return this.bootRegistered;
+	}
+
+	/**
+	 * What an earlier server left behind: runs it did not finish become
+	 * `interrupted`, approvals it never answered are closed as abandoned in the
+	 * audit log, and old records are pruned (again every ten minutes). Never
+	 * throws; safe to call more than once.
+	 */
+	public start(): void {
+		if (this.started) return;
+		this.started = true;
+		if (!this.ensureBootRegistered()) return;
+		try {
+			this.records?.recoverInterrupted();
+			this.records?.prune();
+		} catch (e) {
+			stderrLogger.warn(
+				`worker-mcp: run records not recovered: ${firstLine(e)}`,
+			);
+		}
+		const audit = this.gate.audit;
+		if (audit) {
+			try {
+				closeAbandonedApprovals({
+					file: this.config.audit.file,
+					keep: DEFAULT_AUDIT_KEEP,
+					bootId: this.boot.id,
+					isLive: (id) => this.boots.isLive(id),
+					audit,
+				});
+			} catch (e) {
+				stderrLogger.warn(
+					`worker-mcp: abandoned approvals not closed: ${firstLine(e)}`,
+				);
+			}
+		}
+		this.maintenance = setInterval(() => {
+			try {
+				this.boots.sweep();
+				this.records?.recoverInterrupted();
+				this.records?.prune();
+			} catch (e) {
+				stderrLogger.warn(`worker-mcp: record upkeep failed: ${firstLine(e)}`);
+			}
+		}, MAINTENANCE_MS);
+		this.maintenance.unref?.();
+	}
+
+	/** Whether run records are written (the setting is on). */
+	public get persistsRuns(): boolean {
+		return this.records !== null;
+	}
+
+	/** The saved record of a run, or null: records are off, or none exists. */
+	public readRecord(runId: string): LoadedRecord | null {
+		if (!this.records) return null;
+		try {
+			return this.records.load(runId);
+		} catch (e) {
+			stderrLogger.warn(`worker-mcp: run record not read: ${firstLine(e)}`);
+			return null;
+		}
 	}
 
 	/**
@@ -394,9 +514,13 @@ export class SessionManager {
 
 	/** An id the caller gave for a run or an approval, which this server does not know. */
 	public missingId(kind: "run" | "approval", id: string): string | null {
-		return this.boot.madeByEarlierServer(kind, id)
-			? this.boot.notIssuedHere(kind === "run" ? `Run ${id}` : `Approval ${id}`)
-			: null;
+		if (!this.boot.madeByEarlierServer(kind, id)) return null;
+		const what = kind === "run" ? `Run ${id}` : `Approval ${id}`;
+		const tail =
+			kind === "run" && this.records
+				? " get_run (or wait_run) can still read how it ended, if its record was kept."
+				: "";
+		return `${this.boot.notIssuedHere(what)}${tail}`;
 	}
 
 	/** Every live worker. */
@@ -479,10 +603,13 @@ export class SessionManager {
 	public async terminateAll(): Promise<void> {
 		if (this.reaper) clearInterval(this.reaper);
 		this.reaper = null;
+		if (this.maintenance) clearInterval(this.maintenance);
+		this.maintenance = null;
 		const all = [...this.sessions.values()].map((s) => s.terminate("shutdown"));
 		this.sessions.clear();
 		await Promise.all([...all, this.children.terminateAll()]);
 		this.runtime.dispose();
+		this.boots.unregister();
 	}
 
 	/** Whether the audit log file could not be written. */
@@ -499,5 +626,6 @@ export class SessionManager {
 	public killAllNow(): void {
 		this.children.killAllNow();
 		this.runtime.dispose();
+		this.boots.unregister();
 	}
 }

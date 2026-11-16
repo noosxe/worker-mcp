@@ -16,11 +16,13 @@ export type RunState =
 	| "completed"
 	| "failed"
 	| "cancelled"
-	| "timed_out";
+	| "timed_out"
+	/** Only from a run record: the server stopped while the run was in progress. */
+	| "interrupted";
 
 export type TerminalState = Extract<
 	RunState,
-	"completed" | "failed" | "cancelled" | "timed_out"
+	"completed" | "failed" | "cancelled" | "timed_out" | "interrupted"
 >;
 
 const TERMINAL = new Set<RunState>([
@@ -28,6 +30,7 @@ const TERMINAL = new Set<RunState>([
 	"failed",
 	"cancelled",
 	"timed_out",
+	"interrupted",
 ]);
 
 export const isTerminal = (state: RunState): state is TerminalState =>
@@ -64,6 +67,31 @@ export interface PendingApprovalInfo {
 	seq: number;
 	/** When the approval is denied if nobody answered (epoch ms). */
 	expiresAt: number;
+}
+
+/** How one approval of a run ended; kept for the run record, no arguments. */
+export interface ApprovalOutcome {
+	approvalId: string;
+	tool: string;
+	riskLabel?: string;
+	decision: "pending" | "approved" | "rejected" | "expired" | "cancelled";
+	/** `coordinator`, `timeout` or `cancel`; unset while pending. */
+	decidedBy?: "coordinator" | "timeout" | "cancel";
+	askedAt: number;
+	decidedAt?: number;
+}
+
+/** What the run record keeps about the worker the run belongs to. */
+export interface RunMeta {
+	workerName?: string;
+	provider?: string;
+	model?: string;
+	cwd?: string;
+}
+
+/** Where run records go; a failure inside it must never reach the run. */
+export interface RunSink {
+	save(run: Run): void;
 }
 
 export interface ActivityEntry {
@@ -115,6 +143,14 @@ export class OutputBuffer {
 		}
 	}
 
+	/** A buffer holding `text` as the kept tail of `total` characters. */
+	static restore(text: string, total: number): OutputBuffer {
+		const buf = new OutputBuffer(Math.max(text.length, 1));
+		buf.text = text;
+		buf.dropped = Math.max(0, total - text.length);
+		return buf;
+	}
+
 	/** Characters ever appended, including any dropped. */
 	get total(): number {
 		return this.dropped + this.text.length;
@@ -157,6 +193,9 @@ export class Run {
 	readonly output: OutputBuffer;
 	readonly activity: ActivityEntry[] = [];
 	readonly approvals = new Map<string, PendingApprovalInfo>();
+	/** Every approval of the run and how it ended, for the run record. */
+	readonly approvalLog: ApprovalOutcome[] = [];
+	meta: RunMeta = {};
 	/** `seq` of the last approval that timed out; wakes a wait once. */
 	lastExpiredSeq = 0;
 	readonly gate: GateSummary = {
@@ -174,8 +213,10 @@ export class Run {
 		readonly intent: string | undefined,
 		readonly createdAt: number,
 		outputBufferChars: number,
+		/** A buffer to start from (a run read back from a record). */
+		output?: OutputBuffer,
 	) {
-		this.output = new OutputBuffer(outputBufferChars);
+		this.output = output ?? new OutputBuffer(outputBufferChars);
 	}
 
 	get terminal(): boolean {
@@ -217,6 +258,8 @@ export interface RunStoreOptions {
 	now?: () => number;
 	/** Makes run ids; default: random ones. The server passes its boot's. */
 	newRunId?: () => string;
+	/** Told whenever a run is made or changes state. */
+	sink?: RunSink;
 }
 
 export type RunListener = (message: string, run: Run) => void;
@@ -256,7 +299,21 @@ export class RunStore {
 		return this.opts.maxWaitMs;
 	}
 
-	create(workerId: string, prompt: string, intent?: string): Run {
+	/** Save the run to the sink, if any. A sink that throws is ignored. */
+	private persist(run: Run): void {
+		try {
+			this.opts.sink?.save(run);
+		} catch {
+			// the record is a convenience; the run goes on
+		}
+	}
+
+	create(
+		workerId: string,
+		prompt: string,
+		intent?: string,
+		meta: RunMeta = {},
+	): Run {
 		this.prune();
 		const run = new Run(
 			(this.opts.newRunId ?? newRunId)(),
@@ -266,7 +323,9 @@ export class RunStore {
 			this.now(),
 			this.opts.outputBufferChars,
 		);
+		run.meta = meta;
 		this.runs.set(run.id, run);
+		this.persist(run);
 		return run;
 	}
 
@@ -308,6 +367,7 @@ export class RunStore {
 			run.startedAt = this.now();
 		}
 		this.touch(run, `state: ${state}`);
+		this.persist(run);
 	}
 
 	/** Add a line to the run's activity (a tool call, a notice). */
@@ -335,21 +395,51 @@ export class RunStore {
 		if (run.terminal) return;
 		run.seq++;
 		run.approvals.set(info.actionId, { ...info, seq: run.seq });
+		run.approvalLog.push({
+			approvalId: info.actionId,
+			tool: info.tool,
+			riskLabel: info.riskLabel,
+			decision: "pending",
+			askedAt: this.now(),
+		});
 		this.setStateQuiet(run, "awaiting_approval");
+		this.persist(run);
 		this.wakeWaiters(run);
 		this.notify(run, message);
 	}
 
 	/** An approval was answered, cancelled or expired. */
-	removeApproval(run: Run, actionId: string, expired = false): void {
+	removeApproval(
+		run: Run,
+		actionId: string,
+		expired = false,
+		outcome?: {
+			decision: ApprovalOutcome["decision"];
+			by: NonNullable<ApprovalOutcome["decidedBy"]>;
+		},
+	): void {
 		if (!run.approvals.delete(actionId)) return;
+		this.closeApprovalEntry(run, actionId, outcome);
 		run.seq++;
 		if (expired) run.lastExpiredSeq = run.seq;
 		if (run.approvals.size === 0 && !run.terminal) {
 			this.setStateQuiet(run, "running");
 		}
+		this.persist(run);
 		this.wakeWaiters(run);
 		this.notify(run, expired ? "approval timed out" : "approval answered");
+	}
+
+	private closeApprovalEntry(
+		run: Run,
+		actionId: string,
+		outcome: { decision: ApprovalOutcome["decision"]; by: string } | undefined,
+	): void {
+		const entry = run.approvalLog.find((a) => a.approvalId === actionId);
+		if (!entry || entry.decision !== "pending") return;
+		entry.decision = outcome?.decision ?? "cancelled";
+		entry.decidedBy = (outcome?.by ?? "cancel") as ApprovalOutcome["decidedBy"];
+		entry.decidedAt = this.now();
 	}
 
 	private setStateQuiet(run: Run, state: RunState): void {
@@ -371,9 +461,12 @@ export class RunStore {
 		run.endedAt = this.now();
 		run.error = fields.error;
 		run.usage = fields.usage;
+		for (const id of run.approvals.keys())
+			this.closeApprovalEntry(run, id, undefined);
 		run.approvals.clear();
 		run.seq++;
 		this.wakeWaiters(run);
+		this.persist(run);
 		this.notify(run, `state: ${state}`);
 		this.prune();
 		return true;

@@ -3,6 +3,7 @@ import {
 	ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+import { runFromRecord } from "./core/run-records.js";
 import type { Run } from "./core/run.js";
 import { ToolError } from "./errors.js";
 import { wrapTree, wrapUntrusted } from "./render.js";
@@ -107,9 +108,17 @@ export function registerResources(
 			mimeType: "text/markdown",
 		},
 		async (uri, vars) => {
-			const run = store.get(one(vars.runId));
+			const id = one(vars.runId);
+			let run = store.get(id);
+			let saved = false;
 			if (!run) {
-				const id = one(vars.runId);
+				const loaded = manager.readRecord(id);
+				if (loaded) {
+					run = runFromRecord(loaded.record);
+					saved = true;
+				}
+			}
+			if (!run) {
 				throw new ToolError(
 					"RUN_NOT_FOUND",
 					manager.missingId("run", id) ??
@@ -121,7 +130,9 @@ export function registerResources(
 					{
 						uri: uri.href,
 						mimeType: "text/markdown",
-						text: renderTranscript(run),
+						text: saved
+							? `${renderTranscript(run)}\n\n(A saved record: it keeps no tool calls, and the output is what was kept.)`
+							: renderTranscript(run),
 					},
 				],
 			};

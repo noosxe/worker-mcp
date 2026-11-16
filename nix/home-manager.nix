@@ -151,11 +151,15 @@ let
   # What the typed options say; `settings` is merged over it and wins.
   typed = {
     inherit (cfg) logLevel;
+    persistRuns = cfg.persistRuns;
     providers.pi = lib.filterAttrs (_: v: v != null) {
       path = cfg.piPath;
       inherit (cfg) defaultModel;
     };
-    limits = lib.optionalAttrs (cfg.allowedRoots != [ ]) { inherit (cfg) allowedRoots; };
+    limits =
+      lib.optionalAttrs (cfg.allowedRoots != [ ]) { inherit (cfg) allowedRoots; }
+      // lib.optionalAttrs (cfg.recordRetentionMs != null) { recordRetentionMs = cfg.recordRetentionMs; }
+      // lib.optionalAttrs (cfg.maxRecordedRuns != null) { maxRecordedRuns = cfg.maxRecordedRuns; };
     sandbox =
       lib.filterAttrs (_: v: v != null) {
         inherit (cfg.sandbox) minimum default bwrapPath toolIsolation;
@@ -308,6 +312,40 @@ in
         (`limits.allowedRoots`). Default: no restriction.
       '';
       example = [ "/home/user/src" ];
+    };
+
+    persistRuns = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Keep a small record of each run under the state directory
+        (`persistRuns`), so `get_run` can say how a run ended after the server
+        restarted. A record holds the run's metadata, the worker's text, usage
+        and how each approval ended, never the prompt or a tool call's
+        arguments (mode 0600, in a 0700 directory). Turn it off to keep nothing
+        about runs on disk; unanswered approvals in the audit log are closed
+        at startup either way. `WORKER_MCP_PERSIST_RUNS` overrides it.
+      '';
+    };
+
+    recordRetentionMs = mkOption {
+      type = types.nullOr types.ints.positive;
+      default = null;
+      description = ''
+        Delete run records older than this many milliseconds
+        (`limits.recordRetentionMs`). Default: 7 days.
+      '';
+      example = 86400000;
+    };
+
+    maxRecordedRuns = mkOption {
+      type = types.nullOr types.ints.positive;
+      default = null;
+      description = ''
+        Most run records kept on disk, oldest deleted first
+        (`limits.maxRecordedRuns`). Default: 500.
+      '';
+      example = 100;
     };
 
     legacyTools = mkOption {

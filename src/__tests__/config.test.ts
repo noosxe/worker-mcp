@@ -1026,3 +1026,62 @@ describe("legacyTools (no longer used)", () => {
 		assert.strictEqual(loaded.warnings.length, 1);
 	});
 });
+
+describe("run records", () => {
+	test("are on by default, kept 7 days or 500 runs", () => {
+		const config = load();
+		assert.strictEqual(config.persistRuns, true);
+		assert.strictEqual(config.limits.recordRetentionMs, 7 * 24 * 60 * 60_000);
+		assert.strictEqual(config.limits.maxRecordedRuns, 500);
+	});
+
+	test("persistRuns and the retention come from the file, the environment and flags", () => {
+		const file = writeFile({
+			persistRuns: false,
+			limits: { recordRetentionMs: 1000, maxRecordedRuns: 7 },
+		});
+		const fromFile = load([`--config=${file}`]);
+		assert.strictEqual(fromFile.persistRuns, false);
+		assert.strictEqual(fromFile.limits.recordRetentionMs, 1000);
+		assert.strictEqual(fromFile.limits.maxRecordedRuns, 7);
+
+		const fromEnv = load([`--config=${file}`], {
+			...env,
+			WORKER_MCP_PERSIST_RUNS: "on",
+			WORKER_MCP_RECORD_RETENTION_MS: "2000",
+			WORKER_MCP_MAX_RECORDED_RUNS: "8",
+		});
+		assert.strictEqual(fromEnv.persistRuns, true);
+		assert.strictEqual(fromEnv.limits.recordRetentionMs, 2000);
+		assert.strictEqual(fromEnv.limits.maxRecordedRuns, 8);
+
+		const fromFlag = load(
+			[
+				"--persist-runs=off",
+				"--record-retention-ms",
+				"3000",
+				"--max-recorded-runs=9",
+			],
+			{ ...env, WORKER_MCP_PERSIST_RUNS: "on" },
+		);
+		assert.strictEqual(fromFlag.persistRuns, false);
+		assert.strictEqual(fromFlag.limits.recordRetentionMs, 3000);
+		assert.strictEqual(fromFlag.limits.maxRecordedRuns, 9);
+		assert.strictEqual(JSON.parse(formatConfig(fromFlag)).persistRuns, false);
+	});
+
+	test("bad values fail and name their source", () => {
+		assert.match(
+			failure(() => load([], { ...env, WORKER_MCP_PERSIST_RUNS: "maybe" })),
+			/WORKER_MCP_PERSIST_RUNS.*persistRuns/,
+		);
+		assert.match(
+			failure(() => load(["--persist-runs", "2"])),
+			/--persist-runs/,
+		);
+		assert.match(
+			failure(() => load([], { ...env, WORKER_MCP_MAX_RECORDED_RUNS: "0" })),
+			/WORKER_MCP_MAX_RECORDED_RUNS.*limits\.maxRecordedRuns/,
+		);
+	});
+});

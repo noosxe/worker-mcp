@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Run records
+
+A restart no longer hides what happened to a run. Each run is now saved to
+disk, on by default, so an orchestrator can ask.
+
+- **Records.** `<stateDir>/runs/<runId>.json` is written when a run starts and
+  whenever its state changes: ids, worker name, provider, model, workspace,
+  intent, times, state, error, the worker's text so far, usage, the gate's counts
+  and how each approval ended (`approved`, `rejected`, `expired`, `cancelled`,
+  `abandoned`) with who decided. The prompt is not stored, only its length and
+  a SHA-256 digest; tool arguments, commands and paths are not stored either.
+  The directory is 0700, the files 0600, written atomically and checked with
+  `lstat` like the runtime directory.
+- **`get_run` and `wait_run` read the record of a run from an earlier server**
+  (and the transcript resource too). The view has `persisted` (`fromEarlierServer`,
+  `bootId`, `serverRunning`, a note, the worker's details and the approval
+  outcomes, all under `untrusted…` keys), output paging works on the text that
+  was kept, and `wait_run` returns at once. `approve_action`, `reject_action`,
+  `cancel_run`, `start_run` and the other writes still refuse ids from an
+  earlier server; the "not issued by the server running now" message for a run
+  id now says `get_run` can read its record. `list_workers` is unchanged: it
+  lists live workers only.
+- **New run state `interrupted`.** A record still in progress that belongs to a
+  server that is gone becomes `interrupted` (terminal) with the error "the
+  server stopped while this run was in progress (boot …); what the worker did
+  before that is in the workspace". It is in the state enums of every run view
+  and in the skill.
+- **Abandoned approvals.** At startup every `escalate` entry in `audit.jsonl`
+  with no later entry gets an appended `deny` entry with `decidedBy:
+  "abandoned"`, the old `bootId` (audit entries now carry the `bootId` of the
+  server that made them) and a reason. An old approval id is never replayed
+  and still fails as before. This runs even when run records are off.
+- **Two servers on one state directory** (two clients) do not touch each
+  other's live runs or approvals: each writes `<stateDir>/boots/<bootId>` with
+  its pid and removes it on a clean exit, and only a boot whose pid is gone is
+  treated as stopped. Markers of dead servers are swept.
+- **Retention**: records older than `limits.recordRetentionMs` (default 7
+  days) and the oldest past `limits.maxRecordedRuns` (default 500) are deleted at
+  startup and every 10 minutes. Settings: `limits.recordRetentionMs`
+  (`WORKER_MCP_RECORD_RETENTION_MS`, `--record-retention-ms`),
+  `limits.maxRecordedRuns` (`WORKER_MCP_MAX_RECORDED_RUNS`,
+  `--max-recorded-runs`); Nix options `recordRetentionMs` and `maxRecordedRuns`.
+- **Off switch**: `persistRuns: false` (`WORKER_MCP_PERSIST_RUNS=off`,
+  `--persist-runs off`, Nix option `persistRuns`) writes no records and behaves as
+  before, except that abandoned approvals are still closed in the audit log.
+- **Robustness**: a record that does not parse is skipped with a warning that
+  never contains its content; a write that fails (disk full, permissions) logs
+  one warning and the run continues in memory.
+
 ### Runtime directory
 
 - **A deleted runtime directory is recreated.** If the server's private runtime

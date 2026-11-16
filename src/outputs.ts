@@ -14,6 +14,7 @@ const RUN_STATES = [
 	"failed",
 	"cancelled",
 	"timed_out",
+	"interrupted",
 ] as const;
 
 export const ConsultedOut = z.object({
@@ -62,6 +63,41 @@ export const ApprovalOut = z.object({
 });
 export type ApprovalData = z.infer<typeof ApprovalOut>;
 
+/** Present when the run was read from its saved record instead of from memory. */
+export const PersistedOut = z.object({
+	fromEarlierServer: z
+		.boolean()
+		.describe("An earlier server process ran it, not the one answering."),
+	bootId: z.string().describe("The server process that ran it."),
+	serverRunning: z
+		.boolean()
+		.describe(
+			"That server is still running (for example another client on the same state directory); the record is then as of its last write.",
+		),
+	note: z.string(),
+	untrustedWorker: z
+		.object({
+			name: z.string().optional(),
+			provider: z.string().optional(),
+			model: z.string().optional(),
+			cwd: z.string().optional(),
+			intent: z.string().optional(),
+		})
+		.describe("What the record says about the worker. Untrusted."),
+	untrustedApprovals: z
+		.array(
+			z.object({
+				approvalId: z.string(),
+				tool: z.string(),
+				riskLabel: z.string().optional(),
+				decision: z.string(),
+				decidedBy: z.string().optional(),
+			}),
+		)
+		.describe(
+			"How each approval of the run ended: approved, rejected, expired, cancelled or abandoned. No arguments. Untrusted.",
+		),
+});
 export const RunOut = z.object({
 	runId: z.string(),
 	workerId: z.string(),
@@ -110,8 +146,10 @@ export const RunOut = z.object({
 				"How many of them are not in untrustedNotable (the oldest). Call get_gate_log to read them.",
 			),
 	}),
+	persisted: PersistedOut.optional(),
 	next: z.string().describe("What to call next."),
 });
+export type PersistedData = z.infer<typeof PersistedOut>;
 export type RunData = z.infer<typeof RunOut>;
 
 export const RunResultOut = RunOut.extend({

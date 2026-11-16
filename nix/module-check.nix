@@ -95,6 +95,9 @@ let
               allowedRoots = [ "/home/user/src" ];
               logLevel = "debug";
               legacyTools = false;
+              persistRuns = false;
+              recordRetentionMs = 86400000;
+              maxRecordedRuns = 100;
               sandbox = {
                 default = "workspace";
                 toolIsolation = "require";
@@ -199,6 +202,9 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .gate.classifiers[1].thresholds == { userRequestedProbability: 0.9 }
           and .limits.allowedRoots == ["/home/user/src"]
           and .limits.maxWorkers == 2
+          and .persistRuns == false
+          and .limits.recordRetentionMs == 86400000
+          and .limits.maxRecordedRuns == 100
           and .logLevel == "debug"
           and .providers.pi.path == "/opt/pi/bin/pi"
           and .providers.pi.defaultModel == "zai/test-model"

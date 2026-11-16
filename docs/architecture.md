@@ -30,7 +30,7 @@ Workers are not persisted. They live and die with the server; the runtime direct
 
 ## 2. Runs
 
-A task given to a worker is a **run**. States: `starting`, `running`, `awaiting_approval`, then one of `completed`, `failed`, `cancelled`, `timed_out`.
+A task given to a worker is a **run**. States: `starting`, `running`, `awaiting_approval`, then one of `completed`, `failed`, `cancelled`, `timed_out`. A fifth end state, `interrupted`, exists only in run records: the server that ran the run stopped before it ended.
 
 - A worker has at most one run in flight. The `RunStore` (one per server) keeps every run with its output (bounded by `limits.outputBufferChars`) and its tool-call activity. A finished run stays readable for `limits.resultRetentionMs` after its worker is gone; at most `limits.maxRetainedRuns` are kept.
 - A run settles exactly once. It ends through the provider reporting completion, the worker's exit, `cancel_run`, the run timeout (`limits.maxRunMs`) or shutdown. A worker that ignores an abort is closed after a grace period.

@@ -446,7 +446,7 @@ over.
    }
    ```
 3. `wait_run` with the `runId`, until `state` is `completed`, `failed`,
-   `cancelled` or `timed_out`:
+   `cancelled`, `timed_out` or `interrupted`:
    ```json
    { "runId": "r_...", "waitMs": 25000, "sinceSeq": 14, "outputOffset": 0 }
    ```
@@ -529,6 +529,9 @@ Lowest to highest:
 | `limits.allowedRoots`                  | `WORKER_MCP_ALLOWED_ROOTS`          | `--allowed-roots`          | none: any directory                         |
 | `gate.approvalTimeoutMs`               | `WORKER_MCP_APPROVAL_TIMEOUT_MS`    | `--approval-timeout-ms`    | `600000` (10 min)                           |
 | `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`        | `--env-passthrough`        | none                                        |
+| `persistRuns`                          | `WORKER_MCP_PERSIST_RUNS`           | `--persist-runs`           | `true`                                      |
+| `limits.recordRetentionMs`             | `WORKER_MCP_RECORD_RETENTION_MS`    | `--record-retention-ms`    | `604800000` (7 days)                        |
+| `limits.maxRecordedRuns`               | `WORKER_MCP_MAX_RECORDED_RUNS`      | `--max-recorded-runs`      | `500`                                       |
 | `logLevel`                             | `WORKER_MCP_LOG_LEVEL`              | `--log-level`              | `info`                                      |
 | `stateDir`                             | `WORKER_MCP_STATE_DIR`              | `--state-dir`              | `$XDG_STATE_HOME/worker-mcp`                |
 | `runtimeDir`                           | `WORKER_MCP_RUNTIME_DIR`            | `--runtime-dir`            | `$XDG_RUNTIME_DIR`, else `<stateDir>/run`   |
@@ -589,13 +592,60 @@ Lowest to highest:
   `WORKER_MCP_LOG_LEVEL` or `--log-level` (the usual precedence). Notice text
   from a worker is logged by size only unless the provider marks it as a fixed
   server string.
-- `stateDir` holds the audit log (see [Auto mode](#auto-mode-and-the-audit-log)); it is a protected path.
+- `stateDir` holds the audit log (see [Auto mode](#auto-mode-and-the-audit-log)) and the run records (see [Run records](#run-records)); it is a protected path.
 - `gate.maxAutoApprove` (`LOW`, `MEDIUM` or `HIGH`, never `CRITICAL`) is the
   highest risk level a coordinator's policy may auto-approve. Policies given to
   `spawn_worker` and `set_risk_policy` are lowered to it, and the result
   says so. `gate.protectedPaths` adds paths (absolute, or starting with `~/`)
   that workers may never write without the coordinator's approval, on top of
   the built-in list in [docs/security.md](docs/security.md).
+
+### Run records
+
+Workers and approvals are not persisted, but each run is: the server writes a
+small JSON record to `<stateDir>/runs/<runId>.json` when the run starts and
+whenever its state changes, so an orchestrator can learn what happened to a run
+after the server restarted. `get_run` (and `wait_run`, and the
+`worker-mcp://runs/{runId}/transcript` resource) read it for a run id from an
+earlier server and mark it `persisted`. The record is read-only history: the
+run cannot be waited on, approved or cancelled, and `list_workers` does not
+list the workers of earlier servers.
+
+- **What is stored**: the run, worker and boot ids, the worker's name, provider,
+  model and workspace, the intent, the times, the state, the error, the
+  worker's text (what `get_run` shows; the last `limits.outputBufferChars`
+  characters), the usage, the gate's counts and, for each approval, its id, tool,
+  risk label, how it ended (`approved`, `rejected`, `expired`, `cancelled` or
+  `abandoned`) and who decided. **Not stored**: the prompt (only its length and
+  a SHA-256 digest, because it may hold secrets), tool arguments, commands and
+  paths of tool calls, and file contents beyond what the worker's text holds.
+- **Interrupted runs**: a record still in progress that belongs to a server
+  that is gone becomes `interrupted` (a terminal state) when the next server
+  starts or a record is read, with the error "the server stopped while this run
+  was in progress (boot …); what the worker did before that is in the workspace".
+  Approvals pending at that moment are closed in the audit log with an appended
+  `abandoned` entry (`decidedBy: "abandoned"`, the old boot id, a reason); they
+  are never replayed and their ids stay dead.
+- **Files**: `<stateDir>/runs` is a directory with mode 0700, files 0600,
+  written atomically (a temporary file, then a rename). The directory is checked
+  with `lstat` like the runtime directory: a symbolic link, a directory owned by
+  someone else or one with the wrong mode is refused. `<stateDir>/boots/<bootId>`
+  holds the pid of each running server, so two servers sharing a state
+  directory (two clients) never mark each other's live runs `interrupted` or
+  their approvals abandoned. A marker whose pid is gone is swept.
+- **Retention**: records older than `limits.recordRetentionMs` (7 days) are
+  deleted, and the oldest past `limits.maxRecordedRuns` (500), at startup and
+  every 10 minutes. A record still in progress in a live server is kept.
+- **Failures**: a record that cannot be parsed is skipped with a warning that
+  names the file, never its content. If a record cannot be written (disk full,
+  permissions) the server logs one warning and the run continues in memory only.
+- **Turn it off** with `persistRuns: false`, `WORKER_MCP_PERSIST_RUNS=off` or
+  `--persist-runs off`. Nothing is then written under `runs/`, and behaviour is
+  as before, except that approvals left unanswered in the audit log are still
+  closed as abandoned (the server still writes its `boots/` marker for that).
+  Records of earlier runs stay on disk until you delete `runs/`.
+- Records are worker output. Everything in them that a worker wrote is returned
+  under `untrusted…` keys and wrapped like any other worker text.
 
 Workers are not persisted. A `sessions.json` left in `~/.config/worker-mcp/` by
 an earlier version is ignored and can be deleted.
@@ -676,7 +726,10 @@ only uncertain calls, or ones it cannot answer, reach the coordinator.
   metadata only: a digest of the arguments, a short preview, the `providerCallId` and, for a call sent to the coordinator, its `approvalId`, never full
   arguments, file contents or tokens. If it cannot be written, decisions go on,
   the problem is logged once and `list_workers` reports `auditDegraded: true`.
-  Set `audit.enabled: false` to turn it off.
+  Set `audit.enabled: false` to turn it off. An escalation with no answer
+  because the server stopped is closed at the next start by an appended entry
+  with `decidedBy: "abandoned"`; each entry carries the `bootId` of the server
+  that made it.
 
 ### Pre-requisites
 
