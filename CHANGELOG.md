@@ -14,8 +14,9 @@
   skill and security notes say so.
 - **`providers.pi.skills`** (config file; Nix option `piSkills`), default
   `true`. When `false`, pi starts with `--no-skills`, so the host user's
-  personal skills are not in the worker's system prompt; the workspace's own
-  `.pi/skills` and `.agents/skills` are still loaded (`--skill`). In the
+  personal skills are not in the worker's system prompt. (pi already skips a
+  repository's own skills for workers: it loads them only in a trusted
+  project, which RPC mode never is.) In the
   `workspace` sandbox `~/.pi/agent/skills` is also left out of the worker's
   view of `~/.pi/agent`.
 - **`usage.reportCost`** (config file; Nix option `reportCost`), default

@@ -31,10 +31,10 @@ tool calls, usage, `provider/id` models, and resume from a saved session
    first removes discovered extensions, the second built-in MCP servers, the
    third trust-gated project files, the last stops pi from saving the worker's
    conversation under its own session directory (workers are not persisted).
-   With `providers.pi.skills: false` it adds `--no-skills` (pi's discovery of
-   global, project and package skills all stops) and `--skill <dir>` for each
-   `.pi/skills` and `.agents/skills` directory in the workspace (up to the git
-   root), since `--skill` still works with `--no-skills`.
+   With `providers.pi.skills: false` it adds `--no-skills`, which stops pi's
+   discovery of global, project and package skills. (pi loads project skills
+   only in a trusted project, and over RPC there is no UI to trust one, so a
+   worker gets no project skills either way.)
 5. `open()` waits (`providers.pi.startupTimeoutMs`, default 60 s) for `extension_ui_request {method: "setStatus",
    statusKey: "worker-mcp-gate", statusText: "ready:<nonce>"}`. It rejects, and
    the core kills the process, when pi exits first (a missing or throwing `-e`

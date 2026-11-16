@@ -87,7 +87,8 @@ export interface Config {
 			/**
 			 * Whether pi loads skills. `false` hides the host user's own skills
 			 * (the pi agent directory and the user's other global skill
-			 * directories) from workers; skills inside the workspace are kept.
+			 * directories) from workers. pi skips a repository's own skills for
+			 * workers either way: it loads them only in a trusted project.
 			 */
 			skills: boolean;
 		};
