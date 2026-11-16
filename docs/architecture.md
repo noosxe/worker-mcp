@@ -26,7 +26,7 @@ graph TD
 | Providers    | `src/providers/`                                                           | One module per agent type, behind one interface. The core starts and kills processes (`src/core/child.ts`); a provider only translates a protocol. See [providers.md](providers.md) and [providers/pi.md](providers/pi.md).                                          |
 | Config       | `src/config.ts`                                                            | One validated `Config` from defaults, a JSON file, `WORKER_MCP_*` variables and flags.                                                                                                                                                                               |
 
-Workers are not persisted. They live and die with the server; the runtime directory (one private directory per server, holding each worker's gate file) is created when the first worker starts and removed on shutdown.
+Workers are not persisted. They live and die with the server; the runtime directory (one private directory per server, holding each worker's gate file) is created when the first worker starts and removed on shutdown. Before every spawn the server checks it again: if it was deleted meanwhile (a tmp reaper, a manual cleanup, a logout clearing `$XDG_RUNTIME_DIR`) it is recreated with a warning in the log, and if something unsafe took its place (a symlink, another owner, a mode other than 0700) the spawn is refused with `GATE_UNAVAILABLE`. Running workers are not affected: their gate is already loaded.
 
 ## 2. Runs
 

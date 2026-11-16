@@ -1,4 +1,6 @@
 import assert from "node:assert";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { after, before, describe, test } from "node:test";
 
 import { behaviourTests, textOf } from "../helpers/behaviour.js";
@@ -172,5 +174,80 @@ describe(`MCP stdio (${RUNTIME}): process lifecycle`, () => {
 			3000,
 			"stubborn worker to exit",
 		);
+	});
+});
+
+describe(`MCP stdio (${RUNTIME}): runtime directory recovery`, () => {
+	let iso: Isolation;
+	const servers: RawServer[] = [];
+
+	before(() => {
+		iso = createIsolation();
+	});
+	after(async () => {
+		for (const server of servers) await server.dispose();
+		await iso.cleanup();
+	});
+
+	async function start() {
+		const server = new RawServer(iso);
+		servers.push(server);
+		await server.initialize();
+		const dir = path.join(
+			iso.env.XDG_RUNTIME_DIR as string,
+			`worker-mcp-${server.child.pid}`,
+		);
+		return { server, dir };
+	}
+
+	const spawn = (server: RawServer, name: string) =>
+		server.callTool(TOOLS.spawn, { name, cwd: iso.cwd });
+
+	test("a deleted runtime dir is recreated at the next spawn", async () => {
+		const { server, dir } = await start();
+		assert.notStrictEqual((await spawn(server, "a")).result.isError, true);
+		assert.ok(fs.existsSync(dir));
+		fs.rmSync(dir, { recursive: true, force: true });
+
+		const res = await spawn(server, "b");
+		assert.notStrictEqual(res.result.isError, true, textOf(res.result));
+		const st = fs.lstatSync(dir);
+		assert.ok(st.isDirectory());
+		assert.strictEqual(st.mode & 0o777, 0o700);
+		assert.ok(server.stderr.join("").includes("recreated"));
+	});
+
+	test("a symlink or a wrong-mode dir in its place refuses the spawn", async () => {
+		const { server, dir } = await start();
+		assert.notStrictEqual((await spawn(server, "a")).result.isError, true);
+
+		fs.rmSync(dir, { recursive: true, force: true });
+		const target = path.join(iso.root, "planted");
+		fs.mkdirSync(target, { mode: 0o700 });
+		fs.symlinkSync(target, dir);
+		let res = await spawn(server, "b");
+		assert.strictEqual(res.result.isError, true);
+		assert.match(textOf(res.result), /GATE_UNAVAILABLE/);
+		assert.deepStrictEqual(
+			fs.readdirSync(target),
+			[],
+			"nothing written through the link",
+		);
+
+		fs.unlinkSync(dir);
+		fs.mkdirSync(dir, { mode: 0o755 });
+		fs.chmodSync(dir, 0o755);
+		res = await spawn(server, "c");
+		assert.strictEqual(res.result.isError, true);
+		assert.match(textOf(res.result), /GATE_UNAVAILABLE/);
+	});
+
+	test("terminating a worker after the dir was deleted does not fail", async () => {
+		const { server, dir } = await start();
+		assert.notStrictEqual((await spawn(server, "live")).result.isError, true);
+		fs.rmSync(dir, { recursive: true, force: true });
+		const res = await server.callTool(TOOLS.terminate, { workerId: "live" });
+		assert.notStrictEqual(res.result.isError, true, textOf(res.result));
+		assert.ok((await spawn(server, "after")).result.isError !== true);
 	});
 });

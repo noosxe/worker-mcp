@@ -3,6 +3,7 @@ import * as path from "node:path";
 
 import { type Config } from "../config.js";
 import { ChildRegistry } from "../core/child.js";
+import { stderrLogger } from "../core/log.js";
 import { type RunStore } from "../core/run.js";
 import { SandboxService, type SandboxStatus } from "../core/sandbox.js";
 import { ToolError } from "../errors.js";
@@ -69,7 +70,8 @@ export class SessionManager {
 		runtime?: RuntimeDir,
 		options: ManagerOptions = {},
 	) {
-		this.runtime = runtime ?? new RuntimeDir(config.runtimeDir);
+		this.runtime =
+			runtime ?? new RuntimeDir(config.runtimeDir, process.pid, stderrLogger);
 		this.sandbox = options.sandbox ?? new SandboxService(config.sandbox, env);
 		this.children = new ChildRegistry({
 			env,

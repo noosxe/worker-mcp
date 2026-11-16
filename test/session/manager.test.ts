@@ -213,3 +213,39 @@ describe("RuntimeDir", () => {
 		}
 	});
 });
+
+describe("RuntimeDir recovery", () => {
+	test("recreates a missing base and instance dir; refuses unsafe ones", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "worker-mcp-rt-"));
+		try {
+			const base = path.join(root, "run");
+			const warnings: string[] = [];
+			const runtime = new RuntimeDir(base, process.pid, {
+				debug() {},
+				info() {},
+				warn: (m) => warnings.push(m),
+				error() {},
+			});
+			runtime.createWorkerDir();
+			fs.rmSync(base, { recursive: true, force: true });
+			runtime.createWorkerDir();
+			assert.strictEqual(fs.statSync(runtime.dir).mode & 0o777, 0o700);
+			assert.strictEqual(warnings.length, 1);
+			assert.ok(!warnings[0]?.includes(root), "warning carries no paths");
+
+			fs.chmodSync(runtime.dir, 0o750);
+			assert.throws(() => runtime.createWorkerDir(), /unsafe permissions/);
+			fs.chmodSync(runtime.dir, 0o700);
+			fs.chmodSync(base, 0o777);
+			assert.throws(() => runtime.createWorkerDir(), /unsafe permissions/);
+			fs.chmodSync(base, 0o700);
+
+			fs.rmSync(runtime.dir, { recursive: true });
+			fs.symlinkSync(root, runtime.dir);
+			assert.throws(() => runtime.createWorkerDir(), /symbolic link/);
+			runtime.dispose();
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
