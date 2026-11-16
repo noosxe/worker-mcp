@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 
+import type { Run } from "./core/run.js";
 import { ToolError } from "./errors.js";
 import {
 	AnswerOut,
@@ -163,6 +164,11 @@ export function sessionForApproval(
 		);
 	}
 	return session;
+}
+
+/** What an approve or reject result tells the caller to do next. */
+function waitNext(run: Run): string {
+	return `Call wait_run with runId ${run.id} and sinceSeq ${run.seq}.`;
 }
 
 export function registerTools(server: McpServer, ctx: ToolContext): void {
@@ -377,7 +383,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "Approve a tool call",
 			description:
-				"Allow one pending tool call. Look at the tool, command and paths yourself; don't trust the worker's explanation. It returns at once, without the worker's output: call wait_run next. An approval nobody answers is denied after the approval timeout. With remember \"worker\", identical calls (same tool, command, paths and arguments) from this worker are then allowed without asking until it is terminated or its policy changes; this is never done for hard limits, protected paths or CRITICAL calls, and `remembered` in the result says whether it was. Use it for a repeated harmless call, not for a broad one.",
+				"Allow one pending tool call. Look at the tool, command and paths yourself; don't trust the worker's explanation. It returns at once with only the outcome, the run's state and `seq`; call wait_run next (with that `seq` as `sinceSeq`) for the run's view. An approval nobody answers is denied after the approval timeout. With remember \"worker\", identical calls (same tool, command, paths and arguments) from this worker are then allowed without asking until it is terminated or its policy changes; this is never done for hard limits, protected paths or CRITICAL calls, and `remembered` in the result says whether it was. Use it for a repeated harmless call, not for a broad one.",
 			inputSchema: schemas.approve,
 			outputSchema: AnswerOut,
 			annotations: ANNOTATIONS.approve_action,
@@ -395,7 +401,15 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 					: "";
 			return ok(
 				`Approved action ${id}.${note} This returns at once: call wait_run with runId ${run.id} to follow the run.`,
-				{ approvalId: id, runId: run.id, remembered, run: ctx.viewRun(run) },
+				{
+					approvalId: id,
+					runId: run.id,
+					outcome: "approved",
+					state: run.state,
+					seq: run.seq,
+					remembered,
+					next: waitNext(run),
+				},
 			);
 		}),
 	);
@@ -405,7 +419,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: "Reject a tool call",
 			description:
-				"Deny one pending tool call and give the worker a short `reason` (at most 500 characters) so it can change course. It returns at once: call wait_run next.",
+				"Deny one pending tool call and give the worker a short `reason` (at most 500 characters) so it can change course. It returns at once with only the outcome, the run's state and `seq`; call wait_run next.",
 			inputSchema: schemas.reject,
 			outputSchema: AnswerOut,
 			annotations: ANNOTATIONS.reject_action,
@@ -415,7 +429,14 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
 			const run = session.rejectAction(id, reason);
 			return ok(
 				`Rejected action ${id}. This returns at once: call wait_run with runId ${run.id} to follow the run.`,
-				{ approvalId: id, runId: run.id, run: ctx.viewRun(run) },
+				{
+					approvalId: id,
+					runId: run.id,
+					outcome: "rejected",
+					state: run.state,
+					seq: run.seq,
+					next: waitNext(run),
+				},
 			);
 		}),
 	);

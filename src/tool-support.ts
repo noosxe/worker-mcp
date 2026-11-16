@@ -129,7 +129,7 @@ export function ok<T extends object>(
 		content: [
 			{
 				type: "text",
-				text: `${summary}\n${JSON.stringify(wrapTree(data, fallbackId, attr), null, 2)}`,
+				text: `${summary}\n${JSON.stringify(wrapTree(data, fallbackId, attr))}`,
 			},
 		],
 		structuredContent: data as Record<string, unknown>,

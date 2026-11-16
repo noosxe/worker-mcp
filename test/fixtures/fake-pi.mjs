@@ -45,6 +45,8 @@
 //                               executionMode "sequential" (then one at a time,
 //                               rated just before it runs); FAKE_PI_PARALLEL=1
 //                               ignores that. A read takes 400 ms, like I/O.
+//   sequence:<json>             [{"tool":"bash","input":{}},...] one call after the other
+//                               through the gate, then one reply that lists each outcome
 //   dialog:<method>             send a non-gate select/input/editor/confirm and
 //                               report how it was answered
 // Startup scenarios, chosen with FAKE_PI_SCENARIO (they act before any prompt):
@@ -354,6 +356,23 @@ async function startPrompt(message) {
 		} catch (e) {
 			finishRun(`error=${e.code}`);
 		}
+	} else if ((m = spec.match(/^sequence:([\s\S]+)$/))) {
+		const calls = JSON.parse(m[1]);
+		run = { timer: null };
+		const outcomes = [];
+		for (const { tool, input } of calls) {
+			const result = await gate(tool, input);
+			if (!run) return;
+			if (result.blocked) {
+				outcomes.push(`${tool} blocked`);
+				continue;
+			}
+			const toolCallId = randomUUID();
+			send(toolExecutionStart(toolCallId, tool, input));
+			send(toolExecutionEnd(toolCallId, tool));
+			outcomes.push(`${tool} ran`);
+		}
+		finishRun(outcomes.join(", "));
 	} else if ((m = spec.match(/^parallel-tools:([^:]+):([\s\S]*)$/))) {
 		const [, toolName, json] = m;
 		const base = JSON.parse(json);

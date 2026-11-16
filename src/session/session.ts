@@ -792,6 +792,7 @@ export class Session {
 			run.noteGate(
 				"escalated",
 				`${call.toolName} [${label}] ${summariseInput(call.input)}`,
+				id,
 			);
 			this.status = "AWAITING_APPROVAL";
 			this.runs.addApproval(
