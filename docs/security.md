@@ -89,7 +89,12 @@ for the coordinator.
   runtime directory (`$XDG_RUNTIME_DIR/worker-mcp`, or
   `$XDG_STATE_HOME/worker-mcp/run`) and passed to pi with `-e`. No persistent,
   user-writable copy is trusted. The directory is removed when the worker exits
-  or is terminated.
+  or is terminated. The runtime directory is verified before every spawn with
+  `lstat` (a plain directory, owned by the user, mode 0700; its parent must
+  not be a symlink or writable by others). If it is missing it is recreated
+  with `mkdir` mode 0700 and then verified again, so a name another process
+  created first is checked, never adopted; if it is unsafe the spawn is
+  refused with `GATE_UNAVAILABLE`.
 - If the gate cannot be written, or is missing right before the spawn, the
   spawn is refused. pi is never started without it.
 - pi is started with `--no-extensions --no-mcp --no-approve --no-session`: no discovered

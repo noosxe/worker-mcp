@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Runtime directory
+
+- **A deleted runtime directory is recreated.** If the server's private runtime
+  directory disappears under a running server (a tmp reaper, a manual cleanup,
+  a logout clearing `$XDG_RUNTIME_DIR`), the next `spawn_worker` makes it again
+  (mode 0700) and logs a warning, instead of failing with `GATE_UNAVAILABLE`
+  until the server restarts. The directory and its parent are checked before
+  every spawn; a symlink, a directory owned by someone else or one with the
+  wrong mode is refused with `GATE_UNAVAILABLE`. Workers already running are
+  unaffected, and terminating one after the directory is gone works.
+
 ### Restarts and dead workers
 
 - **The server says when an id comes from an earlier server.** Workers, runs
