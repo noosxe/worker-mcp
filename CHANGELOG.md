@@ -17,7 +17,7 @@
 
 Every byte of a run response costs the calling agent tokens. On a scripted run
 of eight tool calls (four allowed, one denied, three escalated) the responses
-went from 21 285 to 9 737 bytes.
+went from 21 285 to 10 595 bytes.
 
 - **Breaking: `approve_action` and `reject_action` no longer return `run`.**
   They return `approvalId`, `runId`, `outcome` (`approved` or `rejected`),
@@ -25,14 +25,17 @@ went from 21 285 to 9 737 bytes.
   carries the full view, so the one they used to return was thrown away. A
   client that read `result.run` must call `wait_run` with the returned `seq`
   as `sinceSeq`.
-- **Breaking: `gate.untrustedNotable` lists calls that need attention only,
-  and as a delta.** It holds the calls the gate denied or sent to you (once
-  answered; one still waiting is in `pendingApprovals`) since `sinceSeq`, at
-  most the last 10. Calls the gate allowed are counted in `autoAllowed` and
-  appear in `untrustedActivity`, not here. The new `gate.notableTotal` counts
-  the calls in range and `gate.notableOmitted` those left out of the list (the
-  oldest); `next` then points to `get_gate_log`. Before, the list repeated
-  the first 20 gated calls of the run in every response.
+- **Breaking: `gate.untrustedNotable` lists the calls that need a look, as a
+  delta.** It holds, since `sinceSeq` and at most the last 10: the calls the
+  gate denied, those it sent to you (once answered; one still waiting is in
+  `pendingApprovals`), and those it allowed without asking when they are rated
+  MEDIUM or above or were allowed by a classifier or an override, each with its
+  risk label and who decided (`bash [MEDIUM] allowed by rules: …`). A LOW call
+  the rules allowed is only counted in `autoAllowed`; `untrustedActivity` lists
+  it. The new `gate.notableTotal` counts the calls in range and
+  `gate.notableOmitted` those left out of the list (the oldest); `next` then
+  points to `get_gate_log`. Before, the list repeated the first 20 gated calls
+  of the run in every response.
 - The text block of every result is compact JSON, not indented.
 
 ### Restarts and dead workers

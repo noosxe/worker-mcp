@@ -77,8 +77,9 @@ export interface GateSummary {
 	escalated: number;
 	/**
 	 * The calls that need attention: denied, sent to the coordinator
-	 * (escalated, which includes hard limits and protected paths). Calls the
-	 * gate allowed are only counted; `untrustedActivity` lists them.
+	 * (escalated, which includes hard limits and protected paths), and calls
+	 * allowed without asking above LOW or by a classifier or an override. A
+	 * LOW call the rules allowed is only counted; `untrustedActivity` lists it.
 	 */
 	notable: NotableEntry[];
 	/** Entries forgotten because `notable` is full (oldest first). */
@@ -185,11 +186,13 @@ export class Run {
 		kind: "allowed" | "denied" | "escalated",
 		line: string,
 		actionId?: string,
+		/** For an allowed call: list it too (it is only counted otherwise). */
+		flagged = false,
 	): void {
 		if (kind === "allowed") this.gate.autoAllowed++;
 		else if (kind === "denied") this.gate.autoDenied++;
 		else this.gate.escalated++;
-		if (kind === "allowed") return;
+		if (kind === "allowed" && !flagged) return;
 		// The bump makes the entry newer than any cursor handed out before.
 		this.seq++;
 		this.gate.notable.push({ seq: this.seq, text: line, actionId });

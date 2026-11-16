@@ -135,6 +135,17 @@ describe(`auto mode end to end (${RUNTIME})`, () => {
 			entries[0].consulted.map((c: any) => c.by),
 			["rules", "http:local"],
 		);
+		// A classifier let a HIGH call through: the view lists it once, with who allowed it.
+		const listed = view.gate.untrustedNotable.filter((l: string) =>
+			/bash \[HIGH\] allowed by http:local: rm -rf build/.test(l),
+		);
+		assert.strictEqual(listed.length, 1, view.gate.untrustedNotable.join("\n"));
+		const next = await data("wait_run", {
+			runId: view.runId,
+			sinceSeq: view.seq,
+			waitMs: 0,
+		});
+		assert.deepStrictEqual(next.gate.untrustedNotable, [], "not repeated");
 		assert.strictEqual(seen.at(-1)?.authorization, `Bearer ${TOKEN}`);
 		assert.strictEqual(
 			seen.at(-1)?.body.context.intent,
