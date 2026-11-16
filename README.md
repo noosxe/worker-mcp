@@ -531,6 +531,8 @@ Lowest to highest:
 | `env.allow`                            | `WORKER_MCP_ENV_PASSTHROUGH`        | `--env-passthrough`        | none                                        |
 | `persistRuns`                          | `WORKER_MCP_PERSIST_RUNS`           | `--persist-runs`           | `true`                                      |
 | `persistSessions`                      | `WORKER_MCP_PERSIST_SESSIONS`       | `--persist-sessions`       | `true`                                      |
+| `limits.sessionRetentionMs`            | `WORKER_MCP_SESSION_RETENTION_MS`   | `--session-retention-ms`   | `259200000` (3 days; at most a year)        |
+| `limits.maxSessionBytes`               | `WORKER_MCP_MAX_SESSION_BYTES`      | `--max-session-bytes`      | `268435456` (256 MiB; at most 1 TiB)        |
 | `limits.recordRetentionMs`             | `WORKER_MCP_RECORD_RETENTION_MS`    | `--record-retention-ms`    | `604800000` (7 days)                        |
 | `limits.maxRecordedRuns`               | `WORKER_MCP_MAX_RECORDED_RUNS`      | `--max-recorded-runs`      | `500`                                       |
 | `logLevel`                             | `WORKER_MCP_LOG_LEVEL`              | `--log-level`              | `info`                                      |
@@ -680,8 +682,9 @@ removed again as described below.
   worker runs see an empty directory in place of its session. pi's own `read`,
   `write` and `edit` can reach it, so the gate treats the state directory as a
   hard limit: those calls always wait for the coordinator.
-- **Retention**: a session is deleted after 3 days without activity, and the
-  oldest go first when all sessions together pass 256 MiB. The sweep runs at
+- **Retention**: a session is deleted after `limits.sessionRetentionMs` (3
+  days) without activity, and the oldest go first when all sessions together
+  pass `limits.maxSessionBytes` (256 MiB). The sweep runs at
   startup and every 10 minutes and never touches a worker that a running server
   holds. `terminate_worker` deletes the worker's session and record at once. A
   worker closed for being idle, one whose pi crashed and one left by a stopped

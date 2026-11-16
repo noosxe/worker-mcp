@@ -1027,6 +1027,78 @@ describe("legacyTools (no longer used)", () => {
 	});
 });
 
+describe("saved conversations", () => {
+	test("are on by default, kept 3 days or 256 MiB", () => {
+		const config = load();
+		assert.strictEqual(config.persistSessions, true);
+		assert.strictEqual(config.limits.sessionRetentionMs, 3 * 24 * 60 * 60_000);
+		assert.strictEqual(config.limits.maxSessionBytes, 256 * 1024 * 1024);
+	});
+
+	test("the setting and the limits come from the file, the environment and flags", () => {
+		const file = writeFile({
+			persistSessions: false,
+			limits: { sessionRetentionMs: 1000, maxSessionBytes: 7 },
+		});
+		const fromFile = load([`--config=${file}`]);
+		assert.strictEqual(fromFile.persistSessions, false);
+		assert.strictEqual(fromFile.limits.sessionRetentionMs, 1000);
+		assert.strictEqual(fromFile.limits.maxSessionBytes, 7);
+
+		const fromEnv = load([`--config=${file}`], {
+			...env,
+			WORKER_MCP_PERSIST_SESSIONS: "on",
+			WORKER_MCP_SESSION_RETENTION_MS: "2000",
+			WORKER_MCP_MAX_SESSION_BYTES: "8",
+		});
+		assert.strictEqual(fromEnv.persistSessions, true);
+		assert.strictEqual(fromEnv.limits.sessionRetentionMs, 2000);
+		assert.strictEqual(fromEnv.limits.maxSessionBytes, 8);
+
+		const fromFlag = load(
+			[
+				"--persist-sessions=off",
+				"--session-retention-ms",
+				"3000",
+				"--max-session-bytes=9",
+			],
+			{ ...env, WORKER_MCP_PERSIST_SESSIONS: "on" },
+		);
+		assert.strictEqual(fromFlag.persistSessions, false);
+		assert.strictEqual(fromFlag.limits.sessionRetentionMs, 3000);
+		assert.strictEqual(fromFlag.limits.maxSessionBytes, 9);
+		assert.strictEqual(
+			JSON.parse(formatConfig(fromFlag)).persistSessions,
+			false,
+		);
+	});
+
+	test("bad values fail and name their source", () => {
+		assert.match(
+			failure(() => load([], { ...env, WORKER_MCP_PERSIST_SESSIONS: "maybe" })),
+			/WORKER_MCP_PERSIST_SESSIONS/,
+		);
+		for (const [name, bad] of [
+			["WORKER_MCP_SESSION_RETENTION_MS", "0"],
+			["WORKER_MCP_SESSION_RETENTION_MS", "-5"],
+			["WORKER_MCP_SESSION_RETENTION_MS", String(366 * 24 * 60 * 60_000)],
+			["WORKER_MCP_MAX_SESSION_BYTES", "0"],
+			["WORKER_MCP_MAX_SESSION_BYTES", String(1024 ** 4 + 1)],
+			["WORKER_MCP_MAX_SESSION_BYTES", "lots"],
+		]) {
+			assert.match(
+				failure(() => load([], { ...env, [name]: bad })),
+				new RegExp(name),
+				`${name}=${bad}`,
+			);
+		}
+		assert.throws(() => load(["--session-retention-ms", "0"]));
+		assert.throws(() => load(["--max-session-bytes", "1.5"]));
+		const file = writeFile({ limits: { maxSessionBytes: 1024 ** 4 + 1 } });
+		assert.throws(() => load([`--config=${file}`]));
+	});
+});
+
 describe("run records", () => {
 	test("are on by default, kept 7 days or 500 runs", () => {
 		const config = load();

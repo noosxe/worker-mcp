@@ -75,6 +75,8 @@ Options:
       --persist-sessions <on|off> Keep each worker's conversation on disk (default on; not resumable yet)
       --record-retention-ms <n>  Delete run records older than this (default 604800000, 7 days)
       --max-recorded-runs <n> Most run records kept on disk (default 500)
+      --session-retention-ms <n>  Delete saved conversations with no activity for this long (default 259200000, 3 days)
+      --max-session-bytes <n> Most bytes all saved conversations may take (default 268435456, 256 MiB)
       --audit <on|off>        Write the audit log file (default on)
       --audit-file <path>     Audit log file (default <state dir>/audit.jsonl)
       --log-level <level>     debug, info (default), warn or error; tool inputs and worker output only at debug
