@@ -66,6 +66,18 @@ export async function callOk(
 	return textOf(result);
 }
 
+/**
+ * Terminate a worker whose process may already have exited. The server drops
+ * an exited worker, so the call can race with that and answer
+ * WORKER_NOT_FOUND; that and success are both fine, any other error fails.
+ */
+export async function terminateIfPresent(client: Client, workerId: string) {
+	const result = await call(client, TOOLS.terminate, { workerId });
+	if (result.isError === true) {
+		assert.match(textOf(result), /^WORKER_NOT_FOUND: /, textOf(result));
+	}
+}
+
 /** The approvals `get_pending_actions` reports, with `command` as sent raw. */
 export async function pendingList(
 	client: Client,
@@ -835,7 +847,8 @@ export function behaviourTests(name: string, layer: Layer) {
 				).catch(() => {});
 				await sleep(200);
 				await callOk(client, TOOLS.list, {});
-				await callOk(client, TOOLS.terminate, { workerId: "stdin-close" });
+				// The worker may already have exited and been dropped.
+				await terminateIfPresent(client, "stdin-close");
 			});
 		});
 
@@ -861,7 +874,8 @@ export function behaviourTests(name: string, layer: Layer) {
 						() => "hung",
 					);
 					assert.strictEqual(outcome, "settled");
-					await callOk(client, TOOLS.terminate, { workerId: "stdin-close-2" });
+					// The worker may already have exited and been dropped.
+					await terminateIfPresent(client, "stdin-close-2");
 				});
 			},
 		);
