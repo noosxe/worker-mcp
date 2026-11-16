@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
+import * as path from "node:path";
 
 import { z } from "zod";
 
@@ -13,6 +14,7 @@ import type {
 	ProviderCheck,
 	ProviderHost,
 	RunStart,
+	SessionInspection,
 	WorkerHandle,
 	WorkerProvider,
 	WorkerSpec,
@@ -33,6 +35,11 @@ import {
 	messageUsage,
 	resultPreview,
 } from "./rpc.js";
+import {
+	PI_SESSION_FORMAT,
+	inspectSession,
+	type SessionDamage,
+} from "./session.js";
 import { piToolMap } from "./tool-map.js";
 
 export interface PiProviderOptions {
@@ -67,7 +74,7 @@ export const PI_CAPABILITIES: ProviderCapabilities = {
 	mutateInput: true,
 	persistentProcess: true,
 	abort: "in-band",
-	resume: false,
+	resume: true,
 	parallelToolCalls: true,
 	usage: true,
 	models: "provider/id",
@@ -113,6 +120,118 @@ export function describeExit(exit: {
 	return `code ${exit.code}`;
 }
 
+function describeDamage(d: SessionDamage): { fatal: boolean; text: string } {
+	switch (d.kind) {
+		case "torn_last_line":
+			return {
+				fatal: false,
+				text: "the last line of the session is incomplete; pi will drop that entry",
+			};
+		case "damaged_line":
+			return {
+				fatal: true,
+				text: `line ${d.line} of the session is damaged, so pi would silently drop part of the conversation`,
+			};
+		case "broken_chain":
+			return {
+				fatal: true,
+				text: `the session's entry chain is broken (${d.droppedMessages} message(s) would be lost)`,
+			};
+		case "unknown_version":
+			return {
+				fatal: true,
+				text: `the session format is ${d.found}, not ${d.supported}`,
+			};
+		case "unreadable_header":
+			return { fatal: true, text: "the session header cannot be read" };
+		case "too_large":
+			return {
+				fatal: true,
+				text: `the session file is too large to check (${d.bytes} bytes)`,
+			};
+		case "too_many_lines":
+			return {
+				fatal: true,
+				text: "the session file has too many lines to check",
+			};
+		case "unreadable_file":
+			return {
+				fatal: true,
+				text: `the session file cannot be read (${d.reason})`,
+			};
+		default:
+			return { fatal: true, text: "the session is damaged" };
+	}
+}
+
+/** Look at the session pi keeps for `id` in `dir`; reads files only. */
+export async function inspectPiSession(
+	dir: string,
+	id: string,
+	opts: { sinceBytes?: number } = {},
+): Promise<SessionInspection> {
+	const empty: SessionInspection = {
+		exists: false,
+		bytes: 0,
+		formatSupported: false,
+		messageCount: 0,
+		fatal: [],
+		warnings: [],
+		danglingCalls: [],
+	};
+	let names: string[];
+	try {
+		names = (await fs.promises.readdir(dir)).filter((n) =>
+			n.endsWith(`_${id}.jsonl`),
+		);
+	} catch {
+		return empty;
+	}
+	if (names.length === 0) return empty;
+	if (names.length > 1) {
+		return {
+			...empty,
+			exists: true,
+			fatal: ["more than one session file matches this worker"],
+		};
+	}
+	const file = path.join(dir, names[0]);
+	const found = await inspectSession(file);
+	const fatal: string[] = [];
+	const warnings: string[] = [];
+	for (const d of found.damage) {
+		const { fatal: f, text } = describeDamage(d);
+		(f ? fatal : warnings).push(text);
+	}
+	if (found.header && found.header.id !== id) {
+		fatal.push("the session header names another session id");
+	}
+	if (found.multipleBranches) {
+		warnings.push(
+			"the session has more than one branch (two writers); only the newest branch is continued",
+		);
+	}
+	return {
+		exists: true,
+		file,
+		bytes: found.bytes,
+		format: found.header ? String(found.header.version) : undefined,
+		formatSupported: found.header?.version === PI_SESSION_FORMAT,
+		cwd: found.header?.cwd,
+		messageCount: found.messageCount,
+		fatal,
+		warnings,
+		danglingCalls: found.danglingCalls
+			.filter((c) => c.offset >= (opts.sinceBytes ?? 0))
+			.map((c) => ({
+				name: c.name,
+				callId: c.callId,
+				inputDigest: c.inputDigest,
+				untrustedPreview: c.untrustedPreview,
+			})),
+	};
+}
+
 export function createPiProvider(
 	config: Config,
 	opts: PiProviderOptions = {},
@@ -127,6 +246,7 @@ export function createPiProvider(
 		capabilities: PI_CAPABILITIES,
 		sandboxProfile: PI_SANDBOX_PROFILE,
 		sessionProfile: { needsDir: true },
+		inspectSession: (dir, id, o) => inspectPiSession(dir, id, o),
 		toolMap: piToolMap,
 		optionsSchema: z.strictObject({}) as unknown as z.ZodType<
 			Record<string, unknown>
@@ -150,6 +270,17 @@ export function createPiProvider(
 		async open(spec: WorkerSpec, host: ProviderHost): Promise<WorkerHandle> {
 			if (!fs.existsSync(spec.cwd)) {
 				throw new Error(`Workspace directory does not exist: ${spec.cwd}`);
+			}
+			// With a session id pi starts an empty session when it finds none (or
+			// none for this directory) and says nothing: a resume must not be
+			// handed to it unless the file is there.
+			if (spec.session?.mode === "resume") {
+				const found = await inspectPiSession(spec.session.dir, spec.session.id);
+				if (!found.exists || found.fatal.length > 0) {
+					throw new Error(
+						`the session to resume is not usable: ${found.fatal[0] ?? "no session file"}`,
+					);
+				}
 			}
 			// The gate comes from a constant compiled into the server. Without it
 			// pi must not start: tool calls would run ungated.

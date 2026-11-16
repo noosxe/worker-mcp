@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -36,6 +36,9 @@ import {
 export const WORKER_RECORD_VERSION = 1;
 const BOOT_ID = /^[a-z0-9]{12}$/;
 const MAX_RECORD_BYTES = 1024 * 1024;
+const MAX_RUN_IDS = 50;
+/** Session files above this are not hashed (a resume refuses them anyway). */
+const MAX_CHECKPOINT_BYTES = 32 * 1024 * 1024;
 const MAX_OWNER_BYTES = 1024;
 /** An `owner.breaking` directory older than this belongs to a breaker that died. */
 const BREAKING_STALE_MS = 60_000;
@@ -73,6 +76,17 @@ export const workerRecordSchema = z.object({
 	createdAt: z.string().max(40),
 	lastActiveAt: z.string().max(40),
 	lastBootId: z.string().regex(BOOT_ID),
+	/** The newest run of this lineage, and the latest ones (bounded). */
+	lastRunId: z.string().max(64).optional(),
+	runIds: z.array(z.string().max(64)).max(MAX_RUN_IDS).optional(),
+	/**
+	 * Size and SHA-256 of the session file when the last run settled. The agent
+	 * only appends, so a resume checks that the file still starts with exactly
+	 * these bytes; what was written after (the interrupted run) is unchecked.
+	 */
+	checkpoint: z
+		.object({ bytes: z.number().int().min(0), sha256: z.string().max(64) })
+		.optional(),
 });
 export type WorkerRecord = z.infer<typeof workerRecordSchema>;
 
@@ -256,19 +270,153 @@ export class WorkerStore {
 		}
 	}
 
-	/** Note activity and the server that had the worker last. Never throws. */
-	touch(lineage: string): void {
+	/**
+	 * Note activity and the server that had the worker last, and optionally the
+	 * run just saved and a checkpoint of the session file. Never throws.
+	 */
+	touch(
+		lineage: string,
+		note: { runId?: string; checkpoint?: boolean } = {},
+	): void {
 		try {
 			const rec = this.read(lineage);
 			if (!rec) return;
-			this.writeRecord(lineage, {
+			const next: WorkerRecord = {
 				...rec,
 				lastActiveAt: new Date(this.now()).toISOString(),
 				lastBootId: this.opts.bootId,
-			});
+			};
+			if (note.runId !== undefined) {
+				next.lastRunId = note.runId;
+				const ids = (rec.runIds ?? []).filter((r) => r !== note.runId);
+				ids.push(note.runId);
+				next.runIds = ids.slice(-MAX_RUN_IDS);
+			}
+			if (note.checkpoint) {
+				const cp = this.sessionChecksum(lineage);
+				if (cp) next.checkpoint = cp;
+			}
+			this.writeRecord(lineage, next);
 		} catch (e) {
 			this.log.debug(`worker record not touched: ${describe(e)}`);
 		}
+	}
+
+	/** The lineage a worker id belongs to (any id it ever had), or null. */
+	findByWorkerId(workerId: string): WorkerRecord | null {
+		if (!WORKER_ID_PATTERN.test(workerId)) return null;
+		const direct = this.read(workerId);
+		if (direct?.ids.includes(workerId)) return direct;
+		for (const lineage of this.lineages()) {
+			const rec = this.read(lineage);
+			if (rec?.ids.includes(workerId)) return rec;
+		}
+		return null;
+	}
+
+	/**
+	 * Note the new worker id of a lineage and what the resumed worker runs
+	 * with. The caller holds the claim (`claim`); the session and its history
+	 * stay as they are.
+	 */
+	adopt(
+		lineage: string,
+		workerId: string,
+		update: Partial<
+			Pick<
+				WorkerRecord,
+				| "name"
+				| "providerVersion"
+				| "model"
+				| "sandbox"
+				| "toolIsolation"
+				| "policy"
+				| "systemPromptChars"
+			>
+		>,
+	): WorkerLayout {
+		const dir = this.lineageDir(lineage);
+		const rec = this.read(lineage);
+		if (!rec) throw new Error("the worker record is missing or unreadable");
+		this.writeRecord(lineage, {
+			...rec,
+			...update,
+			ids: [...rec.ids.filter((i) => i !== workerId), workerId].slice(-1000),
+			lastActiveAt: new Date(this.now()).toISOString(),
+			lastBootId: this.opts.bootId,
+		});
+		return { lineage, dir, sessionDir: path.join(dir, "session") };
+	}
+
+	/** The session file(s) of a lineage: its own `.jsonl` files, by name. */
+	private sessionFiles(lineage: string): string[] {
+		const dir = path.join(this.lineageDir(lineage), "session");
+		try {
+			return fs
+				.readdirSync(dir)
+				.filter((n) => n.endsWith(".jsonl"))
+				.map((n) => path.join(dir, n));
+		} catch {
+			return [];
+		}
+	}
+
+	/** Total size of a lineage's session files. */
+	sessionBytes(lineage: string): number {
+		let n = 0;
+		for (const f of this.sessionFiles(lineage)) n += lstatOrNull(f)?.size ?? 0;
+		return n;
+	}
+
+	private sessionChecksum(
+		lineage: string,
+	): { bytes: number; sha256: string } | null {
+		const files = this.sessionFiles(lineage);
+		if (files.length !== 1) return null;
+		const st = lstatOrNull(files[0]);
+		if (!st?.isFile() || st.size > MAX_CHECKPOINT_BYTES) return null;
+		const data = fs.readFileSync(files[0]);
+		return {
+			bytes: data.length,
+			sha256: createHash("sha256").update(data).digest("hex"),
+		};
+	}
+
+	/**
+	 * Whether the session file still starts with the bytes it had when the last
+	 * run settled. `null`: there is no checkpoint (no run ever settled), so
+	 * nothing to compare. A shorter file, a changed byte or a rewrite all fail.
+	 */
+	checkpointMatches(
+		lineage: string,
+		record: WorkerRecord,
+	): { ok: boolean; reason?: string } | null {
+		const cp = record.checkpoint;
+		if (!cp) return null;
+		const files = this.sessionFiles(lineage);
+		if (files.length !== 1)
+			return { ok: false, reason: "the session file is missing" };
+		const st = lstatOrNull(files[0]);
+		if (!st?.isFile())
+			return { ok: false, reason: "the session file is not a regular file" };
+		if (st.size < cp.bytes) {
+			return {
+				ok: false,
+				reason: "the session file is shorter than when its last run ended",
+			};
+		}
+		if (st.size > MAX_CHECKPOINT_BYTES) {
+			return { ok: false, reason: "the session file is too large to check" };
+		}
+		const data = fs.readFileSync(files[0]).subarray(0, cp.bytes);
+		const sha = createHash("sha256").update(data).digest("hex");
+		return sha === cp.sha256
+			? { ok: true }
+			: {
+					ok: false,
+					reason:
+						"the start of the session file changed since its last run ended (a rewrite, a migration or tampering)",
+				};
 	}
 
 	// ---- the session files --------------------------------------------------

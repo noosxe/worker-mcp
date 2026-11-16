@@ -115,9 +115,19 @@ const ref = (what: string) => WorkerRef.describe(`${what} (id or name).`);
 export const schemas = {
 	listProviders: z.strictObject({}),
 	spawnWorker: z.strictObject({
-		cwd: AbsolutePath.describe(
-			"The absolute directory the worker runs in. It must exist, be a directory and, when the server restricts workspaces, lie inside an allowed root.",
+		cwd: AbsolutePath.optional().describe(
+			"The absolute directory the worker runs in. It must exist, be a directory and, when the server restricts workspaces, lie inside an allowed root. Required, except with resumeFrom, where it may be left out or must be the directory the conversation was started in.",
 		),
+		resumeFrom: z
+			.string()
+			.regex(
+				/^(w_[a-z0-9]{8}|r_[A-Za-z0-9]{10,32})$/,
+				"must be a worker id (w_…) or a run id (r_…)",
+			)
+			.optional()
+			.describe(
+				"Continue a saved conversation as a new worker: the id of a worker, or of one of its runs, from any earlier server process or one closed here. The result has a `resumed` block. The conversation is replayed to the model on the first prompt, so it costs its whole context again.",
+			),
 		provider: z
 			.string()
 			.regex(/^[a-z][a-z0-9-]{0,31}$/, "a provider id such as pi")

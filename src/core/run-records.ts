@@ -67,6 +67,8 @@ export const runRecordSchema = z.object({
 	provider: z.string().max(64).optional(),
 	model: z.string().max(200).optional(),
 	cwd: z.string().max(4096).optional(),
+	/** The kept conversation the worker belonged to, when sessions were kept. */
+	lineage: z.string().max(64).optional(),
 	intent: z.string().max(1000).optional(),
 	promptChars: z.number().int().min(0),
 	/** sha256 of the prompt, so a record can be matched to one without holding it. */
@@ -109,6 +111,7 @@ export function recordOf(run: Run, bootId: string, now: number): RunRecord {
 		provider: run.meta.provider,
 		model: run.meta.model,
 		cwd: run.meta.cwd,
+		lineage: run.meta.lineage,
 		intent: run.intent?.slice(0, 1000),
 		promptChars: run.prompt.length,
 		promptSha256: createHash("sha256").update(run.prompt).digest("hex"),
@@ -165,6 +168,7 @@ export function runFromRecord(rec: RunRecord): Run {
 		provider: rec.provider,
 		model: rec.model,
 		cwd: rec.cwd,
+		lineage: rec.lineage,
 	};
 	return run;
 }

@@ -49,6 +49,15 @@ export interface WorkerProvider {
 	readonly sandboxProfile?: SandboxProfile;
 	/** Can keep its conversation in a directory the core gives it (`WorkerSpec.session`). */
 	readonly sessionProfile?: { needsDir: boolean };
+	/**
+	 * A read-only look at a kept session: no process, no model. Used before a
+	 * resume. Every string it returns that came from the file is worker output.
+	 */
+	inspectSession?(
+		dir: string,
+		id: string,
+		opts?: { sinceBytes?: number },
+	): Promise<SessionInspection>;
 	/** Cheap availability probe: binary found, version. No model calls. */
 	check(config: Config): Promise<ProviderCheck>;
 	/** Validates provider-specific spawn options; unknown keys are rejected. */
@@ -78,7 +87,40 @@ export interface WorkerSpec {
 	 * exists (0700), is bound read-write into the sandbox and hidden from the
 	 * agent's shell commands. Absent: the provider keeps nothing.
 	 */
-	session?: { dir: string; id: string };
+	session?: { dir: string; id: string; mode?: "new" | "resume" };
+}
+
+/** What a provider found in a kept session (see `WorkerProvider.inspectSession`). */
+export interface SessionInspection {
+	/** A session file for the id exists in the directory. */
+	exists: boolean;
+	/** Its path. */
+	file?: string;
+	bytes: number;
+	/** The provider's own format name or number, as text. */
+	format?: string;
+	/** Whether this server's provider module understands the format. */
+	formatSupported: boolean;
+	/** The working directory the session was started in. */
+	cwd?: string;
+	/** Messages on the active branch. */
+	messageCount: number;
+	/** Reasons the session must not be resumed (damage that would silently lose history). */
+	fatal: string[];
+	/** Damage that can be accepted, for the caller to report. */
+	warnings: string[];
+	/**
+	 * Tool calls with no result, oldest first, written at or after `sinceBytes`
+	 * (the start of the file when it is not given). Worker trust.
+	 */
+	danglingCalls: {
+		name: string;
+		callId: string;
+		/** The gate's `argsDigest` for the call's arguments. */
+		inputDigest: string;
+		/** The arguments as short one-line JSON. Untrusted. */
+		untrustedPreview: string;
+	}[];
 }
 
 export interface ProviderHost {
