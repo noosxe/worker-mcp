@@ -84,6 +84,12 @@ export interface Config {
 			defaultModel?: string;
 			/** How long a spawn waits for pi to confirm its approval gate. */
 			startupTimeoutMs: number;
+			/**
+			 * Whether pi loads skills. `false` hides the host user's own skills
+			 * (the pi agent directory and the user's other global skill
+			 * directories) from workers; skills inside the workspace are kept.
+			 */
+			skills: boolean;
 		};
 	};
 	gate: {
@@ -409,6 +415,7 @@ export const configFileSchema = z.strictObject({
 					path: z.string().min(1).optional(),
 					defaultModel: z.string().min(1).optional(),
 					startupTimeoutMs: positiveInt.optional(),
+					skills: z.boolean().optional(),
 				})
 				.optional(),
 		})
@@ -1256,6 +1263,7 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 				startupTimeoutMs:
 					over.providers?.pi?.startupTimeoutMs ??
 					base.providers?.pi?.startupTimeoutMs,
+				skills: over.providers?.pi?.skills ?? base.providers?.pi?.skills,
 			},
 		},
 		sandbox: {
@@ -1540,6 +1548,7 @@ function applyDefaults(
 				startupTimeoutMs:
 					layer.providers?.pi?.startupTimeoutMs ??
 					DEFAULT_PI_STARTUP_TIMEOUT_MS,
+				skills: layer.providers?.pi?.skills ?? true,
 			},
 		},
 		gate: {

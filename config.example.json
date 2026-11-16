@@ -1,7 +1,8 @@
 {
 	"providers": {
 		"pi": {
-			"path": "pi"
+			"path": "pi",
+			"skills": true
 		}
 	},
 	"usage": {

@@ -12,6 +12,12 @@
   `read`, `edit` and `write` active; `grep`, `find` and `ls` are not, so the
   kinds `list` and `search` come from shell commands. The tool descriptions,
   skill and security notes say so.
+- **`providers.pi.skills`** (config file; Nix option `piSkills`), default
+  `true`. When `false`, pi starts with `--no-skills`, so the host user's
+  personal skills are not in the worker's system prompt; the workspace's own
+  `.pi/skills` and `.agents/skills` are still loaded (`--skill`). In the
+  `workspace` sandbox `~/.pi/agent/skills` is also left out of the worker's
+  view of `~/.pi/agent`.
 - **`usage.reportCost`** (config file; Nix option `reportCost`), default
   `true`. When `false`, `usage.costUsd` is left out of run views, `get_run`
   and saved run records, for plans where pi's dollar figure means nothing.

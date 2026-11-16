@@ -156,7 +156,7 @@ let
     providers.pi = lib.filterAttrs (_: v: v != null) {
       path = cfg.piPath;
       inherit (cfg) defaultModel;
-    };
+    } // lib.optionalAttrs (!cfg.piSkills) { skills = false; };
     limits =
       lib.optionalAttrs (cfg.allowedRoots != [ ]) { inherit (cfg) allowedRoots; }
       // lib.optionalAttrs (cfg.recordRetentionMs != null) { recordRetentionMs = cfg.recordRetentionMs; }
@@ -293,6 +293,18 @@ in
         (`providers.pi.defaultModel`). An explicit `model` always wins.
       '';
       example = "zai/glm-5.3";
+    };
+
+    piSkills = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether pi workers load skills (`providers.pi.skills`). Turn it off to
+        keep your personal skills (the ones in `~/.pi/agent/skills` and your
+        other global skill directories) out of workers' system prompts and, in
+        the `workspace` sandbox, unreadable. Skills inside the workspace (a
+        repository's `.pi/skills` or `.agents/skills`) are still loaded.
+      '';
     };
 
     logLevel = mkOption {

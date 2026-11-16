@@ -1198,6 +1198,16 @@ describe("resume context cap", () => {
 	});
 });
 
+describe("providers.pi.skills", () => {
+	test("is on by default and can be turned off in the file", () => {
+		assert.strictEqual(load([]).providers.pi.skills, true);
+		const off = writeFile({ providers: { pi: { skills: false } } });
+		assert.strictEqual(load(["--config", off]).providers.pi.skills, false);
+		const bad = writeFile({ providers: { pi: { skills: "no" } } });
+		assert.throws(() => load(["--config", bad]), /skills/);
+	});
+});
+
 describe("usage.reportCost", () => {
 	test("is on by default and can be turned off in the file", () => {
 		assert.strictEqual(load([]).usage.reportCost, true);
