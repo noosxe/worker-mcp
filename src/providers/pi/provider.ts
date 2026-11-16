@@ -19,7 +19,7 @@ import type {
 	WorkerProvider,
 	WorkerSpec,
 } from "../types.js";
-import { buildPiArgs, workspaceSkillDirs } from "./argv.js";
+import { buildPiArgs } from "./argv.js";
 import {
 	GATE_DIALOG_TITLE,
 	GATE_NONCE_ENV,
@@ -309,9 +309,6 @@ export function createPiProvider(
 						systemPrompt: spec.systemPrompt,
 						session: spec.session,
 						skills: config.providers.pi.skills,
-						workspaceSkillDirs: config.providers.pi.skills
-							? []
-							: workspaceSkillDirs(spec.cwd),
 					}),
 				],
 				cwd: spec.cwd,

@@ -302,8 +302,8 @@ in
         Whether pi workers load skills (`providers.pi.skills`). Turn it off to
         keep your personal skills (the ones in `~/.pi/agent/skills` and your
         other global skill directories) out of workers' system prompts and, in
-        the `workspace` sandbox, unreadable. Skills inside the workspace (a
-        repository's `.pi/skills` or `.agents/skills`) are still loaded.
+        the `workspace` sandbox, unreadable. A repository's own skills are not
+        loaded for workers either way (pi trusts no project over RPC).
       '';
     };
 

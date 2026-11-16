@@ -139,12 +139,15 @@ for the coordinator.
   and its other global skill directories) and lists them in the worker's system
   prompt. They are instructions that did not come from the coordinator and they
   describe the host's setup. `providers.pi.skills: false` (Nix `piSkills`) adds
-  `--no-skills`, which stops all discovery. Skills in the workspace itself (a
-  repository's `.pi/skills` and `.agents/skills`, up to the git root) belong to
-  the project, so they are passed back with `--skill`. In the `workspace`
-  sandbox the same option also leaves `~/.pi/agent/skills` out of the
-  throwaway layer over `~/.pi/agent`, so the worker cannot read it either; the
-  commands it runs never saw it (they get `~/.pi/agent` empty).
+  `--no-skills`, which stops all discovery. Skills in the workspace (a
+  repository's `.pi/skills` and `.agents/skills`) are not loaded either way:
+  pi loads project skills only when the project is trusted, and a worker runs
+  over RPC with no UI, so it never is. In the `workspace` sandbox the option
+  also leaves `~/.pi/agent/skills` out of the throwaway layer over
+  `~/.pi/agent`, so the worker cannot read it; a skill entry that is a symlink
+  to a place outside the sandbox's mounts (for example `~/.agents/skills`) is
+  unreadable there anyway. The commands the worker runs never saw it (they
+  get `~/.pi/agent` empty).
 
 ## The workspace sandbox
 
