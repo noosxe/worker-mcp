@@ -455,10 +455,9 @@ over.
    the state is still `running`, call it again with the returned `seq` as
    `sinceSeq`. The view holds the state, the tool calls since `sinceSeq`
    (`untrustedActivity`), the output from `outputOffset` (`output.nextOffset` is the
-   next one), the pending approvals, a summary of what the gate allowed
-   without asking, and a `next` hint.
+   next one), the pending approvals, the gate's counts, the calls it denied or sent to you since `sinceSeq` (at most 10; the view says how many it left out, and `get_gate_log` has them all), and a `next` hint.
 4. When `state` is `awaiting_approval`, look at `pendingApprovals`, then call
-   `approve_action` or `reject_action` (both return at once, with the approval's `approvalId`) and `wait_run`
+   `approve_action` or `reject_action` (both return at once with only the outcome, the run's state and `seq`) and `wait_run`
    again. An approval nobody answers is denied after `gate.approvalTimeoutMs`
    (10 minutes) with the reason "approval timed out", and the worker sees that
    reason; the run goes on.

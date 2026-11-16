@@ -52,7 +52,7 @@ Everything a worker produces (text, tool calls, file contents it read) is writte
 
 `wait_run` returns `state: "awaiting_approval"` with the calls in `pendingApprovals` (also `get_pending_actions`): tool, `untrustedCommand`, `untrustedPaths`, `riskLabel`, `reason`, and `escalatedBecause`. Read the call itself, decide, and answer:
 
-- **`approve_action`** `{ approvalId, remember? }` runs the call. `remember: "worker"` also allows identical calls (same tool, command, paths, arguments) from this worker without asking until it is terminated or its policy changes. Use it for a repeated harmless call, never for a broad one. It is refused for protected paths, hard limits and CRITICAL calls; `remembered` in the result says whether it took effect.
+- **`approve_action`** `{ approvalId, remember? }` runs the call. `remember: "worker"` also allows identical calls (same tool, command, paths, arguments) from this worker without asking until it is terminated or its policy changes. Use it for a repeated harmless call, never for a broad one. It is refused for protected paths, hard limits and CRITICAL calls; `remembered` in the result says whether it took effect. The result is short (outcome, state, `seq`): call `wait_run` with that `seq` as `sinceSeq` to see what happens next.
 - **`reject_action`** `{ approvalId, reason }` blocks it and feeds your reason to the worker, which re-plans. Say what to do instead.
 - An approval nobody answers is denied after 10 minutes.
 
@@ -77,4 +77,4 @@ Pass `policy` to `spawn_worker`, or change it later with `set_risk_policy`. The 
 
 ## Audit
 
-Each run's view lists what ran without asking (`gate.untrustedNotable`). `get_gate_log { workerId, decidedBy: "rules" }` shows every call the rules or a classifier let through (`decidedBy` is `rules`, `http:<name>`, `cache`, `coordinator`, `timeout` or `cancel`). Look at it after loosening a policy or when using auto mode.
+Each run's view counts what the gate allowed, denied and escalated (`gate`), lists the tool calls since `sinceSeq` (`untrustedActivity`) and the calls it denied or sent to you (`gate.untrustedNotable`, at most 10 per view; `notableOmitted` says how many it left out). `get_gate_log { workerId, decidedBy: "rules" }` shows every call the rules or a classifier let through (`decidedBy` is `rules`, `http:<name>`, `cache`, `coordinator`, `timeout` or `cancel`). Look at it after loosening a policy or when using auto mode.

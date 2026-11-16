@@ -418,12 +418,13 @@ export function behaviourTests(name: string, layer: Layer) {
 				assert.match(view.output.text, /^tool bash ran with /);
 				assert.strictEqual(view.gate.autoAllowed, 1);
 				assert.strictEqual(view.gate.escalated, 0);
+				// A call the gate allowed is counted and listed in the activity;
+				// the notable list is for calls that need attention.
 				assert.ok(
-					view.gate.untrustedNotable.some((l) =>
-						/bash \[LOW\] ls -la src/.test(l),
-					),
-					view.gate.untrustedNotable.join("\n"),
+					view.activity.some((l) => /bash: ls -la src/.test(l)),
+					view.activity.join("\n"),
 				);
+				assert.deepStrictEqual(view.gate.untrustedNotable, []);
 
 				// Each run reports its own actions.
 				const next = await sendAndWait(client, "listed", "hello");
@@ -498,11 +499,7 @@ export function behaviourTests(name: string, layer: Layer) {
 				);
 				assert.strictEqual(view.state, "completed");
 				assert.match(view.output.text, /^tool bash ran with /);
-				assert.ok(
-					view.gate.untrustedNotable.some((l) =>
-						/bash \[MEDIUM\] mkdir build/.test(l),
-					),
-				);
+				assert.ok(view.activity.some((l) => /bash: mkdir build/.test(l)));
 			});
 		});
 
@@ -683,11 +680,7 @@ export function behaviourTests(name: string, layer: Layer) {
 				);
 				assert.strictEqual(view.state, "completed");
 				assert.match(view.output.text, /^tool bash ran with /);
-				assert.ok(
-					view.gate.untrustedNotable.some((l) =>
-						/bash \[LOW\] cat f \| grep x/.test(l),
-					),
-				);
+				assert.ok(view.activity.some((l) => /bash: cat f \| grep x/.test(l)));
 			});
 		});
 

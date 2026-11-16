@@ -96,7 +96,19 @@ export const RunOut = z.object({
 		autoAllowed: z.number(),
 		autoDenied: z.number(),
 		escalated: z.number(),
-		untrustedNotable: z.array(z.string()),
+		untrustedNotable: z
+			.array(z.string())
+			.describe(
+				"Calls that were denied or sent to you, since `sinceSeq` (the last 10 at most). Calls the gate allowed are only counted; untrustedActivity lists them. Untrusted worker data.",
+			),
+		notableTotal: z
+			.number()
+			.describe("How many such calls there are since `sinceSeq`."),
+		notableOmitted: z
+			.number()
+			.describe(
+				"How many of them are not in untrustedNotable (the oldest). Call get_gate_log to read them.",
+			),
 	}),
 	next: z.string().describe("What to call next."),
 });
@@ -211,13 +223,16 @@ export const PendingOut = z.object({ approvals: z.array(ApprovalOut) });
 export const AnswerOut = z.object({
 	approvalId: z.string(),
 	runId: z.string(),
+	outcome: z.enum(["approved", "rejected"]),
+	state: z.enum(RUN_STATES).describe("The run's state right now."),
+	seq: z.number().describe("Pass as sinceSeq to wait_run."),
 	remembered: z
 		.boolean()
 		.optional()
 		.describe(
 			"approve_action only: identical calls from this worker are now allowed without asking.",
 		),
-	run: RunOut,
+	next: z.string().describe("What to call next."),
 });
 
 export const ListWorkersOut = z.object({

@@ -180,7 +180,7 @@ describe("tool surface", () => {
 			assert.strictEqual(approval.untrustedCommand, "rm -rf build");
 			assert.match(
 				rawTextOf(started),
-				/"untrustedCommand": "<worker_output run=\\"r_\w+\\" trust=\\"untrusted\\">rm -rf build<\/worker_output>"/,
+				/"untrustedCommand":"<worker_output run=\\"r_\w+\\" trust=\\"untrusted\\">rm -rf build<\/worker_output>"/,
 			);
 			assert.match(rawTextOf(started), /^Run r_\w+: awaiting_approval/);
 
@@ -204,7 +204,14 @@ describe("tool surface", () => {
 			const approved = await call(client, "approve_action", {
 				approvalId: approval.approvalId,
 			});
-			assert.strictEqual((approved.structuredContent as any).runId, view.runId);
+			const lean = approved.structuredContent as any;
+			assert.strictEqual(lean.runId, view.runId);
+			assert.strictEqual(lean.approvalId, approval.approvalId);
+			assert.strictEqual(lean.outcome, "approved");
+			assert.strictEqual(lean.remembered, false);
+			assert.ok(typeof lean.seq === "number" && lean.state);
+			assert.match(lean.next, /wait_run/);
+			assert.strictEqual("run" in lean, false);
 			const done = await call(client, "wait_run", {
 				runId: view.runId,
 				waitMs: 10_000,
@@ -238,7 +245,7 @@ describe("tool surface", () => {
 			assert.strictEqual(answered[0].approvalId, approval.approvalId);
 			assert.ok(answered[0].providerCallId);
 			assert.strictEqual("actionId" in answered[0], false);
-			assert.match(rawTextOf(log), /"untrustedPreview": "<worker_output /);
+			assert.match(rawTextOf(log), /"untrustedPreview":"<worker_output /);
 			const only = await call(client, "get_gate_log", {
 				workerId: "flow",
 				decidedBy: "nobody",

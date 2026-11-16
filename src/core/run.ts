@@ -75,12 +75,28 @@ export interface GateSummary {
 	autoAllowed: number;
 	autoDenied: number;
 	escalated: number;
-	/** Up to a few lines about what ran or was refused without asking. */
-	notable: string[];
+	/**
+	 * The calls that need attention: denied, sent to the coordinator
+	 * (escalated, which includes hard limits and protected paths). Calls the
+	 * gate allowed are only counted; `untrustedActivity` lists them.
+	 */
+	notable: NotableEntry[];
+	/** Entries forgotten because `notable` is full (oldest first). */
+	notableDropped: number;
+}
+
+export interface NotableEntry {
+	/** The run's `seq` when the call was decided. */
+	seq: number;
+	text: string;
+	/** For an escalated call: its approval, listed in `pendingApprovals` while open. */
+	actionId?: string;
 }
 
 const MAX_ACTIVITY = 100;
-const MAX_NOTABLE = 20;
+const MAX_NOTABLE = 200;
+/** Most notable lines one response carries. */
+export const MAX_NOTABLE_SHOWN = 10;
 
 /** Text with a hard size bound that drops the oldest and keeps absolute offsets. */
 export class OutputBuffer {
@@ -147,6 +163,7 @@ export class Run {
 		autoDenied: 0,
 		escalated: 0,
 		notable: [],
+		notableDropped: 0,
 	};
 
 	constructor(
@@ -164,11 +181,22 @@ export class Run {
 		return isTerminal(this.state);
 	}
 
-	noteGate(kind: "allowed" | "denied" | "escalated", line: string): void {
+	noteGate(
+		kind: "allowed" | "denied" | "escalated",
+		line: string,
+		actionId?: string,
+	): void {
 		if (kind === "allowed") this.gate.autoAllowed++;
 		else if (kind === "denied") this.gate.autoDenied++;
 		else this.gate.escalated++;
-		if (this.gate.notable.length < MAX_NOTABLE) this.gate.notable.push(line);
+		if (kind === "allowed") return;
+		// The bump makes the entry newer than any cursor handed out before.
+		this.seq++;
+		this.gate.notable.push({ seq: this.seq, text: line, actionId });
+		if (this.gate.notable.length > MAX_NOTABLE) {
+			this.gate.notable.shift();
+			this.gate.notableDropped++;
+		}
 	}
 }
 
@@ -488,9 +516,43 @@ export interface RunView {
 	};
 	error?: string;
 	usage?: Usage;
-	gate: GateSummary;
+	gate: GateView;
 	/** What to call next. */
 	next: string;
+}
+
+export interface GateView {
+	autoAllowed: number;
+	autoDenied: number;
+	escalated: number;
+	/** Flagged calls since the cursor, at most MAX_NOTABLE_SHOWN, oldest first. */
+	notable: string[];
+	/** Flagged calls since the cursor, shown or not. */
+	notableTotal: number;
+	/** Flagged calls left out of `notable`: the oldest of them. */
+	notableOmitted: number;
+}
+
+function gateView(run: Run, since: number): GateView {
+	const g = run.gate;
+	// A call still waiting for you is in pendingApprovals; it is listed here once answered.
+	const inRange = g.notable.filter(
+		(n) => n.seq > since && !(n.actionId && run.approvals.has(n.actionId)),
+	);
+	const shown = inRange.slice(-MAX_NOTABLE_SHOWN);
+	// Entries forgotten to bound memory were older than all that is held.
+	const forgotten =
+		g.notableDropped > 0 && (g.notable[0]?.seq ?? Infinity) > since
+			? g.notableDropped
+			: 0;
+	return {
+		autoAllowed: g.autoAllowed,
+		autoDenied: g.autoDenied,
+		escalated: g.escalated,
+		notable: shown.map((n) => n.text),
+		notableTotal: inRange.length + forgotten,
+		notableOmitted: inRange.length - shown.length + forgotten,
+	};
 }
 
 export interface ViewOptions {
@@ -526,7 +588,7 @@ export function runView(run: Run, opts: ViewOptions): RunView {
 		},
 		error: run.error,
 		usage: run.usage,
-		gate: run.gate,
+		gate: gateView(run, since),
 		next: "",
 	};
 	view.next = nextHint(run, view);
@@ -534,6 +596,15 @@ export function runView(run: Run, opts: ViewOptions): RunView {
 }
 
 function nextHint(run: Run, view: RunView): string {
+	const left = view.gate.notableOmitted;
+	const cut =
+		left > 0
+			? ` ${left} older flagged call(s) are not listed in gate.untrustedNotable: call get_gate_log to see them.`
+			: "";
+	return nextStep(run, view) + cut;
+}
+
+function nextStep(run: Run, view: RunView): string {
 	if (view.output.more) {
 		return `More output: call get_run with runId ${run.id} and offset ${view.output.nextOffset}.`;
 	}

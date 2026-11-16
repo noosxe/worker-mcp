@@ -125,6 +125,8 @@ export function runData(view: RunView): RunData {
 			autoDenied: view.gate.autoDenied,
 			escalated: view.gate.escalated,
 			untrustedNotable: view.gate.notable,
+			notableTotal: view.gate.notableTotal,
+			notableOmitted: view.gate.notableOmitted,
 		},
 		next: view.next,
 	};

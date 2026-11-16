@@ -309,3 +309,79 @@ describe("RepeatCheck", () => {
 		assert.strictEqual(check.feed("same\n"), false);
 	});
 });
+
+const flag = (run: Run, n: number, kind: "denied" | "escalated" = "denied") =>
+	run.noteGate(kind, `call ${n}`);
+
+describe("gate view: flagged calls as a delta", () => {
+	test("calls the gate allowed are counted, not listed", () => {
+		const { store } = storeWith();
+		const run = store.create("w", "p");
+		run.noteGate("allowed", "ls");
+		const g = runView(run, { maxChars: 10 }).gate;
+		assert.strictEqual(g.autoAllowed, 1);
+		assert.deepStrictEqual(g.notable, []);
+		assert.strictEqual(g.notableTotal, 0);
+	});
+
+	test("with a cursor only the calls since it are listed, plus the total", () => {
+		const { store } = storeWith();
+		const run = store.create("w", "p");
+		flag(run, 1);
+		flag(run, 2);
+		const cursor = run.seq;
+		flag(run, 3);
+		const g = runView(run, { sinceSeq: cursor, maxChars: 10 }).gate;
+		assert.deepStrictEqual(g.notable, ["call 3"]);
+		assert.strictEqual(g.notableTotal, 1);
+		assert.strictEqual(g.notableOmitted, 0);
+		// No cursor: everything so far.
+		assert.strictEqual(runView(run, { maxChars: 10 }).gate.notableTotal, 3);
+	});
+
+	test("a call decided right after a cursor was handed out is not missed", () => {
+		const { store } = storeWith();
+		const run = store.create("w", "p");
+		const cursor = run.seq;
+		flag(run, 1);
+		const g = runView(run, { sinceSeq: cursor, maxChars: 10 }).gate;
+		assert.deepStrictEqual(g.notable, ["call 1"]);
+	});
+
+	test("without a cursor the list is capped and says how many were left out", () => {
+		const { store } = storeWith();
+		const run = store.create("w", "p");
+		for (let i = 1; i <= 25; i++) flag(run, i, i % 2 ? "denied" : "escalated");
+		const view = runView(run, { maxChars: 10 });
+		assert.strictEqual(view.gate.notable.length, 10);
+		assert.strictEqual(view.gate.notable.at(-1), "call 25");
+		assert.strictEqual(view.gate.notableTotal, 25);
+		assert.strictEqual(view.gate.notableOmitted, 15);
+		assert.match(view.next, /15 older flagged call\(s\).*get_gate_log/);
+	});
+
+	test("a denied or escalated call is never dropped without being counted", () => {
+		const { store } = storeWith();
+		const run = store.create("w", "p");
+		// More than the run keeps: the forgotten ones are still counted.
+		for (let i = 1; i <= 250; i++) flag(run, i);
+		const g = runView(run, { maxChars: 10 }).gate;
+		assert.strictEqual(g.autoDenied, 250);
+		assert.strictEqual(g.notableTotal, 250);
+		assert.strictEqual(g.notable.length + g.notableOmitted, 250);
+	});
+
+	test("an escalated call still pending is left to pendingApprovals", () => {
+		const { store } = storeWith();
+		const run = store.create("w", "p");
+		run.noteGate("escalated", "rm f", "a1");
+		store.addApproval(run, approval("a1"), "m");
+		const open = runView(run, { maxChars: 10 });
+		assert.deepStrictEqual(open.gate.notable, []);
+		assert.strictEqual(open.pendingApprovals.length, 1);
+		store.removeApproval(run, "a1");
+		assert.deepStrictEqual(runView(run, { maxChars: 10 }).gate.notable, [
+			"rm f",
+		]);
+	});
+});
