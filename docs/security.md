@@ -23,8 +23,10 @@ action by risk and either auto-approves it under the session's policy or waits
 for the coordinator.
 
 - **Tool calls are mapped to canonical kinds** before they are rated. pi's
-  tools map as `bash` to shell, `read` to read, `ls` to list, `grep` and `find`
-  to search, `edit` to edit and `write` to write. Any other tool name is HIGH.
+  tools map as `bash` to shell, `read` to read, `edit` to edit and `write` to
+  write. pi starts with only these four active, so `list` and `search` come from
+  shell commands (`ls`, `grep`, `find`); the gate would still map pi's `ls`,
+  `grep` and `find` tools if they were ever active. Any other tool name is HIGH.
   Paths are resolved against the worker's working directory with every
   symlink followed (a dangling one too), and "inside the workspace" is decided
   by `path.relative`, not by a string prefix. A symlink inside the workspace
@@ -254,7 +256,8 @@ gate decides) before it runs any. Without more, a `read x` rated while `x` is
 a harmless file could run after a concurrent command turned `x` into a link to
 the credential file (or a directory link, or a `/proc/self/...` link): a
 check-then-use race. The gate extension therefore registers pi's own `read`,
-`bash`, `edit`, `write`, `grep`, `find` and `ls` implementations again with
+`bash`, `edit` and `write` implementations again (and `grep`, `find` and `ls`
+if they are active, which they are not by default) with
 `executionMode: "sequential"` (a batch with one such call runs one call at a
 time, each rated just before it runs; checked against pi's agent loop and with
 a local model endpoint, no LLM). If that cannot be done (pi renamed the

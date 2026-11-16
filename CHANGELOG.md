@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixes and small changes
+
+- **The run limit does not count approval waits.** `limits.maxRunMs` pauses
+  while a call awaits the coordinator (each wait is bounded by
+  `gate.approvalTimeoutMs`) and resumes afterwards. `elapsedMs` is still wall
+  clock.
+- **Docs no longer name pi tools a worker lacks.** A pi worker has `bash`,
+  `read`, `edit` and `write` active; `grep`, `find` and `ls` are not, so the
+  kinds `list` and `search` come from shell commands. The tool descriptions,
+  skill and security notes say so.
+- **`usage.reportCost`** (config file; Nix option `reportCost`), default
+  `true`. When `false`, `usage.costUsd` is left out of run views, `get_run`
+  and saved run records, for plans where pi's dollar figure means nothing.
+- **When `decidedBy: "cancel"` appears.** It is the deny recorded for a call
+  that was waiting for approval when the run was cancelled or ended. A call
+  already approved and running gets no further entry; the docs now say so.
+
 ### Resuming a worker
 
 `spawn_worker` gains `resumeFrom`: continue a worker's saved conversation as a

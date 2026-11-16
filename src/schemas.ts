@@ -75,7 +75,7 @@ export const RiskPolicy = z
 						})
 						.optional()
 						.describe(
-							"Every field given must match. `tool` is pi's tool name (bash, read, write, edit, grep, find, ls), `kind` the canonical kind (shell, read, list, search, write, edit), `command` a shell command, `path` an absolute or workspace-relative path.",
+							"Every field given must match. `tool` is pi's tool name (bash, read, write, edit: the tools a pi worker has), `kind` the canonical kind (shell, read, write, edit; list and search only come from shell commands such as ls or grep, so match those with `kind` shell and a `command` glob), `command` a shell command, `path` an absolute or workspace-relative path.",
 						),
 					action: z
 						.string()
@@ -199,7 +199,7 @@ export const schemas = {
 			.max(32)
 			.optional()
 			.describe(
-				"Only entries decided by this: rules, cache, coordinator, timeout, cancel or http:<name> for a classifier.",
+				"Only entries decided by this: rules, cache, coordinator, timeout, cancel (a call waiting for approval that the run's end or cancel_run dropped; a call already approved and running gets no entry) or http:<name> for a classifier.",
 			),
 	}),
 	terminateWorker: z.strictObject({ workerId: ref("The worker") }),

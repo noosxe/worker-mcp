@@ -121,6 +121,14 @@ export interface Config {
 		/** The JSONL file; `<stateDir>/audit.jsonl` unless set. */
 		file: string;
 	};
+	usage: {
+		/**
+		 * Show `usage.costUsd` (pi's dollar figure) in run views and run records.
+		 * Off for a subscription plan, where the figure means nothing. Tokens
+		 * are always shown.
+		 */
+		reportCost: boolean;
+	};
 	resume: {
 		/**
 		 * A saved conversation whose context is estimated above this many tokens
@@ -362,6 +370,11 @@ export const configFileSchema = z.strictObject({
 	persistSessions: z.boolean().optional(),
 	/** No longer used: accepted so existing config files keep loading. */
 	legacyTools: z.boolean().optional(),
+	usage: z
+		.strictObject({
+			reportCost: z.boolean().optional(),
+		})
+		.optional(),
 	resume: z
 		.strictObject({
 			maxContextTokens: positiveInt.max(MAX_CONTEXT_TOKENS).optional(),
@@ -1229,6 +1242,7 @@ function mergeLayers(base: FileLayer, over: FileLayer): FileLayer {
 		legacyTools: over.legacyTools ?? base.legacyTools,
 		limits: { ...base.limits, ...over.limits },
 		resume: { ...base.resume, ...over.resume },
+		usage: { ...base.usage, ...over.usage },
 		env: { allow },
 		audit: {
 			enabled: over.audit?.enabled ?? base.audit?.enabled,
@@ -1514,6 +1528,7 @@ function applyDefaults(
 			maxContextTokens:
 				layer.resume?.maxContextTokens ?? DEFAULT_MAX_CONTEXT_TOKENS,
 		},
+		usage: { reportCost: layer.usage?.reportCost ?? true },
 		env: {
 			allow: [...new Set(layer.env?.allow ?? [])],
 			forceDropExempt: exempt,

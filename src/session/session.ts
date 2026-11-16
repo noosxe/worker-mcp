@@ -173,6 +173,10 @@ interface ActiveRun {
 	cause: { state: TerminalState; error?: string } | null;
 	aborting: boolean;
 	maxTimer: ReturnType<typeof setTimeout> | null;
+	/** Run time left for `maxTimer` while it is paused for an approval. */
+	maxRemainingMs: number;
+	/** When `maxTimer` was last (re)started, to work out the time left. */
+	maxStartedAt: number;
 	graceTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -610,7 +614,14 @@ export class Session {
 		state: TerminalState,
 		fields: { error?: string; usage?: Usage } = {},
 	): boolean {
-		if (!this.runs.settle(active.run, state, fields)) return false;
+		let usage = fields.usage;
+		if (usage && !this.config.usage.reportCost) {
+			const { costUsd: _cost, ...tokens } = usage;
+			usage = tokens;
+		}
+		if (!this.runs.settle(active.run, state, { ...fields, usage })) {
+			return false;
+		}
 		if (active.maxTimer) clearTimeout(active.maxTimer);
 		if (active.graceTimer) clearTimeout(active.graceTimer);
 		if (this.currentRun === active) this.currentRun = null;
@@ -624,6 +635,41 @@ export class Session {
 		if (this.alive && !this.terminating) this.status = "IDLE";
 		this.lastActiveAt = this.now();
 		return true;
+	}
+
+	/** Start (or restart) the run limit timer with the time left. */
+	private armRunTimer(active: ActiveRun): void {
+		const maxRunMs = this.config.limits.maxRunMs;
+		active.maxStartedAt = Date.now();
+		active.maxTimer = setTimeout(
+			() =>
+				this.abortWith(active, {
+					state: "timed_out",
+					error: `the run exceeded the ${maxRunMs} ms limit and was aborted`,
+				}),
+			active.maxRemainingMs,
+		);
+		active.maxTimer.unref?.();
+	}
+
+	/**
+	 * The run limit does not count time spent waiting for the coordinator
+	 * (each wait is bounded by the approval timeout): stop the timer while
+	 * a call awaits approval.
+	 */
+	private pauseRunTimer(active: ActiveRun): void {
+		if (!active.maxTimer) return;
+		clearTimeout(active.maxTimer);
+		active.maxTimer = null;
+		active.maxRemainingMs = Math.max(
+			1,
+			active.maxRemainingMs - (Date.now() - active.maxStartedAt),
+		);
+	}
+
+	private resumeRunTimer(active: ActiveRun): void {
+		if (active.maxTimer || active.run.terminal || active.aborting) return;
+		this.armRunTimer(active);
 	}
 
 	/**
@@ -822,6 +868,7 @@ export class Session {
 			);
 			entry.timer.unref?.();
 			this.pending.set(id, entry);
+			if (this.currentRun?.run === run) this.pauseRunTimer(this.currentRun);
 			signal.addEventListener(
 				"abort",
 				() => this.cancelPending(id, "the run was aborted"),
@@ -897,6 +944,9 @@ export class Session {
 	}
 
 	private afterPendingChanged(): void {
+		if (this.pending.size === 0 && this.currentRun) {
+			this.resumeRunTimer(this.currentRun);
+		}
 		if (this.pending.size === 0 && this.status === "AWAITING_APPROVAL") {
 			this.status = this.currentRun ? "RUNNING" : "IDLE";
 		}
@@ -1024,6 +1074,8 @@ export class Session {
 			cause: null,
 			aborting: false,
 			maxTimer: null,
+			maxRemainingMs: 0,
+			maxStartedAt: 0,
 			graceTimer: null,
 		};
 		this.currentRun = active;
@@ -1032,16 +1084,8 @@ export class Session {
 			type: "message_end",
 			message: { role: "user", content: [{ type: "text", text: prompt }] },
 		});
-		const maxRunMs = this.config.limits.maxRunMs;
-		active.maxTimer = setTimeout(
-			() =>
-				this.abortWith(active, {
-					state: "timed_out",
-					error: `the run exceeded the ${maxRunMs} ms limit and was aborted`,
-				}),
-			maxRunMs,
-		);
-		active.maxTimer.unref?.();
+		active.maxRemainingMs = this.config.limits.maxRunMs;
+		this.armRunTimer(active);
 
 		const note = this.pendingNote;
 		if (note !== undefined && this.resumed) {

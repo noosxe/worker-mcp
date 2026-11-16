@@ -102,6 +102,7 @@ let
               sessionRetentionMs = 43200000;
               maxSessionBytes = 67108864;
               maxResumeContextTokens = 80000;
+              reportCost = false;
               sandbox = {
                 default = "workspace";
                 toolIsolation = "require";
@@ -213,6 +214,7 @@ pkgs.runCommand "worker-mcp-module-eval"
           and .limits.sessionRetentionMs == 43200000
           and .limits.maxSessionBytes == 67108864
           and .resume.maxContextTokens == 80000
+          and .usage.reportCost == false
           and .logLevel == "debug"
           and .providers.pi.path == "/opt/pi/bin/pi"
           and .providers.pi.defaultModel == "zai/test-model"
