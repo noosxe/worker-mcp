@@ -371,7 +371,7 @@ It does not change what is protected:
 
 - Saved conversations (`<stateDir>/workers`, on by default,
   `persistSessions: false` or `spawn_worker`'s `persistSession: false` turn them
-  off, and nothing can resume them yet). pi's session file holds the whole
+  off). pi's session file holds the whole
   conversation: prompts, the contents of every file the worker read and the
   output of every command, at worker-output trust, so it can hold secrets and
   injected text. Each worker has a 0700 directory with a 0600 `worker.json`
@@ -391,6 +391,22 @@ It does not change what is protected:
   live server never is, and the retention sweep (`limits.sessionRetentionMs`, 3 days, and `limits.maxSessionBytes`, 256 MiB, oldest first)
   never deletes it. `terminate_worker` deletes the worker's conversation; an
   idle close or a crash keeps it.
+
+- Resuming (`spawn_worker` with `resumeFrom`). Nothing security-relevant is
+  restored from the old worker: the policy is lowered to the current ceiling,
+  the sandbox, tool isolation, allowed roots, protected paths, limits and
+  classifiers are the current ones, no approval or remembered decision is
+  kept, and the call that was waiting is not replayed. A session file is the
+  worker's own context, so a forged entry is an injection into the worker that
+  wrote it and every call still goes through the gate. What matters outside
+  the conversation is checked: the workspace must equal the directory in the
+  record and in the session header, the file must start with the bytes it had
+  when the last run completed (pi only appends, so a rewrite, a migration or a
+  truncation is refused), a damaged line in the middle is refused (pi would
+  drop history without an error), and the model is set again by the server.
+  Strings read from the file (tool names, arguments) are untrusted; the note
+  put in front of the first prompt uses only tool names that look like
+  identifiers.
 
 ## What it does not protect
 

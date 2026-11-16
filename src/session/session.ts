@@ -31,6 +31,7 @@ import type {
 } from "../providers/types.js";
 import { wrapUntrusted } from "../render.js";
 import { BoundedLog } from "./bounded-log.js";
+import type { ResumedInfo } from "./resume.js";
 import type { RuntimeDir } from "./runtime-dir.js";
 
 export type SessionStatus =
@@ -128,7 +129,9 @@ export interface SessionDeps {
 	/** Run shell commands in the second sandbox (only with `workspace`). */
 	toolIsolation?: boolean;
 	/** Keep the conversation here (see `WorkerSpec.session`). */
-	session?: { dir: string; id: string };
+	session?: { dir: string; id: string; mode?: "new" | "resume" };
+	/** Set when the worker continues an earlier conversation. */
+	resumed?: ResumedInfo;
 }
 
 /** A failure with a stable code, so the MCP tools can name it. */
@@ -210,7 +213,13 @@ export class Session {
 	/** How the worker is confined; fixed at spawn. */
 	public readonly sandbox: "none" | "workspace";
 	private readonly toolIsolation: boolean;
-	private readonly sessionSpec: { dir: string; id: string } | undefined;
+	private readonly sessionSpec:
+		| { dir: string; id: string; mode?: "new" | "resume" }
+		| undefined;
+	/** What was found when the worker was resumed, or null for a new one. */
+	public readonly resumed: ResumedInfo | null;
+	/** The server's note for the first prompt of a resumed worker, until it is sent. */
+	private pendingNote: string | undefined;
 	/** What the server changed or warned about when it chose the sandbox. */
 	public readonly sandboxReport: { clamped: string[]; notes: string[] };
 
@@ -261,6 +270,8 @@ export class Session {
 		this.sandbox = deps.sandbox ?? "none";
 		this.toolIsolation = deps.toolIsolation ?? false;
 		this.sessionSpec = deps.session;
+		this.resumed = deps.resumed ?? null;
+		this.pendingNote = deps.resumed?.note;
 		this.sandboxReport = deps.sandboxReport ?? { clamped: [], notes: [] };
 		this.lastActiveAt = this.now();
 		this.name = deps.name;
@@ -946,6 +957,11 @@ export class Session {
 		};
 	}
 
+	/** The kept conversation this worker belongs to, when it is kept. */
+	public get lineage(): string | undefined {
+		return this.sessionSpec?.id;
+	}
+
 	/** The id of the provider this worker runs on. */
 	public get providerId(): string {
 		return this.provider?.id ?? "unknown";
@@ -990,6 +1006,7 @@ export class Session {
 			provider: this.providerId,
 			model: this.model,
 			cwd: this.cwd,
+			lineage: this.sessionSpec?.id,
 		});
 		const active: ActiveRun = {
 			run,
@@ -1018,13 +1035,15 @@ export class Session {
 		);
 		active.maxTimer.unref?.();
 
+		const note = this.pendingNote;
 		const startMs = this.config.limits.runStartTimeoutMs;
 		let startTimer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			await Promise.race([
 				worker.handle.startRun({
 					runId: run.id,
-					prompt,
+					// A resumed worker's first prompt starts with the server's note.
+					prompt: note === undefined ? prompt : `${note}\n\n${prompt}`,
 					signal: active.abort.signal,
 				}),
 				new Promise<never>((_, reject) => {
@@ -1048,6 +1067,8 @@ export class Session {
 		} finally {
 			clearTimeout(startTimer);
 		}
+		// The worker has the note now (and its session holds it): not again.
+		this.pendingNote = undefined;
 		// An approval or a quick finish may already have moved the run on.
 		if (run.state === "starting") this.runs.setState(run, "running");
 		return run;

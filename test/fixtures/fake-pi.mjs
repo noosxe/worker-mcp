@@ -415,9 +415,16 @@ function streamFor(ms, text, { crashAfterFirst = false } = {}) {
 const reply = (text) => `fake-pi reply: ${text}`;
 
 function parseScenario(message) {
-	const prefixed = message.startsWith("scenario:");
+	// A resumed worker's first prompt has the server's note in front of the
+	// task, separated by a blank line: the scenario is then after that.
+	const at = message.startsWith("scenario:")
+		? 0
+		: message.startsWith("[worker-mcp] ")
+			? message.indexOf("\n\nscenario:") + 2
+			: -1;
+	const prefixed = at >= 2 || message.startsWith("scenario:");
 	const spec = prefixed
-		? message.slice("scenario:".length)
+		? message.slice(Math.max(at, 0) + "scenario:".length)
 		: (process.env.FAKE_PI_SCENARIO ?? "echo");
 	return { spec, text: message, prefixed };
 }

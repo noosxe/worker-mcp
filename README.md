@@ -657,9 +657,10 @@ restart; see the next section for what is kept of their conversation.
 ### Saved conversations
 
 By default pi keeps each worker's conversation in a session file under the
-state directory, so that a later release can continue a worker after its server
-is gone. **Nothing can resume a worker yet**: today the files are only kept, and
-removed again as described below.
+state directory, so that a worker can be continued after its server is gone:
+`spawn_worker` with `resumeFrom` (see "Resuming a worker" in
+[docs/mcp-api.md](docs/mcp-api.md)) starts a new worker on the saved
+conversation. The files are removed again as described below.
 
 - **What a session holds**: the whole conversation, including the prompts, the
   files the worker read, the output of its commands, and the system prompt. It

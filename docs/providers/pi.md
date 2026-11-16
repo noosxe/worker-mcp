@@ -14,7 +14,8 @@ Behaviour checked against pi 1.4.0.
 ## Capabilities
 
 Per-tool-call approvals, `mutate`, a persistent process, in-band abort, parallel
-tool calls, usage, `provider/id` models. No resume.
+tool calls, usage, `provider/id` models, and resume from a saved session
+(`--session-dir` and `--session-id`; see the resume section of the MCP API).
 
 ## Starting a worker
 

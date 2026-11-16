@@ -98,6 +98,13 @@ export const PersistedOut = z.object({
 			"How each approval of the run ended: approved, rejected, expired, cancelled or abandoned. No arguments. Untrusted.",
 		),
 });
+/** Whether the worker of a saved run can be continued with `spawn_worker({ resumeFrom })`. */
+export const ResumeOut = z.object({
+	from: z.string().describe("Pass as resumeFrom (a run id works too)."),
+	available: z.boolean(),
+	reason: z.string().optional().describe("Why not, when it is not available."),
+});
+
 export const RunOut = z.object({
 	runId: z.string(),
 	workerId: z.string(),
@@ -147,9 +154,14 @@ export const RunOut = z.object({
 			),
 	}),
 	persisted: PersistedOut.optional(),
+	resume: ResumeOut.optional().describe(
+		"On a saved run record: whether its worker's conversation can be resumed.",
+	),
 	next: z.string().describe("What to call next."),
 });
 export type PersistedData = z.infer<typeof PersistedOut>;
+export type ResumeData = z.infer<typeof ResumeOut>;
+export type ResumedData = z.infer<typeof ResumedOut>;
 export type RunData = z.infer<typeof RunOut>;
 
 export const RunResultOut = RunOut.extend({
@@ -199,6 +211,12 @@ export const WorkerOut = z.object({
 	recentRuns: z
 		.array(z.object({ runId: z.string(), state: z.enum(RUN_STATES) }))
 		.describe("The latest runs, newest last."),
+	resumedFrom: z
+		.string()
+		.optional()
+		.describe(
+			"The worker id this worker continues (spawn_worker with resumeFrom).",
+		),
 });
 export type WorkerData = z.infer<typeof WorkerOut>;
 
@@ -250,10 +268,64 @@ export const ListProvidersOut = z.object({
 	),
 });
 
+export const ResumedOut = z
+	.object({
+		from: z.string().describe("The worker id that was resumed."),
+		lineage: z
+			.string()
+			.describe("The conversation's id: the first worker id of the chain."),
+		sessionBytes: z.number().describe("Size of the saved conversation."),
+		messageCount: z.number(),
+		providerVersion: z.object({
+			recorded: z.string().optional(),
+			now: z.string().optional(),
+			changed: z.boolean(),
+		}),
+		clamped: z
+			.array(z.string())
+			.describe(
+				"What the current server settings lowered or raised (policy ceiling, sandbox minimum). Nothing from the old worker's policy is kept as it was.",
+			),
+		interrupted: z.object({
+			runId: z.string().optional(),
+			state: z.string().optional(),
+			calls: z.array(
+				z.object({
+					tool: z.string(),
+					status: z
+						.enum(["approved_started", "awaiting_approval", "unknown"])
+						.describe(
+							"approved_started: allowed and started, outcome unknown. awaiting_approval: was never approved, so it did not run. unknown: the server has no record.",
+						),
+					approvalId: z
+						.string()
+						.optional()
+						.describe("The old, dead approval id."),
+					riskLabel: z.string().optional(),
+					untrustedPreview: z
+						.string()
+						.describe(
+							"The call's arguments from the saved conversation. Untrusted.",
+						),
+				}),
+			),
+		}),
+		notes: z.array(z.string()),
+		firstPromptNote: z
+			.string()
+			.describe(
+				"The note the server puts in front of the first prompt, so the worker knows what was cut off.",
+			),
+	})
+	.describe(
+		"Present when the worker continues an earlier conversation. It waits for start_run like any new worker; nothing is replayed and no approval carries over.",
+	);
+
 export const SpawnOut = z.object({
 	worker: WorkerOut,
 	clamped: z.array(z.string()).describe("What the server's ceiling lowered."),
 	notes: z.array(z.string()),
+	resumed: ResumedOut.optional(),
 });
 
 export const PendingOut = z.object({ approvals: z.array(ApprovalOut) });

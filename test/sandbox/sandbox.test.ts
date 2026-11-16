@@ -67,6 +67,42 @@ async function exec(server: RawServer, workerId: string, command: string) {
 	return { code: Number(m[1]), out: m[2] };
 }
 
+/** Resume; a killed server's pi may need a moment to exit. */
+async function resume(server: RawServer, from: string) {
+	let result: any;
+	await waitUntil(
+		async () => {
+			const res = await server.callTool("spawn_worker", { resumeFrom: from });
+			if (!res.result.isError) {
+				result = res.result.structuredContent;
+				return true;
+			}
+			assert.match(textOf(res.result), /WORKER_BUSY/);
+			return false;
+		},
+		10_000,
+		"the old process to exit",
+	);
+	return result as {
+		worker: { workerId: string; sandbox: string };
+		clamped: string[];
+		resumed: { lineage: string; interrupted: { calls: unknown[] } };
+	};
+}
+
+/** One prompt that must complete; the worker's text. */
+async function say(server: RawServer, id: string, prompt: string) {
+	const res = await server.callTool("start_run", {
+		workerId: id,
+		prompt,
+		intent: "resume probe",
+		waitMs: 10_000,
+	});
+	const view = viewOf(res.result);
+	assert.strictEqual(view.state, "completed", view.error ?? "");
+	return view.output.text ?? "";
+}
+
 /** An existing directory the outer sandbox can replace with a tmpfs. */
 const MOUNT_BASE = ["/mnt", "/srv", "/media", "/opt"].find((d) =>
 	fs.existsSync(d),
@@ -152,6 +188,14 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 
 	async function start(): Promise<RawServer> {
 		const server = new RawServer(iso);
+		servers.push(server);
+		await server.initialize();
+		return server;
+	}
+
+	/** A server of its own, with extra settings. */
+	async function startWith(extra: Record<string, string>): Promise<RawServer> {
+		const server = new RawServer({ ...iso, env: { ...iso.env, ...extra } });
 		servers.push(server);
 		await server.initialize();
 		return server;
@@ -921,6 +965,100 @@ describe(`workspace sandbox (${RUNTIME})`, { skip }, () => {
 				assert.ok(!(done.output.text ?? "").includes("STATE-CANARY"), target);
 			}
 			await server.callTool("terminate_worker", { workerId: id });
+		});
+	});
+
+	describe("resuming a worker's saved conversation", () => {
+		let stateDir: string;
+		before(() => {
+			stateDir = path.join(outside, "resume-state");
+			fs.mkdirSync(stateDir, { mode: 0o700 });
+			iso.env.WORKER_MCP_STATE_DIR = stateDir;
+		});
+		after(() => {
+			delete iso.env.WORKER_MCP_STATE_DIR;
+		});
+
+		test("the resumed worker is sandboxed, pi writes its session in it, and its shell commands cannot see the session", async () => {
+			const a = await start();
+			const { worker } = await spawnWorker(a, iso.cwd);
+			assert.strictEqual(worker.sandbox, "workspace");
+			await say(a, worker.workerId, "remember CODEWORD-SANDBOX");
+			a.child.kill("SIGKILL");
+			await a.exited;
+
+			const b = await start();
+			const r = await resume(b, worker.workerId);
+			assert.strictEqual(r.worker.sandbox, "workspace");
+			assert.strictEqual(r.resumed.lineage, worker.workerId);
+			// the context came back through the sandbox
+			assert.match(
+				await say(b, r.worker.workerId, "scenario:recall"),
+				/CODEWORD-SANDBOX/,
+			);
+			const sessionDir = path.join(
+				stateDir,
+				"workers",
+				worker.workerId,
+				"session",
+			);
+			const file = path.join(sessionDir, fs.readdirSync(sessionDir)[0]);
+			assert.match(
+				fs.readFileSync(file, "utf8"),
+				/resumed from its saved conversation/,
+			);
+			assert.strictEqual(fs.lstatSync(file).mode & 0o777, 0o600);
+			// still confined: a write outside the workspace fails, the state is hidden
+			const stray = await exec(
+				b,
+				r.worker.workerId,
+				`echo x > ${outside}/stray`,
+			);
+			assert.notStrictEqual(stray.code, 0);
+			assert.ok(!fs.existsSync(path.join(outside, "stray")));
+			const state = await exec(
+				b,
+				r.worker.workerId,
+				`ls -A ${stateDir}/workers/${worker.workerId}`,
+			);
+			assert.strictEqual(state.out.trim(), "session");
+		});
+
+		test("a raised sandbox minimum puts a worker that had none into the sandbox", async () => {
+			const a = await start();
+			const { worker } = await spawnWorker(a, iso.cwd, { sandbox: "none" });
+			assert.strictEqual(worker.sandbox, "none");
+			await say(a, worker.workerId, "remember CODEWORD-RAISED");
+			// outside the sandbox the stray write works
+			const open = await exec(
+				a,
+				worker.workerId,
+				`echo x > ${outside}/open && echo ok`,
+			);
+			assert.match(open.out, /ok/);
+			a.child.kill("SIGKILL");
+			await a.exited;
+
+			const b = await startWith({ WORKER_MCP_SANDBOX_MINIMUM: "workspace" });
+			const r = await resume(b, worker.workerId);
+			assert.strictEqual(r.worker.sandbox, "workspace");
+			assert.match(
+				await say(b, r.worker.workerId, "scenario:recall"),
+				/CODEWORD-RAISED/,
+			);
+			const stray = await exec(
+				b,
+				r.worker.workerId,
+				`echo x > ${outside}/raised`,
+			);
+			assert.notStrictEqual(stray.code, 0);
+			assert.ok(!fs.existsSync(path.join(outside, "raised")));
+			// the conversation is live in b now, so it cannot be taken again
+			const again = await b.callTool("spawn_worker", {
+				resumeFrom: worker.workerId,
+				sandbox: "none",
+			});
+			assert.match(textOf(again.result), /WORKER_BUSY/);
 		});
 	});
 });

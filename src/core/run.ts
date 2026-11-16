@@ -87,6 +87,8 @@ export interface RunMeta {
 	provider?: string;
 	model?: string;
 	cwd?: string;
+	/** The kept conversation the worker belongs to (see `WorkerStore`). */
+	lineage?: string;
 }
 
 /** Where run records go; a failure inside it must never reach the run. */

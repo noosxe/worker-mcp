@@ -15,6 +15,8 @@ import { RiskLevel } from "./gate/risk.js";
 import type {
 	PersistedData,
 	PolicyData,
+	ResumedData,
+	ResumeData,
 	RunData,
 	WorkerData,
 } from "./outputs.js";
@@ -190,8 +192,15 @@ export interface ToolContext {
 	 * A run of this server, or else the run rebuilt from its saved record
 	 * (marked in `persisted`). For reading only: a rebuilt run is never live.
 	 */
-	findRunOrRecord(runId: string): { run: Run; persisted?: PersistedData };
+	findRunOrRecord(runId: string): {
+		run: Run;
+		persisted?: PersistedData;
+		/** For a saved record: whether its worker can be resumed. */
+		resume?: ResumeData;
+	};
 	workerData(session: Session): WorkerData;
+	/** The `resumed` block of a resumed worker's spawn result. */
+	resumedData(session: Session): ResumedData | undefined;
 }
 
 /** One line about a run, for the text block. */
@@ -294,6 +303,7 @@ export function createContext(
 				: "This run is no longer held in memory; this is its saved record.";
 			return {
 				run,
+				resume: manager.resumeAvailability(record),
 				persisted: {
 					fromEarlierServer,
 					bootId: record.bootId,
@@ -333,6 +343,35 @@ export function createContext(
 				recentRuns: runs
 					.slice(-5)
 					.map((r) => ({ runId: r.id, state: r.state })),
+				resumedFrom: session.resumed?.from,
+			};
+		},
+		resumedData(session) {
+			const info = session.resumed;
+			if (!info) return undefined;
+			return {
+				from: info.from,
+				lineage: info.lineage,
+				sessionBytes: info.sessionBytes,
+				messageCount: info.messageCount,
+				providerVersion: info.providerVersion,
+				clamped: [
+					...(session.policyReport?.clamped ?? []),
+					...session.sandboxReport.clamped,
+				],
+				interrupted: {
+					runId: info.lastRun?.runId,
+					state: info.lastRun?.state,
+					calls: info.interrupted.map((c) => ({
+						tool: c.tool,
+						status: c.status,
+						approvalId: c.approvalId,
+						riskLabel: c.riskLabel,
+						untrustedPreview: c.untrustedPreview,
+					})),
+				},
+				notes: [...info.notes, ...session.sandboxReport.notes],
+				firstPromptNote: info.note,
 			};
 		},
 	};

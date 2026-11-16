@@ -2,11 +2,53 @@
 
 ## Unreleased
 
+### Resuming a worker
+
+`spawn_worker` gains `resumeFrom`: continue a worker's saved conversation as a
+new worker, after a restart or after an idle close or crash. It is the one new
+path; there is no new tool, no automatic resume, and `start_run` on an old id
+still fails (now with a hint).
+
+- **How.** `resumeFrom` is a worker id or a run id from any earlier server
+  process (or a closed worker of this one). The result is a new worker (new id,
+  `worker.resumedFrom`) on the same conversation, which keeps its first worker
+  id as `resumed.lineage` across any number of resumes. `cwd` is optional and,
+  when given, must be the directory the conversation was started in. Nothing
+  runs until `start_run`.
+- **What comes from the current server.** The policy is lowered to today's
+  ceiling (`resumed.clamped` says what was lowered), the sandbox minimum and
+  tool isolation are today's (a worker that had the `workspace` sandbox gets it
+  again or the resume fails, unless `sandbox: "none"` is passed and allowed),
+  allowed roots, protected paths, limits and classifiers are today's. No old or
+  remembered approval carries over and the cut-off call is not replayed.
+- **What is checked.** A live owner is refused (`WORKER_BUSY`) and a stale one
+  taken over; a missing or moved workspace, or one that differs from the
+  session's directory, is refused; so are a missing session, an unreadable
+  header, another session format, a damaged line in the middle, and a file
+  whose start no longer matches what it was when the worker's last run
+  completed. A torn last line is accepted with a note; a different pi version is
+  a warning. `persistSessions` off, `persistSession: false` and terminated
+  workers cannot be resumed.
+- **The cut-off tool call.** The first prompt after a resume starts with a note
+  from the server saying which tool calls were left without a result and
+  whether they ran (approved and started: unknown, may have run; never
+  approved: did not run). Without it a model cut off inside a call said the
+  call had succeeded. `resumed.interrupted` tells the orchestrator the same,
+  with the call's arguments from the saved conversation under an `untrusted…`
+  key. A `resume` entry (metadata only) is appended to the audit log.
+- **Reading.** `get_run` and `wait_run` on a saved record have `resume: { from,
+  available, reason? }`, and the error for an old worker id says it can be
+  resumed when its conversation was kept. Run records carry the conversation's
+  `lineage`; `worker.json` gains `lastRunId`, `runIds` and a `checkpoint`
+  (size and SHA-256 of the session file when a run last completed).
+- Not yet: the repeat guard for the cut-off call, a limit on the context size,
+  and `list_workers` for resumable workers.
+
 ### Saved conversations
 
-pi now keeps each worker's conversation in a session file, on by default. This
-is the first step towards continuing a worker after its server is gone; **nothing
-can resume a worker yet**, so for now the files are only kept and cleaned up.
+pi now keeps each worker's conversation in a session file, on by default, so a
+worker can be continued after its server is gone (see **Resuming a worker**
+below).
 
 - **What is kept.** pi runs with `--session-dir` and `--session-id` instead of
   `--no-session` (everything else, the gate and `--no-extensions` included, is

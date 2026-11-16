@@ -36,6 +36,8 @@ export interface DanglingToolCall {
 	untrustedPreview: string;
 	/** The assistant entry that holds the call. */
 	entryId: string;
+	/** Byte offset in the file where that entry's line starts. */
+	offset: number;
 }
 
 export type SessionDamage =
@@ -132,6 +134,15 @@ export function inspectSessionText(text: string): SessionInspection {
 
 function analyse(text: string, out: SessionInspection): SessionInspection {
 	const lines = text.split("\n");
+	// Where each line starts, in bytes (the text is utf8 with "\n" between lines).
+	const starts: number[] = [];
+	{
+		let at = 0;
+		for (const l of lines) {
+			starts.push(at);
+			at += Buffer.byteLength(l) + 1;
+		}
+	}
 	if (lines.length > SESSION_MAX_LINES) {
 		out.damage.push({ kind: "too_many_lines", limit: SESSION_MAX_LINES });
 		lines.length = SESSION_MAX_LINES;
@@ -308,6 +319,7 @@ function analyse(text: string, out: SessionInspection): SessionInspection {
 				inputDigest: digest(input),
 				untrustedPreview: preview,
 				entryId: e.id,
+				offset: starts[e.line - 1] ?? 0,
 			});
 		}
 	}

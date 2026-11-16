@@ -8,15 +8,28 @@ import { stderrLogger } from "../core/log.js";
 import { type LoadedRecord, RunRecordStore } from "../core/run-records.js";
 import { type RunStore } from "../core/run.js";
 import { SandboxService, type SandboxStatus } from "../core/sandbox.js";
-import { type NewWorker, WorkerStore } from "../core/worker-store.js";
+import {
+	type NewWorker,
+	OwnerBusyError,
+	type WorkerRecord,
+	WorkerStore,
+} from "../core/worker-store.js";
 import { ToolError } from "../errors.js";
 import { closeAbandonedApprovals } from "../gate/abandon.js";
 import { DEFAULT_AUDIT_KEEP } from "../gate/audit.js";
 import { isInside } from "../gate/paths.js";
+import { normalizePolicy } from "../gate/policy.js";
 import { GateServices } from "../gate/services.js";
 import { Boot, WORKER_ID_PATTERN, WORKER_NAME_PATTERN } from "../ids.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import type { ProviderCheck, WorkerProvider } from "../providers/types.js";
+import {
+	type AbandonedApproval,
+	type ResumedInfo,
+	classifyInterrupted,
+	readAuditFor,
+	resumeNote,
+} from "./resume.js";
 import { RuntimeDir } from "./runtime-dir.js";
 import { type PolicyReport, Session, runStoreFor } from "./session.js";
 
@@ -37,6 +50,12 @@ export interface ManagerOptions {
 	sessionRetentionMs?: number;
 	/** Replaces `limits.maxSessionBytes` (tests). */
 	maxSessionBytes?: number;
+}
+
+/** What `resumeSession` worked out and `createSession` acts on. */
+interface ResumePlan {
+	record: WorkerRecord;
+	info: ResumedInfo;
 }
 
 /** One line of an error message: no stack, no stderr dump. */
@@ -70,8 +89,8 @@ export class SessionManager {
 	private readonly records: RunRecordStore | null;
 	/** Worker records and sessions on disk; null when `persistSessions` is off. */
 	readonly workers: WorkerStore | null;
-	/** Workers of this server whose conversation is kept (by worker id). */
-	private readonly kept = new Set<string>();
+	/** Workers of this server whose conversation is kept: worker id to lineage. */
+	private readonly kept = new Map<string, string>();
 	private readonly providerVersions = new Map<
 		string,
 		Promise<string | undefined>
@@ -144,9 +163,17 @@ export class SessionManager {
 				if (records && this.ensureBootRegistered()) records.save(run);
 				// The agent has written to its session by now: make it private,
 				// and note the activity for retention.
-				if (this.kept.has(run.workerId)) {
-					this.workers?.tighten(run.workerId);
-					this.workers?.touch(run.workerId);
+				const lineage = this.kept.get(run.workerId);
+				if (lineage) {
+					this.workers?.tighten(lineage);
+					// A run that completed left the file quiet and in order: its end is
+					// what a resume checks against, and what came before it was dealt with.
+					// A run cut off in a tool call (a crash, a shutdown) is not a checkpoint:
+					// the call it left open is what the next resume reports.
+					this.workers?.touch(lineage, {
+						runId: run.id,
+						checkpoint: run.state === "completed",
+					});
 				}
 			},
 		});
@@ -298,6 +325,7 @@ export class SessionManager {
 		providerId?: string,
 		sandbox?: "none" | "workspace",
 		persistSession?: boolean,
+		resume?: ResumePlan,
 	): Promise<Session> {
 		if (name !== undefined && !WORKER_NAME_PATTERN.test(name)) {
 			throw new ToolError(
@@ -353,12 +381,15 @@ export class SessionManager {
 		// caller did not say no (it can turn it off, never on). The provider
 		// version is looked up first: nothing below this line awaits.
 		const wantsSession =
-			this.workers !== null &&
-			persistSession !== false &&
-			provider.sessionProfile?.needsDir === true;
-		const providerVersion = wantsSession
-			? await this.providerVersion(provider)
-			: undefined;
+			resume !== undefined ||
+			(this.workers !== null &&
+				persistSession !== false &&
+				provider.sessionProfile?.needsDir === true);
+		const providerVersion = resume
+			? resume.info.providerVersion.now
+			: wantsSession
+				? await this.providerVersion(provider)
+				: undefined;
 
 		// Everything from here to `sessions.set` is synchronous: nothing can
 		// register a worker, or take its name or slot, in between.
@@ -387,19 +418,29 @@ export class SessionManager {
 		}
 		let id = this.boot.workerId();
 		while (this.sessions.has(id)) id = this.boot.workerId();
-		const keep = wantsSession
-			? this.keepSession(id, {
+		const keep = resume
+			? this.adoptSession(id, resume.record, {
 					name,
-					provider: provider.id,
 					providerVersion,
 					model: model ?? this.defaultModel(provider.id),
-					cwd: realCwd,
 					sandbox: { requested: sandbox, applied: decided.mode },
 					toolIsolation,
 					policy: riskPolicy,
 					systemPromptChars: systemPrompt?.length,
 				})
-			: null;
+			: wantsSession
+				? this.keepSession(id, {
+						name,
+						provider: provider.id,
+						providerVersion,
+						model: model ?? this.defaultModel(provider.id),
+						cwd: realCwd,
+						sandbox: { requested: sandbox, applied: decided.mode },
+						toolIsolation,
+						policy: riskPolicy,
+						systemPromptChars: systemPrompt?.length,
+					})
+				: null;
 		const session = new Session(
 			id,
 			realCwd,
@@ -415,7 +456,14 @@ export class SessionManager {
 				sandbox: decided.mode,
 				sandboxReport: { clamped: decided.clamped, notes },
 				toolIsolation,
-				session: keep ? { dir: keep.sessionDir, id } : undefined,
+				session: keep
+					? {
+							dir: keep.sessionDir,
+							id: keep.lineage,
+							mode: resume ? "resume" : "new",
+						}
+					: undefined,
+				resumed: resume?.info,
 				runs: this.runs,
 				boot: this.boot,
 				gateServices: this.gate,
@@ -447,7 +495,9 @@ export class SessionManager {
 			this.sessions.delete(id);
 			// (its process may already have been reported gone, which released it)
 			this.kept.delete(id);
-			if (keep) this.workers?.remove(id);
+			// A new worker's session has nothing worth keeping; a resumed one's is
+			// the conversation being continued: it stays, and its claim is given up.
+			if (keep && !resume) this.workers?.remove(id);
 			const message = firstLine(e);
 			this.changed();
 			throw new ToolError(
@@ -459,9 +509,407 @@ export class SessionManager {
 		}
 
 		const pid = session.processIds()[0];
-		if (keep && pid !== undefined) this.workers?.setOwnerPid(id, pid);
+		if (keep && pid !== undefined) this.workers?.setOwnerPid(keep.lineage, pid);
 		this.changed();
 		return session;
+	}
+
+	/**
+	 * Continue an earlier conversation as a new worker. `resumeFrom` is a worker
+	 * id or a run id of this or an earlier server process. Everything that
+	 * decides what the worker may do comes from the current config; only the
+	 * conversation itself is taken from the old session. Nothing runs until the
+	 * caller sends a prompt, and that prompt starts with a note about what was
+	 * cut off. See `docs/mcp-api.md`.
+	 */
+	public async resumeSession(args: {
+		resumeFrom: string;
+		cwd?: string;
+		name?: string;
+		model?: string;
+		systemPrompt?: string;
+		riskPolicy?: unknown;
+		providerId?: string;
+		sandbox?: "none" | "workspace";
+		persistSession?: boolean;
+	}): Promise<Session> {
+		const store = this.workers;
+		if (args.persistSession === false) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				"persistSession: false cannot be combined with resumeFrom: a resumed worker continues a kept conversation, and keeps it.",
+			);
+		}
+		if (!store) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				"This server keeps no worker conversations (persistSessions is off), so nothing can be resumed. Spawn a new worker with a summary of the task instead.",
+			);
+		}
+		const ref = args.resumeFrom;
+		const found = this.findKept(ref);
+		const rec = found.record;
+		if (!rec) throw new ToolError(found.code, found.reason);
+		const workerId = found.workerId;
+
+		// A live worker of this conversation is continued with start_run.
+		for (const s of this.sessions.values()) {
+			if (s.lineage === rec.lineage) {
+				throw new ToolError(
+					"WORKER_BUSY",
+					`Worker ${s.sessionId} is live and holds this conversation: use start_run with it instead of resuming.`,
+				);
+			}
+		}
+
+		let provider: WorkerProvider;
+		if (args.providerId !== undefined && args.providerId !== rec.provider) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				`The conversation belongs to provider ${rec.provider}; resumeFrom cannot move it to ${args.providerId}.`,
+			);
+		}
+		if (!this.providers.ids().includes(rec.provider)) {
+			throw new ToolError(
+				"PROVIDER_UNAVAILABLE",
+				`The conversation belongs to provider ${rec.provider}, which this server does not run any more.`,
+			);
+		}
+		try {
+			provider = await this.providers.get(rec.provider);
+		} catch (e) {
+			throw new ToolError("PROVIDER_UNAVAILABLE", firstLine(e));
+		}
+		if (
+			!provider.inspectSession ||
+			provider.sessionProfile?.needsDir !== true
+		) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				`Provider ${provider.id} cannot continue a saved conversation.`,
+			);
+		}
+
+		// The workspace: it must exist, be allowed now, and be the very directory
+		// the conversation was started in (the agent looks the session up by it).
+		const realCwd = this.resolveCwd(args.cwd ?? rec.cwd);
+		if (realCwd !== rec.cwd) {
+			throw new ToolError(
+				"CWD_NOT_ALLOWED",
+				`The conversation was started in ${rec.cwd}, but the workspace given resolves to ${realCwd}. A saved conversation cannot be moved to another directory; resume it in its own directory, or spawn a new worker there with a summary.`,
+			);
+		}
+
+		if (!this.ensureBootRegistered()) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				"This server could not be recorded as running in its state directory, so it cannot take over a saved conversation.",
+			);
+		}
+		try {
+			store.claim(rec.lineage);
+		} catch (e) {
+			if (e instanceof OwnerBusyError) {
+				throw new ToolError(
+					"WORKER_BUSY",
+					`This conversation cannot be resumed now: ${e.message}. ${e.reason === "live" ? (e.message.includes("in this server") ? "Another resume of it is in progress here." : "Use it from that server, or wait until it is closed.") : "Try again in a few seconds."}`,
+				);
+			}
+			throw new ToolError(
+				"PROVIDER_UNAVAILABLE",
+				`The conversation could not be taken over: ${firstLine(e)}.`,
+			);
+		}
+		try {
+			const plan = await this.planResume(provider, rec, workerId, realCwd);
+			const policy =
+				args.riskPolicy !== undefined
+					? args.riskPolicy
+					: this.recordedPolicy(rec, plan.info.notes);
+			// Only a sandbox the caller names can differ from what the worker had; a
+			// resume never silently runs with less.
+			const sandbox = args.sandbox ?? (await this.resumeSandbox(rec));
+			const requestedName =
+				args.name ??
+				(rec.name !== undefined && !this.findByName(rec.name)
+					? rec.name
+					: undefined);
+			if (
+				args.name === undefined &&
+				rec.name !== undefined &&
+				requestedName === undefined
+			) {
+				plan.info.notes.push(
+					`The old name ${rec.name} is in use by a live worker, so this one has no name.`,
+				);
+			}
+			const session = await this.createSession(
+				requestedName,
+				realCwd,
+				args.model ?? rec.model,
+				args.systemPrompt,
+				policy,
+				rec.provider,
+				sandbox,
+				undefined,
+				plan,
+			);
+			this.writeResumeAudit(session, plan.info);
+			return session;
+		} catch (e) {
+			// Nothing started: the conversation is free for another try.
+			if (![...this.kept.values()].includes(rec.lineage))
+				store.release(rec.lineage);
+			throw e;
+		}
+	}
+
+	/**
+	 * The sandbox a resumed worker asks for when the caller names none. One that
+	 * had the workspace sandbox gets it again, and when it cannot be had the
+	 * resume fails: a plain spawn would fall back to none with a note, but a
+	 * resume must never run with less than the worker had unless asked to. One
+	 * that had none gets whatever the server's default and minimum say now.
+	 */
+	private async resumeSandbox(
+		rec: WorkerRecord,
+	): Promise<"workspace" | undefined> {
+		if (rec.sandbox.applied !== "workspace") return undefined;
+		const status = await this.sandbox.status();
+		if (!status.available) {
+			throw new ToolError(
+				"SANDBOX_UNAVAILABLE",
+				`The worker ran in the workspace sandbox, which is not available now (${status.reason ?? "unknown reason"}). Fix that, or pass sandbox: "none" to resume it without one (only if the server's sandbox.minimum allows).`,
+			);
+		}
+		return "workspace";
+	}
+
+	/** The policy the worker was spawned with, if it still passes today's checks. */
+	private recordedPolicy(rec: WorkerRecord, notes: string[]): unknown {
+		if (rec.policy === undefined) return undefined;
+		try {
+			normalizePolicy(rec.policy);
+			return rec.policy;
+		} catch {
+			notes.push(
+				"The policy the worker was spawned with is no longer valid, so it starts with the default policy.",
+			);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Look at the saved conversation without starting anything, and refuse when
+	 * it cannot be continued faithfully. The caller holds the claim.
+	 */
+	private async planResume(
+		provider: WorkerProvider,
+		rec: WorkerRecord,
+		workerId: string,
+		realCwd: string,
+	): Promise<ResumePlan> {
+		const store = this.workers as WorkerStore;
+		const notes: string[] = [];
+		// Only calls written after the last settled run can be cut off: a run
+		// that ended cleanly means everything before it was dealt with.
+		const found = await (
+			provider.inspectSession as NonNullable<WorkerProvider["inspectSession"]>
+		)(rec.session.dir, rec.session.id, {
+			sinceBytes: rec.checkpoint?.bytes,
+		});
+		if (!found.exists) {
+			throw new ToolError(
+				"WORKER_NOT_FOUND",
+				"Nothing to resume: the worker has no saved conversation (it never received a prompt, or the file was removed). Spawn a new worker.",
+			);
+		}
+		if (found.fatal.length > 0) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				`The saved conversation cannot be resumed: ${found.fatal[0]}. Resuming it would lose history without any error, so spawn a new worker with a summary instead.`,
+			);
+		}
+		if (found.cwd !== realCwd) {
+			throw new ToolError(
+				"CWD_NOT_ALLOWED",
+				"The saved conversation was started in another directory than this workspace (it was moved or changed), so it is not resumed. Spawn a new worker here instead.",
+			);
+		}
+		const checked = store.checkpointMatches(rec.lineage, rec);
+		if (checked && !checked.ok) {
+			throw new ToolError(
+				"INVALID_ARGUMENT",
+				`The saved conversation cannot be trusted: ${checked.reason}. Spawn a new worker with a summary instead.`,
+			);
+		}
+		notes.push(...found.warnings.map((w) => `Session: ${w}.`));
+
+		const now = await this.providerVersion(provider);
+		const recorded = rec.providerVersion;
+		const changed =
+			recorded !== undefined && now !== undefined && recorded !== now;
+		if (changed) {
+			notes.push(
+				`${provider.displayName} was ${recorded} when this conversation was saved and is ${now} now. The saved format is the same, but the agent's behaviour may differ.`,
+			);
+		}
+
+		// What the old worker left in flight: the session says which calls have
+		// no result; what the server recorded says what the gate decided.
+		const ids = new Set(rec.ids);
+		const audit = this.config.audit.enabled
+			? readAuditFor(this.config.audit.file, DEFAULT_AUDIT_KEEP, ids)
+			: null;
+		const lastRun = rec.lastRunId ? this.readRecord(rec.lastRunId) : null;
+		const abandoned: AbandonedApproval[] = (lastRun?.record.approvals ?? [])
+			.filter((a) => a.decision === "abandoned")
+			.map((a) => ({
+				approvalId: a.approvalId,
+				tool: a.tool,
+				riskLabel: a.riskLabel,
+			}));
+		const interrupted = classifyInterrupted(found.danglingCalls, {
+			audit,
+			abandoned,
+		});
+		const info: ResumedInfo = {
+			from: workerId,
+			lineage: rec.lineage,
+			lastRun: lastRun
+				? { runId: lastRun.record.runId, state: lastRun.record.state }
+				: undefined,
+			sessionBytes: found.bytes,
+			messageCount: found.messageCount,
+			providerVersion: { recorded, now, changed },
+			interrupted,
+			notes,
+			note: resumeNote({ lastActiveAt: rec.lastActiveAt, calls: interrupted }),
+		};
+		return { record: rec, info };
+	}
+
+	/** Add the `resume` entry to the audit log: metadata only, never arguments. */
+	private writeResumeAudit(session: Session, info: ResumedInfo): void {
+		this.gate.audit?.write({
+			ts: new Date(this.now()).toISOString(),
+			kind: "resume",
+			bootId: this.boot.id,
+			workerId: session.sessionId,
+			resumedFrom: info.from,
+			lineage: info.lineage,
+			interrupted: info.interrupted.map((c) => ({
+				tool: c.tool,
+				status: c.status,
+				approvalId: c.approvalId,
+				digest: c.digest,
+			})),
+		});
+	}
+
+	/**
+	 * The saved worker record a `resumeFrom` value points at: a worker id (of
+	 * this or an earlier boot) or a run id. When there is none, `reason` says why.
+	 */
+	private findKept(ref: string):
+		| {
+				record: WorkerRecord;
+				workerId: string;
+				reason?: undefined;
+				code?: undefined;
+		  }
+		| {
+				record: null;
+				workerId: string;
+				code: "WORKER_NOT_FOUND" | "RUN_NOT_FOUND";
+				reason: string;
+		  } {
+		const store = this.workers as WorkerStore;
+		let workerId = ref;
+		let lineage: string | undefined;
+		if (!WORKER_ID_PATTERN.test(ref)) {
+			const live = this.runs.get(ref);
+			const loaded = live ? null : this.readRecord(ref);
+			const known = live
+				? { workerId: live.workerId, lineage: live.meta.lineage }
+				: loaded
+					? { workerId: loaded.record.workerId, lineage: loaded.record.lineage }
+					: null;
+			if (!known) {
+				return {
+					record: null,
+					workerId: ref,
+					code: "RUN_NOT_FOUND",
+					reason:
+						this.missingId("run", ref) ??
+						`No run ${ref}: its record has expired or never existed, so there is nothing to resume it from. Spawn a new worker.`,
+				};
+			}
+			workerId = known.workerId;
+			lineage = known.lineage;
+		}
+		const record =
+			(lineage ? store.read(lineage) : null) ?? store.findByWorkerId(workerId);
+		if (record) return { record, workerId };
+		const gone = this.ended.get(workerId);
+		return {
+			record: null,
+			workerId,
+			code: "WORKER_NOT_FOUND",
+			reason: `Nothing to resume for ${ref}: its conversation was not kept${gone ? ` (${gone.how}; terminating a worker deletes it)` : " (it was spawned without a kept session, was terminated, or was removed after the retention time)"}. Spawn a new worker with a summary of what you need.`,
+		};
+	}
+
+	/** What `get_run` says about resuming the worker of a saved run record. */
+	public resumeAvailability(rec: { workerId: string; lineage?: string }): {
+		from: string;
+		available: boolean;
+		reason?: string;
+	} {
+		const from = rec.workerId;
+		if (!this.workers) {
+			return {
+				from,
+				available: false,
+				reason:
+					"this server keeps no worker conversations (persistSessions is off)",
+			};
+		}
+		const found = this.findKept(rec.lineage ?? from);
+		const record =
+			found.record ?? (rec.lineage ? this.findKept(from).record : null);
+		if (!record) {
+			return {
+				from,
+				available: false,
+				reason:
+					"its conversation was not kept (terminated, spawned without a session, or removed after the retention time)",
+			};
+		}
+		for (const s of this.sessions.values()) {
+			if (s.lineage === record.lineage) {
+				return {
+					from,
+					available: false,
+					reason: `the worker is live as ${s.sessionId}: use start_run`,
+				};
+			}
+		}
+		if (this.workers.heldByLiveServer(record.lineage)) {
+			return {
+				from,
+				available: false,
+				reason: "the conversation is live in another worker-mcp server",
+			};
+		}
+		if (this.workers.sessionBytes(record.lineage) === 0) {
+			return {
+				from,
+				available: false,
+				reason: "the worker never received a prompt, so there is nothing saved",
+			};
+		}
+		return { from, available: true };
 	}
 
 	/** The provider's version, looked up once. */
@@ -487,7 +935,7 @@ export class SessionManager {
 	private keepSession(
 		lineage: string,
 		info: Omit<NewWorker, "lineage">,
-	): { sessionDir: string } | null {
+	): { sessionDir: string; lineage: string } | null {
 		const store = this.workers;
 		if (!store) return null;
 		try {
@@ -496,8 +944,8 @@ export class SessionManager {
 				throw new Error("this server could not be recorded as running");
 			}
 			const layout = store.create({ ...info, lineage });
-			this.kept.add(lineage);
-			return { sessionDir: layout.sessionDir };
+			this.kept.set(lineage, lineage);
+			return { sessionDir: layout.sessionDir, lineage };
 		} catch (e) {
 			if (!this.sessionWarned) {
 				this.sessionWarned = true;
@@ -509,14 +957,37 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * Tie a resumed worker to the conversation it continues. The caller holds
+	 * the claim. Unlike `keepSession` this throws: a resumed worker that could
+	 * not be tied to its session would start an empty one.
+	 */
+	private adoptSession(
+		workerId: string,
+		record: WorkerRecord,
+		update: Parameters<WorkerStore["adopt"]>[2],
+	): { sessionDir: string; lineage: string } {
+		const store = this.workers;
+		if (!store) throw new Error("sessions are not kept");
+		const layout = store.adopt(record.lineage, workerId, update);
+		this.kept.set(workerId, record.lineage);
+		return { sessionDir: layout.sessionDir, lineage: record.lineage };
+	}
+
 	/** The process of a kept worker is gone: give up the claim, keep the session. */
 	private releaseKept(id: string): void {
-		if (this.kept.delete(id)) this.workers?.release(id);
+		const lineage = this.kept.get(id);
+		if (lineage === undefined) return;
+		this.kept.delete(id);
+		this.workers?.release(lineage);
 	}
 
 	/** Delete a kept worker's session and record. */
 	private dropKept(id: string): void {
-		if (this.kept.delete(id)) this.workers?.remove(id);
+		const lineage = this.kept.get(id);
+		if (lineage === undefined) return;
+		this.kept.delete(id);
+		this.workers?.remove(lineage);
 	}
 
 	/** Called when a worker is added or removed (resource list changes). */
@@ -595,11 +1066,27 @@ export class SessionManager {
 		return { bootId: this.boot.id, startedAt: this.boot.startedAtIso };
 	}
 
+	/**
+	 * When the conversation of worker `id` was kept and nobody holds it, the
+	 * sentence that says it can be resumed. Empty otherwise.
+	 */
+	private resumeHint(id: string): string {
+		const store = this.workers;
+		if (!store || !WORKER_ID_PATTERN.test(id)) return "";
+		const rec = store.findByWorkerId(id);
+		if (!rec) return "";
+		for (const s of this.sessions.values())
+			if (s.lineage === rec.lineage) return "";
+		const bytes = store.sessionBytes(rec.lineage);
+		if (bytes === 0) return "";
+		return ` Its conversation was kept (a session of about ${Math.max(1, Math.round(bytes / 1024))} KiB): spawn_worker with resumeFrom: "${id}" continues it (it costs the whole context again).`;
+	}
+
 	/** Why a worker is not here, for the caller to act on. */
 	private missingWorker(ref: string): string {
 		const isId = WORKER_ID_PATTERN.test(ref);
 		if (isId && this.boot.madeByEarlierServer("worker", ref)) {
-			return this.boot.notIssuedHere(`Worker ${ref}`);
+			return `${this.boot.notIssuedHere(`Worker ${ref}`)}${this.resumeHint(ref)}`;
 		}
 		// The newest match wins: a name can have been used more than once.
 		let gone: { id: string; name: string | undefined; how: string } | undefined;
@@ -611,10 +1098,11 @@ export class SessionManager {
 			const runs = last
 				? ` Its runs can still be read with get_run (the latest is ${last.id}, ${last.state}).`
 				: "";
-			return `Worker ${ref} (${gone.id}) is no longer running: ${gone.how}.${runs} Spawn a new worker to continue.`;
+			const resume = this.resumeHint(gone.id);
+			return `Worker ${ref} (${gone.id}) is no longer running: ${gone.how}.${runs}${resume || " Spawn a new worker to continue."}`;
 		}
 		if (isId) {
-			return `No worker ${ref} here: it was closed long ago or never existed. Call list_workers to see the workers, or spawn one.`;
+			return `No worker ${ref} here: it was closed long ago or never existed.${this.resumeHint(ref) || " Call list_workers to see the workers, or spawn one."}`;
 		}
 		// A name says nothing about when it was made, so a restart is a possible cause.
 		return `No live worker named ${ref}; call list_workers to see the workers, or spawn one. If it was spawned before the server restarted (this server started ${this.boot.startedAtIso}, boot ${this.boot.id}), it is lost: ${this.boot.restartNote()}`;
