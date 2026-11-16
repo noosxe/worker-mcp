@@ -1366,9 +1366,9 @@
 		"min": "CRITICAL"
 	},
 	{
-		"name": "lexer: substitution with LOW body is still HIGH",
+		"name": "lexer: substitution whose value feeds a path is HIGH",
 		"toolName": "bash",
-		"command": "echo $(date)",
+		"command": "cat $(date)",
 		"min": "HIGH"
 	},
 	{

@@ -180,7 +180,9 @@ export const schemas = {
 			.string()
 			.max(MAX_INTENT_CHARS)
 			.optional()
-			.describe("A one-line summary of the task."),
+			.describe(
+				"A one-line summary of the task (max 500 characters). In auto mode the HTTP classifiers judge each call against it, so name the checks or commands you expect the worker to run.",
+			),
 		waitMs: waitMs
 			.optional()
 			.describe(

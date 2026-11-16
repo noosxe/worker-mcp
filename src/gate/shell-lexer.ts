@@ -19,6 +19,16 @@ export interface Word {
 	glob: boolean;
 	/** It starts with an unquoted `~`, which the shell expands. */
 	tilde: boolean;
+	/** It holds a `$(...)` or backtick substitution. */
+	substitution?: boolean;
+	/** Names of plain `$name` / `${name}` references in it. */
+	variables?: string[];
+	/**
+	 * It is dynamic for a reason other than command substitution or a plain
+	 * variable: brace expansion, `$'..'`, special parameters, `${x:-y}`, process
+	 * substitution. Set on every word the lexer builds.
+	 */
+	otherDynamic?: boolean;
 }
 
 export type RedirectOp =
@@ -315,6 +325,7 @@ function lex(text: string, out: Lexed): void {
 						dynamic: true,
 						glob: false,
 						tilde: false,
+						otherDynamic: true,
 					});
 					i = end;
 					continue;
@@ -333,6 +344,22 @@ function lex(text: string, out: Lexed): void {
 		let quoted = false;
 		let dynamic = false;
 		let glob = false;
+		let substitution = false;
+		let otherDynamic = false;
+		const variables: string[] = [];
+		const noteVariable = (at: number) => {
+			const n = text[at + 1];
+			let name: string | undefined;
+			if (n === "{") {
+				const end = text.indexOf("}", at + 2);
+				const inner = end < 0 ? "" : text.slice(at + 2, end);
+				if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(inner)) name = inner;
+			} else if (isNameStart(n)) {
+				name = /^[A-Za-z0-9_]+/.exec(text.slice(at + 1))?.[0];
+			}
+			if (name) variables.push(name);
+			else otherDynamic = true;
+		};
 		const tilde = c === "~";
 		while (i < text.length && !WORD_END.has(text[i])) {
 			const ch = text[i];
@@ -376,14 +403,17 @@ function lex(text: string, out: Lexed): void {
 						const end = skipParen(text, i + 2);
 						addSubstitution(text.slice(i + 2, end - 1));
 						dynamic = true;
+						substitution = true;
 						i = end;
 					} else if (d === "`") {
 						const end = skipBacktick(text, i + 1);
 						addSubstitution(unbacktick(text.slice(i + 1, end - 1)));
 						dynamic = true;
+						substitution = true;
 						i = end;
 					} else if (d === "$" && isParameter(text[i + 1])) {
 						dynamic = true;
+						noteVariable(i);
 						i = skipVariable(text, i);
 					} else {
 						value += d;
@@ -394,6 +424,7 @@ function lex(text: string, out: Lexed): void {
 				const end = skipBacktick(text, i + 1);
 				addSubstitution(unbacktick(text.slice(i + 1, end - 1)));
 				dynamic = true;
+				substitution = true;
 				i = end;
 			} else if (ch === "$") {
 				const n = text[i + 1];
@@ -401,6 +432,7 @@ function lex(text: string, out: Lexed): void {
 					const end = skipParen(text, i + 2);
 					addSubstitution(text.slice(i + 2, end - 1));
 					dynamic = true;
+					substitution = true;
 					i = end;
 				} else if (n === "'") {
 					// $'...': the shell decodes the escapes, so the value is unknown.
@@ -409,10 +441,12 @@ function lex(text: string, out: Lexed): void {
 						j += text[j] === "\\" ? 2 : 1;
 					if (j >= text.length) throw new Unparseable("unterminated $'...'");
 					dynamic = true;
+					otherDynamic = true;
 					quoted = true;
 					i = j + 1;
 				} else if (isParameter(n)) {
 					dynamic = true;
+					noteVariable(i);
 					i = skipVariable(text, i);
 				} else {
 					value += ch; // a lone `$`, or `$"` (handled as plain text)
@@ -422,7 +456,10 @@ function lex(text: string, out: Lexed): void {
 				// Brace expansion `{a,b}` or `{1..3}`; a lone `{` or `{}` is literal.
 				const close = text.indexOf("}", i);
 				const inner = close > i ? text.slice(i + 1, close) : "";
-				if (/,|\.\./.test(inner) && !/\s/.test(inner)) dynamic = true;
+				if (/,|\.\./.test(inner) && !/\s/.test(inner)) {
+					dynamic = true;
+					otherDynamic = true;
+				}
 				value += ch;
 				i++;
 			} else {
@@ -431,7 +468,16 @@ function lex(text: string, out: Lexed): void {
 				i++;
 			}
 		}
-		addWord({ text: value, quoted, dynamic, glob, tilde });
+		addWord({
+			text: value,
+			quoted,
+			dynamic,
+			glob,
+			tilde,
+			substitution,
+			variables,
+			otherDynamic,
+		});
 	}
 
 	noPendingRedirect();

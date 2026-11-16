@@ -18,7 +18,7 @@ Good tasks for a worker: boilerplate, bulk searching or editing, edit-build-test
    - The result shows the worker's id (`w_…`), its effective `model` and its effective policy. Every tool that takes a `workerId` also accepts the `name`.
 3. **`start_run`** `{ workerId, prompt, intent }`
    - The prompt must be self-contained: the worker cannot see this conversation. Say what to change, where, how to check it, and what not to touch.
-   - `intent` is a one-line summary for the audit log.
+   - `intent` is a one-line summary of the task, shown in the audit log. In `auto` mode the classifiers judge every call against it (when `sendIntent` is on, which is the default), and a call they cannot match to the intent is escalated to you. So name the checks and commands you expect (for example "add a date parser and verify it with `node -e`"), not just the topic. Leave it out and they have nothing to match against.
    - One run per worker at a time (`WORKER_BUSY` otherwise).
 4. **`wait_run`** `{ runId, sinceSeq, outputOffset }` in a loop. Each call returns within 50 s. While the state is `running`, call it again with the returned `seq` as `sinceSeq` and `output.nextOffset` as `outputOffset`. If your call is cancelled or times out, the run is unaffected: call it again.
 5. **Approvals**: when the state is `awaiting_approval`, see below, then call `wait_run` again (approve and reject return at once, without output).

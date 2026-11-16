@@ -7,6 +7,7 @@ const dyn = (cmd: string) =>
 	lexShell(cmd)
 		.commands[0].words.slice(1)
 		.map((x) => x.dynamic);
+const arg1 = (cmd: string) => lexShell(cmd).commands[0].words[1];
 const words = (cmd: string) =>
 	lexShell(cmd).commands.map((c) => c.words.map((w) => w.text));
 
@@ -233,5 +234,22 @@ describe("lexShell", () => {
 				s += chars[(i * 7 + j * 13 + (i >> 2) * j) % chars.length];
 			lexShell(s);
 		}
+	});
+
+	test("words say why they are dynamic", () => {
+		assert.deepStrictEqual(
+			[
+				arg1("echo $(seq 1 3)").substitution,
+				arg1("echo $(seq 1 3)").otherDynamic,
+			],
+			[true, false],
+		);
+		assert.deepStrictEqual(arg1('echo "n=$i"').variables, ["i"]);
+		assert.deepStrictEqual(arg1("echo ${i}").variables, ["i"]);
+		for (const cmd of ["echo ${i:-x}", "echo $1", "echo {a,b}", "echo $'a'"]) {
+			assert.strictEqual(arg1(cmd).otherDynamic, true, cmd);
+		}
+		assert.strictEqual(arg1("echo <(ls)").otherDynamic, true);
+		assert.strictEqual(arg1("echo plain").dynamic, false);
 	});
 });
