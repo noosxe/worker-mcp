@@ -10,7 +10,7 @@ The server is a runner, not an agent: it starts a worker in a workspace, gives i
 
 - **Neutral tool surface**: 13 tools (`list_providers`, `spawn_worker`, `start_run`, `wait_run`, `get_run`, `cancel_run`, `get_pending_actions`, `approve_action`, `reject_action`, `list_workers`, `set_risk_policy`, `get_gate_log`, `terminate_worker`). Every result has `structuredContent` that matches the tool's `outputSchema`, plus one text block.
 - **Asynchronous runs**: starting a run returns at once; the coordinator waits in short calls, so a long task never loses its result to a client timeout.
-- **Approval gate**: every tool call is classified by risk. Low-risk calls run; the rest wait for the coordinator, and protected paths always do. See [docs/security.md](docs/security.md).
+- **Approval gate**: every tool call is classified by risk. Low-risk calls run (read-only commands, `sleep`, `seq`, `test`, and simple `for`/`while` loops whose bodies are all low-risk); the rest wait for the coordinator, and protected paths always do. See [docs/security.md](docs/security.md).
 - **Untrusted output is labelled**: what a worker wrote is wrapped in `<worker_output>` tags in text and sits under `untrusted…` keys in structured results.
 - **Workers live with the server**: nothing is persisted. When the server stops, its workers stop.
 - **Minimal worker environment**: workers get an allowlisted environment, not the server's.

@@ -38,6 +38,29 @@ went from 21 285 to 10 595 bytes.
   of the run in every response.
 - The text block of every result is compact JSON, not indented.
 
+### Fewer needless approvals
+
+- **More harmless commands are LOW.** `sleep` (numbers with an optional unit,
+  or `infinity`), `seq`, `expr`, `basename`, `dirname`, `nproc`, `realpath` and
+  `readlink` join `true`, `false`, `test` and `[`. Path arguments are still
+  checked, so `test -e ~/.ssh/id_rsa` stays a hard limit.
+- **Simple loops are rated by their bodies.** `for x in WORDS; do ...; done`
+  and `while`/`until TEST; do ...; done` add nothing to the level; the list, the
+  tests and the body are rated command by command. The lexer must be sure of
+  the structure (a `;` or newline around `do` and `done`, a plain word list,
+  a lowercase loop variable with no special meaning to a shell); anything else
+  stays HIGH. A loop variable and a command substitution may be used only as
+  arguments of `echo`, `sleep`, `seq`, `true`, `false` and `expr`.
+- **Command substitution is rated by its body** instead of being HIGH on its
+  own: `echo $(seq 1 5)` is LOW, `echo $(rm -rf ~)` is CRITICAL, and
+  `cat $(date)` is still HIGH because the path is unknown.
+- **`intent` is worth setting in auto mode.** The classifier request already
+  carries the coordinator's intent (config `sendIntent`, default on, at most 500
+  characters, marked as coordinator text); without one the classifier has
+  nothing to match a call against, so a risky call is escalated.
+  The `start_run` schema and the skill now say so and ask for the expected
+  checks to be named. No new setting, and nothing more is sent.
+
 ### Restarts and dead workers
 
 - **The server says when an id comes from an earlier server.** Workers, runs

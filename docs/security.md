@@ -61,14 +61,44 @@ for the coordinator.
   would (quotes, escapes, `$(...)`, backticks, `|`, `&&`, `||`, `;`, newlines)
   and the level is the highest over its parts. A pipeline or list of LOW
   commands (`cat f | grep x`, `ls | wc -l`, `ls && pwd`) is LOW; quoted
-  metacharacters are not metacharacters. At least HIGH: command or process
-  substitution (its body is rated too), redirection other than `2>&1` and
-  `/dev/null`, here-documents, subshells and groups, background jobs,
-  assignments before a command, a variable or other expansion whose value is
-  unknown (`$X`, `${X}`, `$'...'`, `{a,b}`), wrappers (`env`, `xargs`, `sh`,
-  `time`, ...), interpreters, package runners and anything unknown. Whatever
-  the lexer cannot parse with confidence is HIGH too. A pipe into a shell and
-  `eval`/`exec` are CRITICAL.
+  metacharacters are not metacharacters. At least HIGH: process substitution,
+  redirection other than `2>&1` and `/dev/null`, here-documents, subshells and
+  groups, background jobs, assignments before a command, a variable or other
+  expansion whose value is unknown (`$X`, `${X}`, `$'...'`, `{a,b}`), wrappers
+  (`env`, `xargs`, `sh`, `time`, ...), interpreters, package runners and
+  anything unknown. Whatever the lexer cannot parse with confidence is HIGH
+  too. A pipe into a shell and `eval`/`exec` are CRITICAL.
+- **Plainly harmless commands are LOW.** Besides the read-only tools (`ls`,
+  `cat`, `grep`, `head`, `stat`, `find` without `-exec`/`-delete`, ...):
+  `true`, `false`, `test` and `[` (so `[ -f x ]`; `[[` is a compound command and
+  stays HIGH), `sleep` (numbers with an optional `s`/`m`/`h`/`d`, or
+  `infinity`; a long wait is only a wait, the run limit covers it), `seq`
+  (numbers and `-w`), `expr`, `basename`, `dirname`, `nproc`, `realpath` and
+  `readlink`. Path arguments go through the protected-path and workspace rules
+  like those of `ls`, so `test -e ~/.ssh/id_rsa`, `[ -f .env ]` and
+  `realpath ~/.ssh/id_rsa` are hard limits: the existence of a protected path
+  is not given away. Redirections and assignments on them are rated as always.
+- **Command substitution is rated by its body.** `$(seq 1 5)` adds nothing to
+  `seq`'s own LOW; `$(rm -rf ~)` is CRITICAL. A word that holds a substitution
+  or a loop variable (below) is still an expansion whose value is unknown, so it
+  is accepted only as an argument of a command that treats its arguments as
+  data: `echo`, `sleep`, `seq`, `true`, `false`, `expr`. `cat $(echo f)`,
+  `rm $(...)`, `$(...)` as the command, as a redirect target or as an
+  assignment stay HIGH.
+- **Simple loops are rated by their bodies.** `for NAME in WORDS; do ...; done`
+  and `while|until TEST; do ...; done` (newlines work as `;`, nesting is
+  allowed to depth 3) add nothing to the level: the list words, the tests and
+  every command of the body are rated one by one, and the worst wins. The
+  lexer must be sure of the structure: `do` and `done` each after a `;` or a
+  newline, the list made of plain words, substitutions and outer loop
+  variables, and a loop variable that is a short lowercase name a shell gives
+  no special meaning (`PATH`, `IFS`, `path`, ... and any uppercase name are
+  not). Anything else is HIGH as a compound command: `for x; do`, `select`,
+  `case`, `if`, `for ((...))`, a missing `do` or `done`, a loop with `&`, a
+  here-document or a pipe into a shell. A glob in the list is looked up like an
+  argument of `ls` (outside the workspace MEDIUM, a protected path a hard
+  limit). A loop variable can be used only by the data-only commands above, so
+  `for f in a b; do cat $f; done` is HIGH.
 - **The coordinator's policy has a ceiling.** `gate.maxAutoApprove` (default
   MEDIUM, at most HIGH) bounds what `spawn_worker` and `set_risk_policy`
   can auto-approve: `autoApproveUpTo` and every `allow` override are lowered to

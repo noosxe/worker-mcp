@@ -305,7 +305,26 @@ const LOW_BASE = new Set([
 	"false",
 	"test",
 	"[",
+	"sleep",
+	"seq",
+	"basename",
+	"dirname",
+	"nproc",
+	"expr",
+	"realpath",
+	"readlink",
 ]);
+
+/**
+ * Commands whose arguments are plain data: they never open a path or run
+ * what they are given. An argument whose value is only known at run time (a
+ * command substitution, or a loop variable) is fine for these.
+ */
+const INERT_ARGS = new Set(["echo", "sleep", "seq", "true", "false", "expr"]);
+
+/** `sleep` takes numbers with an optional unit; `infinity` is a wait too. */
+const SLEEP_ARG = /^(\d+(\.\d+)?[smhd]?|infinity)$/;
+const SEQ_ARG = /^[-+]?\d+(\.\d+)?$/;
 
 /** `find` options that run commands or write files. */
 const FIND_EXEC = /^-(exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
@@ -325,6 +344,13 @@ function lowCommandHasSideEffects(base: string, args: string[]): boolean {
 			);
 		case "uniq":
 			return args.filter((a) => !a.startsWith("-")).length > 1;
+		case "sleep":
+			// An empty text is an argument that is only known at run time.
+			return (
+				args.length === 0 || !args.every((a) => a === "" || SLEEP_ARG.test(a))
+			);
+		case "seq":
+			return !args.every((a) => a === "" || SEQ_ARG.test(a) || a === "-w");
 		case "date":
 			return args.some((a) => a === "-s" || a.startsWith("--set"));
 		case "hostname":
@@ -558,25 +584,159 @@ export function assessShell(
 			),
 		);
 	}
+	// A substitution is rated by its body. The word that holds it is dynamic, so
+	// the command it feeds is HIGH unless that command only takes data
+	// (INERT_ARGS); process substitution words are always HIGH.
 	for (const body of lexed.substitutions) {
-		acc.raise(
-			result(
-				RiskLevel.HIGH,
-				"Command or process substitution",
-				"shell.substitution",
-			),
-		);
 		acc.merge(assessShell(body, ctx, depth + 1));
 	}
+	const loops = lexed.unparseable ? null : analyzeLoops(lexed.commands);
 	for (const cmd of lexed.commands) {
-		assessSimple(cmd, ctx, acc);
+		assessSimple(cmd, ctx, acc, loops?.get(cmd));
 	}
 	return acc.done();
 }
 
-function assessSimple(cmd: SimpleCommand, ctx: ShellContext, acc: Accumulator) {
+/** What the loop structure says about one simple command. */
+interface LoopInfo {
+	/** Leading words that are loop syntax (`do`, `done`, `while`, `!`). */
+	skip: number;
+	/** The command is a `for` header: these are its list words. */
+	list?: Word[];
+	/** Loop variables of the enclosing `for` loops, readable as data. */
+	vars: ReadonlySet<string>;
+}
+
+const MAX_LOOP_DEPTH = 3;
+const LOOP_SEP = new Set<string | null>([";", "\n"]);
+const LOOP_VAR = /^[a-z][a-z0-9_]{0,15}$/;
+/** Lowercase names that a shell ties to something that runs code or splits words. */
+const SPECIAL_LOWER = new Set([
+	"path",
+	"cdpath",
+	"fpath",
+	"manpath",
+	"mailpath",
+	"module_path",
+	"psvar",
+	"watch",
+	"argv",
+	"reply",
+	"status",
+	"options",
+	"commands",
+	"aliases",
+	"functions",
+	"parameters",
+	"signals",
+	"history",
+	"histchars",
+	"prompt",
+	"ifs",
+]);
+
+const plainKeyword = (w: Word | undefined, kw: string) =>
+	w !== undefined && !w.quoted && !w.dynamic && w.text === kw;
+
+/**
+ * Recognise `for NAME in WORDS; do ...; done` and `while|until TEST; do ...;
+ * done` (nested at most MAX_LOOP_DEPTH deep). The loop syntax adds no risk
+ * itself: the body and the tests are rated command by command. Returns null
+ * when anything is off (missing `do` or `done`, a separator other than `;` or a
+ * new line around them, a list that is not plain words, a loop variable that
+ * shells treat specially, `for x; do`, `select`, `case`...): the caller then
+ * rates the keywords as compound commands, which is HIGH.
+ */
+function analyzeLoops(
+	commands: SimpleCommand[],
+): Map<SimpleCommand, LoopInfo> | null {
+	type Frame = { kind: "for" | "cond"; phase: "head" | "body"; name?: string };
+	const stack: Frame[] = [];
+	const info = new Map<SimpleCommand, LoopInfo>();
+	const varsNow = () =>
+		new Set(
+			stack.filter((f) => f.phase === "body" && f.name).map((f) => f.name!),
+		);
+	let any = false;
+
+	for (const cmd of commands) {
+		const words = cmd.words;
+		let off = 0;
+		const rec: LoopInfo = { skip: 0, vars: varsNow() };
+		let headerList: Word[] | undefined;
+		// A `for` header stands alone: the next command must be its `do`.
+		const top = stack[stack.length - 1];
+		if (top?.kind === "for" && top.phase === "head") {
+			if (!plainKeyword(words[0], "do")) return null;
+		}
+		for (;;) {
+			const w = words[off];
+			if (plainKeyword(w, "do")) {
+				const f = stack[stack.length - 1];
+				if (!f || f.phase !== "head" || !LOOP_SEP.has(cmd.after)) return null;
+				if (f.kind === "cond" && off !== 0) return null;
+				f.phase = "body";
+				off++;
+				rec.vars = varsNow();
+				continue;
+			}
+			if (plainKeyword(w, "done")) {
+				const f = stack[stack.length - 1];
+				if (!f || f.phase !== "body" || !LOOP_SEP.has(cmd.after)) return null;
+				if (words.length !== off + 1 || cmd.assignments.length > 0) return null;
+				stack.pop();
+				off++;
+				break;
+			}
+			if (plainKeyword(w, "for")) {
+				if (stack.length >= MAX_LOOP_DEPTH) return null;
+				const name = words[off + 1];
+				if (
+					cmd.assignments.length > 0 ||
+					cmd.redirects.length > 0 ||
+					!name ||
+					name.quoted ||
+					name.dynamic ||
+					!LOOP_VAR.test(name.text) ||
+					SPECIAL_LOWER.has(name.text) ||
+					!plainKeyword(words[off + 2], "in")
+				) {
+					return null;
+				}
+				headerList = words.slice(off + 3);
+				stack.push({ kind: "for", phase: "head", name: name.text });
+				off = words.length;
+				break;
+			}
+			if (plainKeyword(w, "while") || plainKeyword(w, "until")) {
+				if (stack.length >= MAX_LOOP_DEPTH) return null;
+				stack.push({ kind: "cond", phase: "head" });
+				off++;
+				if (plainKeyword(words[off], "!")) off++;
+				break;
+			}
+			break;
+		}
+		if (off > 0 || headerList) any = true;
+		rec.skip = off;
+		rec.list = headerList;
+		info.set(cmd, rec);
+	}
+	if (stack.length > 0) return null;
+	return any ? info : null;
+}
+
+function assessSimple(
+	cmd: SimpleCommand,
+	ctx: ShellContext,
+	acc: Accumulator,
+	loop?: LoopInfo,
+) {
 	let words = cmd.words;
 	let writesFile = false;
+	const loopVars = loop?.vars ?? new Set<string>();
+	if (loop?.list) assessLoopList(loop.list, loopVars, ctx, acc);
+	if (loop) words = words.slice(loop.skip);
 
 	for (const r of cmd.redirects) {
 		if (redirectWrites(r)) writesFile = true;
@@ -591,7 +751,12 @@ function assessSimple(cmd: SimpleCommand, ctx: ShellContext, acc: Accumulator) {
 		);
 	}
 	let keyword = false;
-	while (words.length > 0 && !words[0].quoted && KEYWORDS.has(words[0].text)) {
+	while (
+		words.length > 0 &&
+		!words[0].quoted &&
+		!words[0].dynamic &&
+		KEYWORDS.has(words[0].text)
+	) {
 		words = words.slice(1);
 		keyword = true;
 	}
@@ -600,7 +765,17 @@ function assessSimple(cmd: SimpleCommand, ctx: ShellContext, acc: Accumulator) {
 			result(RiskLevel.HIGH, "Shell compound command", "shell.compound"),
 		);
 	}
-	if (words.some((w) => w.dynamic)) {
+	// Arguments of data-only commands may be known only at run time (a
+	// substitution, a loop variable); anything else with an expansion is HIGH.
+	const head = words[0];
+	const headBase =
+		head && !head.dynamic && !head.text.includes("/") ? head.text : "";
+	const dataOnly = INERT_ARGS.has(headBase);
+	if (
+		words.some(
+			(w, i) => w.dynamic && !(dataOnly && i > 0 && knownDynamic(w, loopVars)),
+		)
+	) {
 		acc.raise(
 			result(
 				RiskLevel.HIGH,
@@ -612,7 +787,11 @@ function assessSimple(cmd: SimpleCommand, ctx: ShellContext, acc: Accumulator) {
 
 	let base = "";
 	if (words.length === 0) {
-		if (cmd.assignments.length === 0 && cmd.redirects.length === 0) {
+		if (
+			cmd.assignments.length === 0 &&
+			cmd.redirects.length === 0 &&
+			!(loop && loop.skip > 0)
+		) {
 			acc.raise(result(RiskLevel.HIGH, "No command", "shell.empty"));
 		}
 	} else {
@@ -721,6 +900,60 @@ function assessSimple(cmd: SimpleCommand, ctx: ShellContext, acc: Accumulator) {
 					);
 				}
 			}
+		}
+	}
+}
+
+/** A word that is dynamic only through substitutions and the given loop variables. */
+function knownDynamic(w: Word, loopVars: ReadonlySet<string>): boolean {
+	return (
+		w.otherDynamic === false &&
+		(w.variables ?? []).every((v) => loopVars.has(v))
+	);
+}
+
+/**
+ * The words after `for NAME in`. They are data, not commands: plain words,
+ * substitutions (rated by their bodies) and outer loop variables are fine; a
+ * glob is looked up like an argument of `ls`.
+ */
+function assessLoopList(
+	list: Word[],
+	loopVars: ReadonlySet<string>,
+	ctx: ShellContext,
+	acc: Accumulator,
+): void {
+	for (const w of list) {
+		if (w.dynamic && !knownDynamic(w, loopVars)) {
+			acc.raise(
+				result(
+					RiskLevel.HIGH,
+					"Loop list uses an expansion whose value is unknown",
+					"shell.expansion",
+				),
+			);
+			continue;
+		}
+		if (w.dynamic) continue;
+		if (referencesSecretPath(w.text)) {
+			acc.raise(
+				result(
+					RiskLevel.HIGH,
+					"Loop list names a secret path",
+					"secret_access",
+				),
+			);
+		}
+		if (w.glob || w.tilde) {
+			checkPath(w, "read", ctx, acc, (outside) =>
+				acc.raise(
+					result(
+						RiskLevel.MEDIUM,
+						`Reads ${outside} outside the workspace`,
+						"shell.outside_workspace",
+					),
+				),
+			);
 		}
 	}
 }

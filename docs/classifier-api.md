@@ -22,7 +22,8 @@ CRITICAL calls) are never sent to it and can never be allowed by it. See
 Each request leaves the process: the tool name, the command, resolved paths and
 up to 8 KiB of arguments (`maxArgumentBytes`), the working directory, summaries
 of the last few decisions (`recentActions`) and, unless `sendIntent` is false,
-the coordinator's one-line intent. Point it at a local or self-hosted service.
+the coordinator's one-line intent (at most 500 characters, given to `start_run`).
+Point it at a local or self-hosted service.
 No classifier is configured by default.
 
 ## Request
